@@ -11,7 +11,7 @@ export async function fetchGateway(connection:Connection,client:Client,window:{f
     if(data.timezone!==client.timezone)throw new Error('Timezone mismatch');if(data.currency!==client.currency)throw new Error('Currency mismatch');
     if(first&&(data.grain!==first.grain||JSON.stringify([...data.channels].sort())!==JSON.stringify([...first.channels].sort())||data.coverageThrough!==first.coverageThrough))throw new Error('Coverage changed during pagination');
     first??=data;
-    for(const r of data.rows){if(r.date<window.from||r.date>window.to)throw new Error('Observation outside requested window');const key=JSON.stringify([r.date,r.dataset,r.metric,Object.entries(r.dimensions).sort()]);if(keys.has(key))throw new Error('Duplicate aggregate grain');keys.add(key);rows.push(r);}
+    for(const r of data.rows){if(r.date<window.from||r.date>window.to)throw new Error('Observation outside requested window');const key=JSON.stringify([r.date,r.dataset,r.metric,r.start,r.end,Object.entries(r.dimensions).sort()]);if(keys.has(key))throw new Error('Duplicate aggregate grain');keys.add(key);rows.push(r);}
     if(rows.length>50000)throw new Error('Source batch exceeds 50,000 rows');
     first.complete=first.complete&&data.complete;cursor=data.nextCursor??null;
     if(!cursor)return {...first,rows,nextCursor:null};
