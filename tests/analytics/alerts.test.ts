@@ -17,8 +17,8 @@ it('does not turn unavailable sources or historical imports into performance ale
 });
 it('requires complete current and benchmark coverage for conversion signals',()=>{
  const r=record('historical');
- const row={date:'2026-10-07',quality:'complete',coverageThrough:'2026-10-08T00:00:00Z',sourceId:'s',dataset:'funnels',metric:'sessions',dimensions:{page:'/lp'},value:1000} as any;
- r.actions=[{key:'lp',dimensions:{page:'/lp'},summary:{sessions:1000,cvr:.01},benchmark:.03,benchmarkReason:'Own previous period',opportunity:20,evidence:[row],benchmarkEvidence:[{...row,date:'2026-10-06'}]}];
+ const row={date:'2026-10-07',quality:'complete',coverageThrough:'2026-10-08T00:00:00Z',sourceId:'s',dataset:'funnels',metric:'sessions',population:'human_sessions',dimensions:{page:'/lp'},value:1000} as any;
+ r.actions=[{key:'lp',dimensions:{page:'/lp'},summary:{sessions:1000,cvr:.01},benchmark:.03,benchmarkReason:'Own previous period',opportunity:20,evidence:[row,{...row,metric:'converting_sessions',value:10}],benchmarkEvidence:[{...row,date:'2026-10-06'},{...row,date:'2026-10-06',metric:'converting_sessions',value:30}]}];
  expect(buildAlertQueue([r],filters)).toHaveLength(1);
  r.actions[0].benchmarkEvidence[0].coverageThrough=null;expect(buildAlertQueue([r],filters)).toEqual([]);
 });
@@ -32,4 +32,29 @@ it('does not suppress a new period because a previous signal was closed',()=>{
  const r=record(),signal=buildAlertQueue([r],filters)[0];
  r.findings=[{id:'closed',clientId:'a',title:'Past action',detail:'Done',severity:'act',status:'closed',owner:'Media',evidence:signal.evidence,version:1,updatedAt:'2026-10-08T00:00:00Z'}];
  expect(buildAlertQueue([r],{...filters,from:'2026-10-06',to:'2026-10-06'})).toHaveLength(1);
+});
+
+function conversionRecord(f:any,dates:string[],missingHour=false){
+ const rows=dates.flatMap(date=>[0,1,2].filter(hour=>!missingHour||hour!==1).flatMap(hour=>['sessions','converting_sessions'].map(metric=>({date,metric,value:metric==='sessions'?1000:date>=f.from?10:30,dataset:'funnels',definition:'us_human',population:'human_sessions',currency:null,dimensions:{page:'/lp',market:'US'},sourceId:'shop',retrievedAt:'2026-10-08T03:00:00Z',quality:'complete',coverageThrough:'2026-10-08T03:00:00Z',...(f.mode==='partial'?{start:`${date}T0${hour}:00:00Z`,end:`${date}T0${hour+1}:00:00Z`}:{} )}))));
+ // Closed-day snapshots contain one row per metric, rather than repeated hourly rows.
+ const data=f.mode==='closed'?rows.filter((_,i)=>i%6<2):rows;
+ return {...queryClient(client,data as any,f.mode==='partial'?[{enabled:true,coverageThrough:'2026-10-07T03:00:00Z'} as any]:[],f),findings:[]} as any;
+}
+it('does not alert from missing days in the selected or comparison window',()=>{
+ const f={...filters,from:'2026-10-06',to:'2026-10-07'};
+ const r=conversionRecord(f,['2026-10-04','2026-10-06']);
+ expect(r.actions.length).toBeGreaterThan(0);
+ expect(buildAlertQueue([r],f)).toEqual([]);
+ expect(buildAlertQueue([conversionRecord(f,['2026-10-04','2026-10-05','2026-10-06','2026-10-07'])],f)).toHaveLength(1);
+});
+it('rejects an internal missing hour even when both endpoints reach the cutoff',()=>{
+ const f={...filters,mode:'partial'} as any;
+ const dates=['2026-10-06','2026-10-07'];
+ expect(buildAlertQueue([conversionRecord(f,dates)],f)).toHaveLength(1);
+ expect(buildAlertQueue([conversionRecord(f,dates,true)],f)).toEqual([]);
+});
+it('requires sessions and conversions to cover matching intervals',()=>{
+ const f={...filters,mode:'partial'} as any,r=conversionRecord(f,['2026-10-06','2026-10-07']);
+ r.actions[0].evidence=r.actions[0].evidence.filter((x:any)=>x.metric!=='converting_sessions'||!x.start.includes('01:00'));
+ expect(buildAlertQueue([r],f)).toEqual([]);
 });
