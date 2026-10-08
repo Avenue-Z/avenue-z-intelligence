@@ -2,6 +2,7 @@ import {dayWindow,shiftDate} from './windows';
 import {Temporal} from '@js-temporal/polyfill';
 import type {QueryFilters,Finding,Observation} from './contracts';
 import type {Workspace} from '../server/workspace';
+import {reviewHref} from '../reviews/document';
 export type BusinessAlert={key:string;clientId:string;clientName:string;title:string;detail:string;nextStep:string;category:string;severity:string;status:string;owner:string;evidence:string[];basis:string;impact:number|null;finding?:Finding};
 const delta=(n:number|null)=>n===null?'unavailable':`${n>=0?'+':''}${(n*100).toFixed(1)}%`;
 const refs=(rows:Observation[])=>rows.map(r=>`${r.sourceId}:${r.date}:${r.dataset}:${r.metric}:${JSON.stringify(r.dimensions)}`);
@@ -39,6 +40,10 @@ export function buildAlertQueue(records:Workspace['clients'],filters:QueryFilter
    if(filters.mode==='partial'&&!r.cutoff||!conversionCovered(a.evidence,filters.from,filters.to,r.client.timezone,r.cutoff)||!conversionCovered(a.benchmarkEvidence,benchmark.from,benchmark.to,r.client.timezone,r.cutoff))continue;
    const key=`signal:conversion:${r.client.id}:${scope}:${a.key}`;
    generated.push({...base,key,title:`Review ${a.dimensions.page||'segment'} conversion`,detail:`${a.summary.sessions?.toLocaleString()} sessions at ${((a.summary.cvr??0)*100).toFixed(2)}% CVR, versus ${((a.benchmark??0)*100).toFixed(2)}%. ${a.benchmarkReason}. Estimated gap: ${a.opportunity?.toFixed(0)} orders at this traffic volume.`,nextStep:'Compare source and device mix, offer, pricing, localisation and cart evidence before choosing a change.',category:'Conversion opportunity',severity:'investigate',basis:'Qualified source evidence',impact:a.opportunity,evidence:[key,...refs([...a.evidence,...a.benchmarkEvidence])].slice(0,100)});
+  }
+  for(const review of (r.reviews??[]).filter(x=>x.current&&x.payload.type==='ai'&&x.storeDate>=filters.from&&x.storeDate<=filters.to)){
+   const actions=review.payload.actions as {title:string;detail:string;nextStep:string;severity:string;impact:number|null;sourceIds:string[]}[]|undefined;
+   for(const a of actions||[]){const key=`signal:ai:${r.client.id}:${review.storeDate}:${a.title}`;generated.push({...base,...a,key,category:'AI review recommendation',basis:`AI analysis · ${review.storeDate} · fixed source evidence`,evidence:[key,reviewHref(r.client.id,review.id)]});}
   }
   for(const signal of generated){if(!r.findings.some(f=>f.evidence.includes(signal.key)))result.push(signal);}
   for(const f of r.findings){if(f.status==='closed')continue;const historical=f.evidence.some(e=>e.startsWith('https://claude.ai/artifact/'));result.push({...base,key:f.id,title:f.title,detail:f.detail,nextStep:'Open the action to review evidence, assign an owner and update its status.',category:historical?'Daily review action':'Team follow-up',severity:f.severity,status:f.status,owner:f.owner,evidence:f.evidence,basis:historical?'Imported Claude review':'Tracked by the team',impact:null,finding:f});}

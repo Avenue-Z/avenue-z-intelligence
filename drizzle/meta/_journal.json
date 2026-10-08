@@ -15,6 +15,13 @@
       "when": 1791492437652,
       "tag": "0001_light_katie_power",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1791497331690,
+      "tag": "0002_glorious_komodo",
+      "breakpoints": true
     }
   ]
 }

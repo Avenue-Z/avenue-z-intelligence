@@ -11,6 +11,7 @@ it('raises a business action when qualified spend outpaces revenue',()=>{
  const queue=buildAlertQueue([record()],filters);
  expect(queue).toHaveLength(1);expect(queue[0].category).toBe('Spend efficiency');expect(queue[0].evidence.length).toBeGreaterThan(1);expect(queue[0].nextStep).toMatch(/campaign|channel/);expect(queue[0].evidence.some(x=>x.includes('2026-10-06:overview:revenue'))).toBe(true);
 });
+it('keeps AI recommendations source-linked, date-scoped and resolved after tracking',()=>{const r=record('historical');r.reviews=[{id:'rev',storeDate:filters.to,current:true,payload:{type:'ai',actions:[{title:'Investigate offer alignment',detail:'Dated evidence',nextStep:'Review the campaign audience',severity:'investigate',impact:30,sourceIds:['review:original']}]}}];let queue=buildAlertQueue([r],filters);expect(queue).toHaveLength(1);expect(queue[0].evidence[1]).toContain('/reviews/rev');r.findings=[{id:'tracked',title:queue[0].title,detail:'Dated evidence',severity:'investigate',status:'closed',owner:'',evidence:queue[0].evidence}];expect(buildAlertQueue([r],filters)).toEqual([]);expect(buildAlertQueue([{...r,findings:[]}],{...filters,from:'2026-10-06',to:'2026-10-06'})).toEqual([]);});
 it('does not turn unavailable sources or historical imports into performance alerts',()=>{
  const empty={...queryClient(client,[],[],filters),findings:[]} as any;
  expect(buildAlertQueue([empty,record('historical')],filters)).toEqual([]);
