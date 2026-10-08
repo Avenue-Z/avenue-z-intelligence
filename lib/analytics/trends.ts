@@ -1,0 +1,1 @@
+export function visibleTrend<T extends {revenue:number|null;spend:number|null}>(values:T[]):T[]{const present=(r:T)=>r.revenue!==null||r.spend!==null;const first=values.findIndex(present);if(first<0)return [];let last=values.length-1;while(last>first&&!present(values[last]))last--;return values.slice(first,last+1);}
