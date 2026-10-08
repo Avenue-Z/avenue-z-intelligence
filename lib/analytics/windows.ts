@@ -6,4 +6,4 @@ export function dayWindow(date:string,timezone:string) {
 export function recurringWindows(date:string) {const d=Temporal.PlainDate.from(date),m=d.subtract({days:d.dayOfWeek-1});return {current:m.toString(),comparison:m.subtract({weeks:4}).toString()};}
 export function shiftDate(date:string,days:number){return Temporal.PlainDate.from(date).add({days}).toString();}
 export function todayIn(timezone:string,now=new Date()) {return Temporal.Instant.from(now.toISOString()).toZonedDateTimeISO(timezone).toPlainDate().toString();}
-export function matchedCutoff(values:string[]) {if(!values.length) return null;const ms=Math.min(...values.map(x=>Date.parse(x)));return Temporal.Instant.fromEpochMilliseconds(Math.floor(ms/3600000)*3600000).toString();}
+export function matchedCutoff(values:string[],timezone='UTC') {if(!values.length) return null;const ms=Math.min(...values.map(x=>Date.parse(x)));const local=Temporal.Instant.fromEpochMilliseconds(ms).toZonedDateTimeISO(timezone);return local.with({minute:0,second:0,millisecond:0,microsecond:0,nanosecond:0}).toInstant().toString();}

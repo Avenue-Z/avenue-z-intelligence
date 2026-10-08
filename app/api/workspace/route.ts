@@ -1,2 +1,4 @@
 import {loadWorkspace} from '../../../lib/server/workspace';
+import {workspaceAction} from '../../../lib/server/actions';
 export async function GET(request:Request){try{return Response.json(await loadWorkspace(new URL(request.url).searchParams),{headers:{'Cache-Control':'no-store'}});}catch(e){const message=e instanceof Error?e.message:'Workspace unavailable';return Response.json({error:message},{status:message.includes('Sign in')?401:message.includes('access')?403:400});}}
+export async function POST(request:Request){try{return Response.json(await workspaceAction(request),{headers:{'Cache-Control':'no-store'}});}catch(e){const message=e instanceof Error?e.message:'Save failed';return Response.json({error:message},{status:message.includes('Sign in')?401:message.includes('access')?403:message.includes('Changed')?409:400});}}

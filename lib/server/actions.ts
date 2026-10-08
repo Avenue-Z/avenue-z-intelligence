@@ -1,0 +1,27 @@
+import {z} from 'zod';
+import {env} from 'cloudflare:workers';
+import {getStore,requireClientAccess} from './access';
+import {checkOrigin} from './policy';
+import {validateClient,validateConnection} from './configuration';
+import {validateBatch} from '../sources/qualification';
+import {enqueueDue,runSyncBatch,generateReview} from '../jobs/sync';
+import {fingerprint} from '../reviews/build';
+const member=z.object({email:z.string().email(),role:z.enum(['admin','analyst']),clients:z.array(z.string())});
+export async function workspaceAction(request:Request){checkOrigin(request);const text=await request.text();if(text.length>6000000)throw new Error('Request exceeds 6 MB');const b=JSON.parse(text);if(!['client','member'].includes(b.action)&&!b.clientId)throw new Error('Client identity required');const admin=['client','connection','member','importData','importReview'].includes(b.action);const scope=await requireClientAccess(b.action==='client'&&!b.data.id?undefined:b.clientId,admin),s=getStore();
+  if(b.action==='client'){const c=validateClient(b.data),id=c.id??crypto.randomUUID();if(c.id&&!scope.permittedClientIds.includes(c.id))throw new Error('Client access denied');const v=c.version??0;let r;
+    if(!v)r=await s.run('INSERT INTO clients(id,organizationId,name,slug,timezone,currency,color,config,version) VALUES(?,?,?,?,?,?,?,?,1) ON CONFLICT DO NOTHING',id,scope.organizationId,c.name,c.slug||id,c.timezone,c.currency,c.color,JSON.stringify(c.config));
+    else r=await s.run('UPDATE clients SET name=?,timezone=?,currency=?,color=?,config=?,version=version+1 WHERE id=? AND organizationId=? AND version=?',c.name,c.timezone,c.currency,c.color,JSON.stringify(c.config),id,scope.organizationId,v);
+    if(!r.meta.changes)throw new Error('Changed by another teammate');await s.audit(scope.organizationId,id,scope.actorId,'client.updated',c);return {id};}
+  if(b.action==='connection'){const c=validateConnection(b.data);if(c.clientId!==b.clientId)throw new Error('Client identity mismatch');const id=c.id??crypto.randomUUID(),v=c.version??0;let r;
+    if(!v)r=await s.run('INSERT INTO connections(id,organizationId,clientId,name,provider,endpoint,secretRef,pollMinutes,enabled,version) VALUES(?,?,?,?,?,?,?,?,?,1) ON CONFLICT DO NOTHING',id,scope.organizationId,c.clientId,c.name,'gateway',c.endpoint,c.secretRef,c.pollMinutes,Number(c.enabled));
+    else r=await s.run('UPDATE connections SET name=?,endpoint=?,secretRef=?,pollMinutes=?,enabled=?,version=version+1 WHERE id=? AND organizationId=? AND clientId=? AND version=?',c.name,c.endpoint,c.secretRef,c.pollMinutes,Number(c.enabled),id,scope.organizationId,c.clientId,v);
+    if(!r.meta.changes)throw new Error('Changed by another teammate');await s.audit(scope.organizationId,c.clientId,scope.actorId,'connection.updated',{id,name:c.name});return {id};}
+  if(b.action==='member'){const m=member.parse(b.data);if(m.clients.some(id=>id!=='*'&&!scope.permittedClientIds.includes(id)))throw new Error('Client access denied');await s.run("INSERT INTO members(organizationId,email,actorId,role,clients) VALUES(?,?,'',?,?) ON CONFLICT DO NOTHING",scope.organizationId,m.email.toLowerCase(),m.role,JSON.stringify(m.clients));await s.audit(scope.organizationId,'',scope.actorId,'member.invited',{email:m.email,role:m.role});return {saved:true};}
+  if(b.action==='note')return s.saveNote(scope.organizationId,b.clientId,z.string().max(100000).parse(b.body),scope.actorId,z.number().int().nonnegative().parse(b.version));
+  if(b.action==='finding'){const f=z.object({id:z.string().optional(),title:z.string().min(1).max(200),detail:z.string().max(10000),severity:z.enum(['act','investigate','watch']),status:z.enum(['open','investigating','closed']),owner:z.string().max(100),evidence:z.array(z.string()).max(100)}).parse(b.data);return {id:await s.saveFinding(scope.organizationId,b.clientId,f,scope.actorId,b.version??0)};}
+  if(b.action==='sync'){await enqueueDue(scope,b.clientId);return runSyncBatch(scope);}
+  if(b.action==='review'){const client=(await s.clients(scope.organizationId)).find(c=>c.id===b.clientId);if(!client)throw new Error('Client unavailable');return {id:await generateReview(scope,client,z.string().regex(/^\d{4}-\d{2}-\d{2}$/).parse(b.date))};}
+  if(b.action==='importData'){const batch=validateBatch(b.data,b.clientId);const c=(await s.clients(scope.organizationId)).find(c=>c.id===b.clientId);if(batch.timezone!==c?.timezone||batch.currency!==c.currency)throw new Error('Source identity mismatch');batch.rows=batch.rows.map(r=>({...r,quality:'historical'}));const hash=await fingerprint(batch);if(!env.BUCKET)throw new Error('Snapshot archive unavailable');await env.BUCKET.put(`imports/${hash}.json`,JSON.stringify(batch));await s.persistBatch(scope.organizationId,`archive-${b.clientId}`,batch,hash,new Date().toISOString());await s.audit(scope.organizationId,b.clientId,scope.actorId,'data.imported',{hash});return {imported:batch.rows.length};}
+  if(b.action==='importReview'){const input=z.object({date:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),title:z.string().max(200),text:z.string().max(200000),sourceUrl:z.string().url().refine(v=>new URL(v).protocol==='https:','Use an HTTPS report URL')}).parse(b.data);return {id:await s.saveReview(scope.organizationId,b.clientId,input.date,await fingerprint(input),{type:'historical',...input,methodology:'Imported source review'},new Date().toISOString())};}
+  throw new Error('Unknown operation');
+}

@@ -1,0 +1,9 @@
+import {it,expect} from 'vitest';
+import {fetchGateway} from '../../lib/sources/gateway';
+const client={id:'a',timezone:'UTC',currency:'USD'} as any;
+const connection={endpoint:'https://analytics.example.com/data'} as any;
+const page={clientId:'a',timezone:'UTC',currency:'USD',channels:['meta'],dimensions:[],grain:'daily',complete:true,coverageThrough:'2026-10-07T23:59:00Z',rows:[{date:'2026-10-07',metric:'spend',value:10,definition:'meta',currency:'USD',population:'web',dataset:'overview',dimensions:{}}]};
+it('paginates without advancing reported coverage',async()=>{let count=0;const out=await fetchGateway(connection,client,{from:'2026-10-07',to:'2026-10-07'},'secret',async()=>{count++;return Response.json(count===1?{...page,nextCursor:'two'}:{...page,rows:[{...page.rows[0],metric:'revenue',value:20,definition:'web'}]});});expect(out.rows).toHaveLength(2);expect(out.coverageThrough).toBe('2026-10-07T23:59:00Z');});
+it('rejects duplicate aggregate grains instead of doubling spend',async()=>{await expect(fetchGateway(connection,client,{from:'2026-10-07',to:'2026-10-07'},'secret',async()=>Response.json({...page,rows:[...page.rows,...page.rows]}))).rejects.toThrow('Duplicate');});
+it('rejects timezone mismatches and redirects',async()=>{await expect(fetchGateway(connection,client,{from:'2026-10-07',to:'2026-10-07'},'secret',async()=>Response.json({...page,timezone:'Europe/Stockholm'}))).rejects.toThrow('Timezone');await expect(fetchGateway(connection,client,{from:'2026-10-07',to:'2026-10-07'},'secret',async()=>new Response(null,{status:302}))).rejects.toThrow('HTTP 302');});
+it('preserves population filters used by rate calculations',async()=>expect((await fetchGateway(connection,client,{from:'2026-10-07',to:'2026-10-07'},'secret',async()=>Response.json(page))).rows[0].population).toBe('web'));

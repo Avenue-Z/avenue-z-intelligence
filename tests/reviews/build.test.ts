@@ -1,0 +1,4 @@
+import {it,expect} from 'vitest';
+import {reviewPayload} from '../../lib/reviews/build';
+it('refuses to create a data-backed review without observations',()=>expect(()=>reviewPayload({selectedCount:0} as any)).toThrow('source observations'));
+it('keeps spend in the headlines and links evidence to numbers',()=>{const p=reviewPayload({selectedCount:1,client:{name:'Client',currency:'USD',version:2,config:{revenueDefinition:'web'}},metrics:{revenue:100,orders:10,cvr:.01,recurringRevenue:null},prior:{revenue:80,orders:8},verdict:{spendComparison:'slower',growth:'efficient',sd:.1,rd:.25,mer:2,cost:10},actions:[],warnings:[],evidence:[{date:'2026-10-07',sourceId:'s',metric:'revenue',value:100,retrievedAt:'now'}]} as any);expect(p.headlines.join(' ')).toContain('Spend');expect(p.methodology).toBe('avenuez-strategy@0.3.1');expect(p.evidence).toHaveLength(1);});

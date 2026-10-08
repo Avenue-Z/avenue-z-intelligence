@@ -1,0 +1,8 @@
+import {Temporal} from '@js-temporal/polyfill';
+import type {Observation,Incident} from './contracts';
+import {recurringWindows,shiftDate} from './windows';
+import {sumMetric} from './query';
+import {ratio} from './metrics';
+export function subscriptionComparison(rows:Observation[],date:string,incidents:Incident[],partial?:{timezone:string;cutoff:string|null}){const w=recurringWindows(date),wholeDays=Math.round((Date.parse(date)-Date.parse(w.current))/86400000),clock=partial?.cutoff?Temporal.Instant.from(partial.cutoff).toZonedDateTimeISO(partial.timezone).toPlainTime():null,elapsedDays=wholeDays+(partial?(clock?(clock.hour+clock.minute/60)/24:0):1),to=shiftDate(w.comparison,wholeDays);
+ const period=(from:string,end:string)=>{const endInstant=clock?Number(Temporal.PlainDate.from(end).toZonedDateTime({timeZone:partial!.timezone,plainTime:clock}).epochMilliseconds):null;const selected=rows.filter(r=>r.dataset==='subscriptions'&&r.date>=from&&r.date<=end&&(!partial||(endInstant!==null&&!!r.end&&Date.parse(r.end)<=endInstant))),revenue=sumMetric(selected,'recurring_revenue'),orders=sumMetric(selected,'recurring_orders');return {from,to:end,revenue,orders,aov:ratio(revenue,orders),ordersPerDay:ratio(orders,elapsedDays),refundRate:ratio(sumMetric(selected,'recurring_refund_orders'),orders),cancellationRate:ratio(sumMetric(selected,'recurring_cancelled_orders'),orders)};};
+ const contamination=incidents.find(i=>i.alternateDate&&w.comparison<=(i.end??i.start)&&to>=i.start);return {current:period(w.current,date),comparison:period(w.comparison,to),elapsedDays,contamination:contamination??null,alternate:contamination?.alternateDate?period(contamination.alternateDate,shiftDate(contamination.alternateDate,wholeDays)):null};}

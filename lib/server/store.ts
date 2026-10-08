@@ -13,7 +13,7 @@ export class Store {
     const id=`${org}:${batch.clientId}:${source}:${key}`;
     if(await this.first('SELECT id FROM snapshots WHERE id=? AND status=?',id,'ready'))return id;
     await this.run('INSERT INTO snapshots(id,organizationId,clientId,sourceId,retrievedAt,coverageThrough,complete,status,objectKey) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',id,org,batch.clientId,source,now,batch.coverageThrough,Number(batch.complete),'writing',`snapshots/${id}.json`);
-    const rows=batch.rows.map(r=>({...r,sourceId:source,retrievedAt:now,coverageThrough:batch.coverageThrough,quality:r.quality??(batch.complete?'complete':'partial')}));
+    const rows=batch.rows.map(r=>({...r,channels:batch.channels,sourceId:source,retrievedAt:now,coverageThrough:batch.coverageThrough,quality:r.quality??(batch.complete?'complete':'partial')}));
     for(let n=0;n<rows.length;n+=80)await this.db.batch(rows.slice(n,n+80).map(r=>this.db.prepare('INSERT INTO observations(snapshotId,date,rowKey,payload) VALUES(?,?,?,?) ON CONFLICT DO NOTHING').bind(id,r.date,JSON.stringify([r.dataset,r.metric,Object.entries(r.dimensions).sort()]),JSON.stringify(r))));
     const dates=window?(()=>{const d:string[]=[];for(let s=window.from;s<=window.to;s=shiftDate(s,1)){d.push(s);if(d.length>62)throw new Error('Window exceeds 62 days');}return d;})():[...new Set(rows.map(r=>r.date))];
     const pointers=dates.map(d=>this.db.prepare('INSERT INTO current_snapshots(organizationId,clientId,sourceId,date,snapshotId) VALUES(?,?,?,?,?) ON CONFLICT(organizationId,clientId,sourceId,date) DO UPDATE SET snapshotId=excluded.snapshotId').bind(org,batch.clientId,source,d,id));
@@ -32,7 +32,7 @@ export class Store {
     const id=`${org}:${client}:${date}:${fingerprint}`;
     if(await this.first('SELECT id FROM reviews WHERE id=?',id))return id;
     await this.db.batch([
-      this.db.prepare('UPDATE reviews SET current=0 WHERE organizationId=? AND clientId=? AND storeDate=?').bind(org,client,date),
+      this.db.prepare('UPDATE reviews SET current=0 WHERE organizationId=? AND clientId=? AND storeDate=? AND NOT EXISTS(SELECT 1 FROM reviews WHERE id=?)').bind(org,client,date,id),
       this.db.prepare('INSERT INTO reviews(id,organizationId,clientId,storeDate,revision,fingerprint,payload,createdAt,current) SELECT ?,?,?,?,COALESCE(MAX(revision),0)+1,?,?,?,1 FROM reviews WHERE organizationId=? AND clientId=? AND storeDate=? ON CONFLICT DO NOTHING').bind(id,org,client,date,fingerprint,JSON.stringify(payload),now,org,client,date)
     ]);return id;
   }
@@ -43,7 +43,8 @@ export class Store {
     else r=await this.run('UPDATE findings SET payload=?,version=version+1,updatedAt=? WHERE id=? AND organizationId=? AND clientId=? AND version=?',payload,now,id,org,client,expected);
     if(!r.meta.changes)throw new Error('Changed by another teammate');await this.audit(org,client,actor,'finding.updated',input);return id;}
   async enqueue(org:string,client:string,source:string,bucket:string,now:string){await this.run('INSERT INTO jobs(id,organizationId,clientId,sourceId,status,attempts,dueAt) VALUES(?,?,?,?,?,0,?) ON CONFLICT DO NOTHING',`${org}:${source}:${bucket}`,org,client,source,'pending',now);}
-  async claim(now:string){const r=await this.first(`SELECT * FROM jobs WHERE (status='pending' AND dueAt<=?) OR (status='running' AND leaseUntil<?) ORDER BY dueAt LIMIT 1`,now,now);if(!r)return null;const leaseUntil=new Date(Date.parse(now)+300000).toISOString();const result=await this.run(`UPDATE jobs SET status='running',leaseUntil=?,attempts=attempts+1 WHERE id=? AND ((status='pending' AND dueAt<=?) OR (status='running' AND leaseUntil<?))`,leaseUntil,r.id,now,now);return result.meta.changes?{...r,leaseUntil,attempts:r.attempts+1}:null;}
+  async claim(now:string,org:string,permittedClientIds?:string[]){if(permittedClientIds?.length===0)return null;const clause=permittedClientIds?' AND clientId IN ('+permittedClientIds.map(()=>'?').join(',')+')':'';const r=await this.first(`SELECT * FROM jobs WHERE organizationId=?${clause} AND ((status='pending' AND dueAt<=?) OR (status='running' AND leaseUntil<?)) ORDER BY dueAt LIMIT 1`,org,...permittedClientIds??[],now,now);if(!r)return null;const leaseUntil=new Date(Date.parse(now)+300000).toISOString();const result=await this.run(`UPDATE jobs SET status='running',leaseUntil=?,attempts=attempts+1 WHERE id=? AND organizationId=? AND ((status='pending' AND dueAt<=?) OR (status='running' AND leaseUntil<?))`,leaseUntil,r.id,org,now,now);return result.meta.changes?{...r,leaseUntil,attempts:r.attempts+1}:null;}
+  async retry(id:string,attempts:number,error:string,now:string){const dueAt=new Date(Date.parse(now)+Math.min(30,2**attempts)*60000).toISOString();await this.run('UPDATE jobs SET status=?,dueAt=?,error=?,leaseUntil=NULL WHERE id=?',attempts>=3?'failed':'pending',dueAt,error,id);}
   async finish(id:string,error?:string){await this.run('UPDATE jobs SET status=?,error=?,leaseUntil=NULL WHERE id=?',error?'failed':'complete',error??null,id);}
   async jobs(org:string){return this.all('SELECT * FROM jobs WHERE organizationId=? ORDER BY dueAt DESC LIMIT 30',org);}
 }

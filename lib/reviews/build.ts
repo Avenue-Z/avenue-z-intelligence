@@ -1,0 +1,9 @@
+import type {ClientAnalytics} from '../analytics/query';
+import {change} from '../analytics/metrics';
+const amount=(n:number|null,currency:string)=>n===null?'unavailable':new Intl.NumberFormat('en-US',{style:'currency',currency,maximumFractionDigits:0}).format(n);
+const delta=(n:number|null)=>n===null?'comparison unavailable':`${n>=0?'+':''}${(n*100).toFixed(1)}%`;
+export function reviewPayload(a:ClientAnalytics){if(!a.selectedCount)throw new Error('No source observations available for this review');const m=a.metrics,c=a.client.currency,v=a.verdict;
+  const headlines=[`Revenue ${amount(m.revenue,c)} (${delta(change(m.revenue,a.prior.revenue))}).`,`Spend vs revenue: ${v.spendComparison==='unavailable'?'coverage does not establish a verdict':`spend changed ${v.spendComparison} than revenue; spend ${delta(v.sd)}, revenue ${delta(v.rd)}`}.`,`Orders ${m.orders??'unavailable'}; session CVR ${m.cvr===null?'unavailable':`${(m.cvr*100).toFixed(2)}%`}.`,a.actions.length?`${a.actions.length} page segments meet the configured traffic and opportunity thresholds.`:'No page segment currently meets the action thresholds.',`Recurring revenue ${amount(m.recurringRevenue,c)}; compare matched Monday-start periods four weeks apart.`,a.warnings.length?`Data caveats: ${a.warnings.join(' ')}`:'Review the evidence and source coverage before acting.'];
+  return {type:'computed',title:`${a.client.name} daily review`,methodology:'avenuez-strategy@0.3.1',configVersion:a.client.version,headlines,metrics:m,prior:a.prior,spendVerdict:v,actions:a.actions,incidents:a.activeIncidents,warnings:a.warnings,definition:a.client.config.revenueDefinition,evidence:a.evidence};
+}
+export async function fingerprint(value:unknown){const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(value)));return [...new Uint8Array(digest)].map(x=>x.toString(16).padStart(2,'0')).join('');}

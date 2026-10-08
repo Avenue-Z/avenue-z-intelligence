@@ -1,0 +1,6 @@
+import {it,expect} from 'vitest';
+import {validateClient,validateConnection} from '../../lib/server/configuration';
+import initial from '../../data/initial-clients.json';
+it('rejects credentials embedded in client configuration',()=>expect(()=>validateClient({...initial[0],config:{...initial[0].config,apiKey:'secret'}})).toThrow('Credentials'));
+it('validates timezone and safe source endpoints',()=>{expect(()=>validateClient({...initial[0],timezone:'guess'})).toThrow();expect(()=>validateConnection({name:'source',clientId:'a',endpoint:'http://localhost',secretRef:'API_SECRET',pollMinutes:15})).toThrow();});
+it('cannot send the internal runner secret to a data endpoint',()=>expect(()=>validateConnection({name:'source',clientId:'a',endpoint:'https://api.example.com',secretRef:'RUNNER_SECRET',pollMinutes:15})).toThrow());
