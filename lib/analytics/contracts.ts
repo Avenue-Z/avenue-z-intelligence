@@ -1,0 +1,12 @@
+export type AccessScope = { organizationId:string; actorId:string; permittedClientIds:string[]; role:'admin'|'analyst'|'service' };
+export type Incident = { id:string; title:string; start:string; end?:string; metrics:string[]; note:string; alternateDate?:string };
+export type ClientConfig = { markets:string[]; benchmarkMarket:string; revenueDefinition:string; spendChannels:string[]; recurringLabel:string; recurringTag?:string; minSessions:number; minOpportunity:number; maxActions:number; reviewTime:string; reviewTimezone:string; reviewMode:'closed'|'partial'; incidents:Incident[]; sourceArtifact?:string };
+export type Client = { id:string; name:string; slug:string; timezone:string; currency:string; color:string; config:ClientConfig; version:number };
+export type Observation = { date:string; metric:string; value:number|null; dataset:string; dimensions:Record<string,string>; definition:string; currency:string|null; sourceId:string; retrievedAt:string; coverageThrough:string|null; quality:'complete'|'partial'|'historical'|'estimated'; channels?:string[]; start?:string; end?:string; numerator?:number; denominator?:number };
+export type SourceBatch = { clientId:string; timezone:string; currency:string; channels:string[]; dimensions:string[]; grain:string; complete:boolean; coverageThrough:string|null; nextCursor?:string|null; rows:Observation[] };
+export type Connection = { id:string; clientId:string; name:string; provider:'gateway'; endpoint:string; secretRef:string; pollMinutes:number; enabled:boolean; lastSuccess:string|null; coverageThrough:string|null; error:string|null; version:number };
+export type QueryFilters = { from:string; to:string; compare:'previous'|'weekday'|'fourWeeks'; market:string; stream:string; source:string; device:string; page:string; mode:'closed'|'partial'; view:string };
+export type TimeWindow = { start:string; end:string; timezone:string; durationHours:number };
+export type Finding = { id:string; clientId:string; title:string; detail:string; severity:string; status:string; owner:string; evidence:string[]; version:number; updatedAt:string };
+export type Review = { id:string; clientId:string; storeDate:string; revision:number; fingerprint:string; createdAt:string; payload:Record<string,unknown>; current:boolean };
+export type QualificationRecord = { clientId:string; queryId:string; timezone:string; currency:string; hourlyGrain:boolean; requiresHourly?:boolean; channels:string[]; requiredChannels:string[]; dimensions:string[]; requiredDimensions:string[]; paginationComplete:boolean; reconciled:boolean };

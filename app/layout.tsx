@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Starter Project",
-  description: "A clean starting point for building your site.",
+  title: "Avenue Z Intelligence",
+  description: "Shared client analytics, evidence, and daily reviews for Avenue Z.",
   other: {
     "codex-preview": "development",
   },

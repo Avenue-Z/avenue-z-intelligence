@@ -1,0 +1,7 @@
+import {it,expect} from 'vitest';
+import {sumMetric,detailRows,filtered,summarize} from '../../lib/analytics/query';
+const rows=[{date:'2026-10-07',metric:'revenue',dataset:'overview',value:100,definition:'web',currency:'USD',dimensions:{market:'US'},quality:'complete'},{date:'2026-10-07',metric:'revenue',dataset:'overview',value:50,definition:'web',currency:'USD',dimensions:{market:'CA'},quality:'complete'},{date:'2026-10-07',metric:'revenue',dataset:'products',value:200,definition:'product',currency:'USD',dimensions:{product:'Bundle'},quality:'complete'}] as any[];
+it('keeps detail datasets out of headline totals',()=>expect(sumMetric(rows.filter(r=>r.dataset==='overview'),'revenue')).toBe(150));
+it('applies the same dimension filter to exported rows and totals',()=>{const r=filtered(rows,{from:'2026-10-07',to:'2026-10-07',market:'US'} as any);expect(sumMetric(r,'revenue')).toBe(100);expect(detailRows(r)).toHaveLength(1);});
+it('returns unavailable for mixed definitions',()=>expect(sumMetric([{...rows[0]},{...rows[0],definition:'all'}],'revenue')).toBeNull());
+it('calculates conversion from counts instead of averaging rates',()=>{const data=[{...rows[0],metric:'sessions',value:1000},{...rows[0],metric:'converting_sessions',value:30},{...rows[1],metric:'sessions',value:100},{...rows[1],metric:'converting_sessions',value:10}];expect(summarize(data).cvr).toBeCloseTo(40/1100);});

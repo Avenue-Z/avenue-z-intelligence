@@ -1,4 +1,13 @@
-// Intentionally empty by default.
-// Add Drizzle tables here when the site actually needs a database.
-// See examples/d1/db/schema.ts for an opt-in example.
-export {};
+import {sqliteTable,text,integer,primaryKey,index} from 'drizzle-orm/sqlite-core';
+export const organizations=sqliteTable('organizations',{id:text().primaryKey(),name:text().notNull(),initialized:integer().notNull().default(0)});
+export const members=sqliteTable('members',{organizationId:text().notNull(),email:text().notNull(),actorId:text().notNull().default(''),role:text().notNull(),clients:text().notNull()},t=>[primaryKey({columns:[t.organizationId,t.email]})]);
+export const clients=sqliteTable('clients',{id:text().primaryKey(),organizationId:text().notNull(),name:text().notNull(),slug:text().notNull(),timezone:text().notNull(),currency:text().notNull(),color:text().notNull(),config:text().notNull(),version:integer().notNull().default(1)});
+export const connections=sqliteTable('connections',{id:text().primaryKey(),organizationId:text().notNull(),clientId:text().notNull(),name:text().notNull(),provider:text().notNull(),endpoint:text().notNull(),secretRef:text().notNull(),pollMinutes:integer().notNull(),enabled:integer().notNull().default(0),lastSuccess:text(),coverageThrough:text(),error:text(),version:integer().notNull().default(1)});
+export const snapshots=sqliteTable('snapshots',{id:text().primaryKey(),organizationId:text().notNull(),clientId:text().notNull(),sourceId:text().notNull(),retrievedAt:text().notNull(),coverageThrough:text(),complete:integer().notNull(),status:text().notNull(),objectKey:text().notNull()});
+export const currentSnapshots=sqliteTable('current_snapshots',{organizationId:text().notNull(),clientId:text().notNull(),sourceId:text().notNull(),date:text().notNull(),snapshotId:text().notNull()},t=>[primaryKey({columns:[t.organizationId,t.clientId,t.sourceId,t.date]})]);
+export const observations=sqliteTable('observations',{snapshotId:text().notNull(),date:text().notNull(),rowKey:text().notNull(),payload:text().notNull()},t=>[primaryKey({columns:[t.snapshotId,t.date,t.rowKey]})]);
+export const notes=sqliteTable('notes',{organizationId:text().notNull(),clientId:text().notNull(),body:text().notNull(),actorId:text().notNull(),version:integer().notNull(),updatedAt:text().notNull()},t=>[primaryKey({columns:[t.organizationId,t.clientId]})]);
+export const findings=sqliteTable('findings',{id:text().primaryKey(),organizationId:text().notNull(),clientId:text().notNull(),payload:text().notNull(),version:integer().notNull(),updatedAt:text().notNull()});
+export const reviews=sqliteTable('reviews',{id:text().primaryKey(),organizationId:text().notNull(),clientId:text().notNull(),storeDate:text().notNull(),revision:integer().notNull(),fingerprint:text().notNull(),payload:text().notNull(),createdAt:text().notNull(),current:integer().notNull()},t=>[index('idx_reviews_client_date').on(t.organizationId,t.clientId,t.storeDate)]);
+export const audit=sqliteTable('audit',{id:text().primaryKey(),organizationId:text().notNull(),clientId:text().notNull(),actorId:text().notNull(),action:text().notNull(),payload:text().notNull(),createdAt:text().notNull()});
+export const jobs=sqliteTable('jobs',{id:text().primaryKey(),organizationId:text().notNull(),clientId:text().notNull(),sourceId:text().notNull(),status:text().notNull(),attempts:integer().notNull().default(0),leaseUntil:text(),dueAt:text().notNull(),error:text()},t=>[index('idx_jobs_status_due').on(t.status,t.dueAt)]);
