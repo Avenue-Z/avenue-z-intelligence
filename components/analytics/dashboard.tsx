@@ -1,5 +1,5 @@
 'use client';
-import {useEffect,useState,useRef} from 'react';
+import {useEffect,useLayoutEffect,useState,useRef} from 'react';
 import {LayoutDashboard,TriangleAlert,FileText,Database,Settings,Search,RefreshCw,ChartNoAxesCombined,Plus,ArrowUpRight,ChevronRight,Sparkles} from 'lucide-react';
 import {Button} from '../ui/button';
 import type {Workspace} from '../../lib/server/workspace';
@@ -18,7 +18,7 @@ export const percent=(v:number|null)=>v===null?'—':`${(v*100).toFixed(2)}%`;
 export function Dashboard({initial,clientId,userName}:{initial:Workspace;clientId?:string;userName:string}) {
  const [data,setData]=useState(initial),[section,setSection]=useState('portfolio'),[busy,setBusy]=useState(false),[error,setError]=useState(''),[search,setSearch]=useState(''),[chartId,setChartId]=useState('');
  const [reviewContext,setReviewContext]=useState<ChatContext>({}),[chatOpen,setChatOpen]=useState(false),[chatContext,setChatContext]=useState<ChatContext>({});
- useEffect(()=>{const open=(e:Event)=>{setChatContext((e as CustomEvent).detail);setChatOpen(true);};const review=(e:Event)=>setReviewContext((e as CustomEvent).detail);window.addEventListener('avenuez-review-context',review);window.addEventListener('avenuez-chat',open);return ()=>{window.removeEventListener('avenuez-chat',open);window.removeEventListener('avenuez-review-context',review);};},[]);
+ useLayoutEffect(()=>{const open=(e:Event)=>{setChatContext((e as CustomEvent).detail);setChatOpen(true);};const review=(e:Event)=>{const next=(e as CustomEvent).detail;setReviewContext(next);setChatContext(previous=>previous.reviewId?next:previous);};window.addEventListener('avenuez-review-context',review);window.addEventListener('avenuez-chat',open);return ()=>{window.removeEventListener('avenuez-chat',open);window.removeEventListener('avenuez-review-context',review);};},[]);
  const requestRef=useRef<AbortController|null>(null),selected=data.clients.find(c=>c.client.id===clientId);
  async function reload(p=new URLSearchParams(window.location.search)){
   requestRef.current?.abort();const controller=new AbortController();requestRef.current=controller;setBusy(true);setError('');

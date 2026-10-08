@@ -1,5 +1,5 @@
 import vinext from "vinext";
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { readExecutionProfile } from "./scripts/execution-profile.mjs";
 import { sites } from "./build/sites-vite-plugin";
@@ -71,6 +71,9 @@ export default defineConfig(async ({ command }) => {
           ...localBindingConfig,
           ...(command === "serve"
             ? {
+                // Development-only bindings from the approved ignored env file.
+                // Production secrets are supplied by Sites and never built in.
+                vars: loadEnv("development", process.cwd(), "OPENAI_"),
                 services: [
                   {
                     binding: "CONNECTORS",

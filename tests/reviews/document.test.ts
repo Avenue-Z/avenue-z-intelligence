@@ -14,4 +14,5 @@ describe('review presentation',()=>{
  });
  it('does not silently lose rows with differing widths',()=>{const b=parseReport('A\tB\n1\t2\t3');expect(b.find(x=>x.type==='table')).toMatchObject({rows:[['1','2','3']]});});
  it('keeps recurring KPI labels inside the KPI group',()=>{const b=parseReport('ONLINE STORE SALES\n$100\n+2%\nRECURRING NET SALES\n$20\n+1%\nThe read in 30 seconds\nSome context.');expect(b[0]).toMatchObject({type:'kpis',items:[{label:'ONLINE STORE SALES'},{label:'RECURRING NET SALES'}]});});
+ it('retains original and absolute fixed evidence links in shareable downloads',()=>{const html=reportHtml('Beam','2026-10-07',2,{headlines:['A dated finding'],sourceUrl:'https://claude.ai/artifact/original',sources:[{id:'s',label:'Beam · Oct 7',url:'/clients/beam/reviews/fixed'}]},'https://workspace.example');expect(html).toContain('https://workspace.example/clients/beam/reviews/fixed');expect(html).toContain('https://claude.ai/artifact/original');expect(html).toContain('Beam · Oct 7');});
 });
