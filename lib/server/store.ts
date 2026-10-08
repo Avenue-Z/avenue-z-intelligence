@@ -11,12 +11,12 @@ export class Store {
   async observations(org:string,client:string):Promise<Observation[]> {return (await this.all(`SELECT o.payload FROM observations o JOIN current_snapshots c ON c.snapshotId=o.snapshotId AND c.date=o.date JOIN snapshots s ON s.id=o.snapshotId WHERE c.organizationId=? AND c.clientId=? AND s.status='ready'`,org,client)).map(r=>JSON.parse(r.payload));}
   async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string}) {
     const id=`${org}:${batch.clientId}:${source}:${key}`;
-    if(await this.first('SELECT id FROM snapshots WHERE id=? AND status=?',id,'ready'))return id;
+    const ready=await this.first('SELECT id FROM snapshots WHERE id=? AND status=?',id,'ready');
     await this.run('INSERT INTO snapshots(id,organizationId,clientId,sourceId,retrievedAt,coverageThrough,complete,status,objectKey) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',id,org,batch.clientId,source,now,batch.coverageThrough,Number(batch.complete),'writing',`snapshots/${id}.json`);
-    const rows=batch.rows.map(r=>({...r,channels:batch.channels,sourceId:source,retrievedAt:now,coverageThrough:batch.coverageThrough,quality:r.quality??(batch.complete?'complete':'partial')}));
-    for(let n=0;n<rows.length;n+=80)await this.db.batch(rows.slice(n,n+80).map(r=>this.db.prepare('INSERT INTO observations(snapshotId,date,rowKey,payload) VALUES(?,?,?,?) ON CONFLICT DO NOTHING').bind(id,r.date,JSON.stringify([r.dataset,r.metric,r.start,r.end,Object.entries(r.dimensions).sort()]),JSON.stringify(r))));
+    const rows=batch.rows.map(r=>({...r,channels:batch.channels,sourceId:source,retrievedAt:now,coverageThrough:batch.coverageThrough,quality:batch.complete?(r.quality??'complete'):(r.quality==='historical'?'historical':'partial')}));
+    if(!ready)for(let n=0;n<rows.length;n+=80)await this.db.batch(rows.slice(n,n+80).map(r=>this.db.prepare('INSERT INTO observations(snapshotId,date,rowKey,payload) VALUES(?,?,?,?) ON CONFLICT DO NOTHING').bind(id,r.date,JSON.stringify([r.dataset,r.metric,r.start,r.end,Object.entries(r.dimensions).sort()]),JSON.stringify(r))));
     const dates=window?(()=>{const d:string[]=[];for(let s=window.from;s<=window.to;s=shiftDate(s,1)){d.push(s);if(d.length>62)throw new Error('Window exceeds 62 days');}return d;})():[...new Set(rows.map(r=>r.date))];
-    const pointers=dates.map(d=>this.db.prepare('INSERT INTO current_snapshots(organizationId,clientId,sourceId,date,snapshotId) VALUES(?,?,?,?,?) ON CONFLICT(organizationId,clientId,sourceId,date) DO UPDATE SET snapshotId=excluded.snapshotId').bind(org,batch.clientId,source,d,id));
+    const pointers=dates.map(d=>this.db.prepare('INSERT INTO current_snapshots(organizationId,clientId,sourceId,date,snapshotId,publishedAt) VALUES(?,?,?,?,?,?) ON CONFLICT(organizationId,clientId,sourceId,date) DO UPDATE SET snapshotId=excluded.snapshotId,publishedAt=excluded.publishedAt WHERE excluded.publishedAt>=current_snapshots.publishedAt').bind(org,batch.clientId,source,d,id,now));
     await this.db.batch([...pointers,this.db.prepare('UPDATE snapshots SET status=? WHERE id=?').bind('ready',id)]);return id;
   }
   async note(org:string,client:string) {return await this.first('SELECT * FROM notes WHERE organizationId=? AND clientId=?',org,client)??{body:'',version:0};}
@@ -29,13 +29,16 @@ export class Store {
   }
   async audit(org:string,client:string,actor:string,action:string,payload:unknown){await this.run('INSERT INTO audit(id,organizationId,clientId,actorId,action,payload,createdAt) VALUES(?,?,?,?,?,?,?)',crypto.randomUUID(),org,client,actor,action,JSON.stringify(payload),new Date().toISOString());}
   async saveReview(org:string,client:string,date:string,fingerprint:string,payload:unknown,now:string){
-    const id=`${org}:${client}:${date}:${fingerprint}`;
-    if(await this.first('SELECT id FROM reviews WHERE id=?',id))return id;
+    const current=await this.first('SELECT * FROM reviews WHERE organizationId=? AND clientId=? AND storeDate=? AND current=1',org,client,date);
+    if(current?.fingerprint===fingerprint||current?.createdAt>now)return current.id;
+    const id=`${org}:${client}:${date}:${fingerprint}:${current?.revision??0}`;
     await this.db.batch([
-      this.db.prepare('UPDATE reviews SET current=0 WHERE organizationId=? AND clientId=? AND storeDate=? AND NOT EXISTS(SELECT 1 FROM reviews WHERE id=?)').bind(org,client,date,id),
-      this.db.prepare('INSERT INTO reviews(id,organizationId,clientId,storeDate,revision,fingerprint,payload,createdAt,current) SELECT ?,?,?,?,COALESCE(MAX(revision),0)+1,?,?,?,1 FROM reviews WHERE organizationId=? AND clientId=? AND storeDate=? ON CONFLICT DO NOTHING').bind(id,org,client,date,fingerprint,JSON.stringify(payload),now,org,client,date)
+      this.db.prepare('UPDATE reviews SET current=0 WHERE organizationId=? AND clientId=? AND storeDate=? AND createdAt<=? AND NOT EXISTS(SELECT 1 FROM reviews WHERE id=?) AND NOT EXISTS(SELECT 1 FROM reviews WHERE organizationId=? AND clientId=? AND storeDate=? AND createdAt>?)').bind(org,client,date,now,id,org,client,date,now),
+      this.db.prepare('INSERT INTO reviews(id,organizationId,clientId,storeDate,revision,fingerprint,payload,createdAt,current) SELECT ?,?,?,?,COALESCE(MAX(revision),0)+1,?,?,?,1 FROM reviews WHERE organizationId=? AND clientId=? AND storeDate=? HAVING NOT EXISTS(SELECT 1 FROM reviews WHERE organizationId=? AND clientId=? AND storeDate=? AND createdAt>?) ON CONFLICT DO NOTHING').bind(id,org,client,date,fingerprint,JSON.stringify(payload),now,org,client,date,org,client,date,now)
     ]);return id;
   }
+  async saveQualification(org:string,client:string,source:string,connectionVersion:number,clientVersion:number,payload:unknown,actor:string){await this.run('INSERT INTO qualifications(organizationId,clientId,sourceId,connectionVersion,clientVersion,version,payload,actorId,createdAt) SELECT ?,?,?,?,?,COALESCE(MAX(version),0)+1,?,?,? FROM qualifications WHERE organizationId=? AND sourceId=?',org,client,source,connectionVersion,clientVersion,JSON.stringify(payload),actor,new Date().toISOString(),org,source);}
+  async qualification(org:string,source:string){const r=await this.first('SELECT * FROM qualifications WHERE organizationId=? AND sourceId=? ORDER BY version DESC LIMIT 1',org,source);return r?{...r,payload:JSON.parse(r.payload)}:null;}
   async reviews(org:string,client:string):Promise<Review[]>{return (await this.all('SELECT * FROM reviews WHERE organizationId=? AND clientId=? ORDER BY storeDate DESC,revision DESC LIMIT 365',org,client)).map(r=>({...r,current:!!r.current,payload:JSON.parse(r.payload)}));}
   async findings(org:string,client:string):Promise<Finding[]>{return (await this.all('SELECT * FROM findings WHERE organizationId=? AND clientId=? ORDER BY updatedAt DESC',org,client)).map(r=>({...JSON.parse(r.payload),id:r.id,clientId:r.clientId,version:r.version,updatedAt:r.updatedAt}));}
   async saveFinding(org:string,client:string,input:Partial<Finding>,actor:string,expected:number){const id=input.id??crypto.randomUUID(),now=new Date().toISOString();const payload=JSON.stringify({...input,id,clientId:client});let r;

@@ -1,0 +1,30 @@
+# Activation and operations
+
+## Required to connect live data
+
+1. Identify the actual authorized existing API/warehouse connection and deployment location. Research found a possible BigQuery project `avenue-z-data-warehouse-prod`; its existence in reporting code does not establish app access. Do not paste credentials into chat or client config.
+2. Obtain the full Beam brand config and notes plus Kind Patches skill/config where available. Confirm revenue definitions, spend coverage, markets, human-session population, subscription classifications, store currencies/time zones, and incidents. Current defaults are editable interpretations of the supplied prompts.
+3. Map a read-only aggregation service to [the source contract](source-contract.md), backed by authorized APIs or the warehouse. Provider transports are not invented in this app. Preserve source latency and incomplete channel flags.
+4. Configure `SOURCE_...` as a server secret in Sites and add its HTTPS endpoint/reference in the appropriate client's source settings. Save disabled, reconcile a real sample, register its source qualification, and only then enable. Do not configure a site service credential as a source credential.
+5. Pull a real sample covering initial history, closed prior/day-before/weekday, same store-hour, dimensional breakdowns, recurring weeks, and experiment states. Verify counts and financial totals against provider records. Record query versions and coverage. Test error, retry, and empty-date correction behavior.
+6. Configure a high-entropy `RUNNER_SECRET` on the hosted app and an authorized private dispatch credential on the selected hosted updater. Verify a run while no browser is open. Keep scheduler secrets out of source and job logs.
+7. Read Site ownership, active publication, and linked automations before scheduling; ensure no duplicate updater. Choose the authorized Sites cloud updater or a GitHub Actions repository deployment. The included workflow is inactive in the Sites source registry. Enable the five-minute trigger only after the preceding checks pass. Individual connection cadence defaults to 15 minutes and can be changed in settings. Daily report time is editable and currently 09:00 America/New_York.
+8. Verify one real scheduled run updates the source retrieval/coverage, writes one snapshot and one fixed review, and displays results to an authorized teammate. Revise the status to live only then.
+
+## Operations
+
+Connection status shows last successful retrieval, confirmed coverage and the latest error. View refresh is a separate timestamp. Ingestion pulls initial 60 days and subsequently reconciles a rolling 7 days; longer refund corrections currently require an explicit historical/backfill import or fresh source connection. Transient failures retry twice after the initial attempt; authentication or absent credentials fail for operator attention. An interrupted lease can be reclaimed after five minutes. Requests have a bounded deadline and at most two jobs per invocation.
+
+Snapshot content keys and date pointers avoid duplicate observation sums. Corrected data creates a new snapshot; old raw snapshots remain in object storage. Fixed reviews are versioned by content/config evidence; identical reruns reuse the revision. Notes, client config, source config and findings use optimistic versions, so stale edits need reload rather than overwriting a teammate.
+
+Historical imported observations are explicitly marked historical; they do not prove live freshness. CSV exports inherit the selected date/time/dimension scope and protect spreadsheet formula cells. Monetary sums reject mixed definitions/currencies; rates use matching populations and counts. Product-level orders may overlap and must not be read as unique store orders.
+
+## Access and sharing
+
+Owner-private publication is the default. The first protected owner entry claims the initial agency workspace; never broaden platform access before this initialization. For later users, grant platform Site access and the app's allowed email/role/client list. Admins edit source/config/access; analysts view assigned clients and collaborate on their notes/follow-ups. No invitation messages are sent automatically. Verify direct URL and export access denial using a separate limited member at activation.
+
+## Known limits before activation
+
+No connected provider, unattended production refresh, or source reconciliation has been exercised. Charts are implemented but cannot display real series until observations arrive. Source-side distinctness/additive grains, full refunds/cancellations history, volume sizing, and every brand-specific diagnostic need validation against actual source data. The app can produce factual daily summaries; it is not yet a replacement for all nuanced agent analysis in the original skill.
+
+CSV uses global date and dimension filters; table text search currently narrows the displayed rows only. Use a global dimension filter when the export must have the same scope.

@@ -1,0 +1,25 @@
+# Existing API / warehouse connection
+
+The app accepts an authenticated, read-only HTTPS aggregation endpoint. No browser scraping or personal Claude session is part of the hosted refresh. The source is not connected yet. Identify the authorized existing API/warehouse connection before activating polling.
+
+The endpoint receives a POST with `clientId`, IANA `timezone`, `currency`, inclusive store-local `from` / `to`, and nullable `cursor`. It must return a consistent snapshot across pages: `clientId`, `timezone`, `currency`, `channels`, `dimensions`, `grain` (`daily`, `hourly`, or `segment`), `complete`, nullable ISO `coverageThrough`, nullable `nextCursor`, and `rows`.
+
+Every row carries `date`, `dataset`, `metric`, `value` (number or null), `population`, `definition`, `currency` (ISO for money, null for counts), `dimensions`, optional hourly `start`/`end`, and optional `quality`. Populations identify matching count denominators, e.g. US human sessions; definitions identify financial scope. No default value is substituted for an unavailable field. Dataset names: overview, revenue, funnels, markets, products, subscriptions, media, experiments. `overview` is the authoritative additive headline dataset; breakdowns do not add to headlines.
+
+Metric IDs: revenue, orders, new_orders, spend, sessions, converting_sessions, atc_sessions, checkouts, completed_checkouts; gross, discounts, refunds, net_items; recurring_revenue, recurring_orders, recurring_refund_orders, recurring_cancelled_orders; experiment status/effect/interval evidence may be carried as dimensions and low/high numeric metrics. Review the UI experiment field names before mapping.
+
+Send one disjoint aggregation grain per metric/dataset. Do not send overall totals together with their component breakdowns in the same dataset. Hourly intervals must be non-overlapping. A source channel list describes the entire returned spend population; include each requested channel even when its verified spend is zero. Null, estimated, delayed, partial, and historical values must retain their quality. Cursor completion and coverage are separate: a fully returned response may still have a delayed source.
+
+Kind Patches: Europe/Stockholm; hourly comparison; web non-recurring revenue excludes shipping, taxes, zero-value orders, and the recurring subscription tag. Spend scope Meta + Google + TikTok + Snapchat, subject to confirmation against the store and existing reports. New-customer orders share that revenue/time scope. ONBRAND unit anomalies must be reconciled from orders, discounts, tags, and cancellation evidence. Recurring revenue uses Monday-start weeks four weeks apart, with clean alternate weeks when the comparison is contaminated.
+
+Beam: America/New_York; closed prior store day; US human sessions; Meta spend as the configured media scope. All net sales excluding Faire and Online Store sales are distinct populations. Do not label an all-sales/Meta ratio as an Online Store ratio. Loop recurring sales stay distinct. Motion spend granularity, Amplitude population, Intelligems confidence/status, and ShopifyQL scopes must be reconciled before enabling the source.
+
+Qualification requires a real sample for each dataset, requested dimensions, channel coverage, timezone and currency reconciliation, complete pagination, stable definitions, hourly completeness for Kind, and totals against the original provider for selected closed days and a same-hour window. The schema checks are not evidence that the underlying provider is qualified. Do not activate a source merely because it returns valid JSON.
+
+Store the source credential only as a hosted server secret named `SOURCE_...`. Configuration contains the reference name, never its value. Authentication, redirects, pagination, and schema errors appear on the connection rather than updating its last-success timestamp. Up to three transient attempts use exponential backoff. Runs are bounded; source adapters must honor request deadlines.
+
+## Persisted activation gate
+
+Save a connection disabled. Use Data & settings / Qualify a source to submit a reconciled real normalized sample and a registration record. The record contains the qualification fields above plus `queryId`, `hourlyGrain`, optional `requiresHourly`, `requiredChannels`, `requiredDimensions`, `paginationComplete`, `reconciled`, `reconciliationEvidence` (explain the provider/query/date reconciliation), and `profiles`. Each profile declares exactly one `dataset`, `metric`, `population`, `definition`, nullable `currency`, exact dimension-name array `dimensions`, and boolean `hourly`. Samples must cover every profile, have complete pagination, and match the registered population, definition, and grain.
+
+Qualification versions and the sample hash/operator reconciliation are persisted/audited. Only a qualification matching the source and client configuration versions permits activation; the runner rechecks the same gate and validates every response. A changed endpoint, secret reference, client config, or unregistered field/grain needs re-qualification. No qualification record was fabricated for the initial clients.

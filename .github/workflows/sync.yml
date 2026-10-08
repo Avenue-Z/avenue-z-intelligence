@@ -1,0 +1,26 @@
+name: Refresh analytics
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+permissions:
+  contents: read
+concurrency:
+  group: analytics-source-sync
+  cancel-in-progress: false
+jobs:
+  refresh:
+    # Keep disabled until sources, private dispatch, and reconciliation pass.
+    if: vars.SOURCE_SYNC_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: node scripts/sync-cloud.mjs
+        env:
+          SITE_ORIGIN: ${{ vars.SITE_ORIGIN }}
+          RUNNER_SECRET: ${{ secrets.RUNNER_SECRET }}
+          SITE_DISPATCH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
