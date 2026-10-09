@@ -1,0 +1,5 @@
+import {it,expect} from 'vitest';
+import {initialReportingDate} from '../../lib/analytics/reporting-date';
+const records=[{rows:[{date:'2026-10-07',dataset:'overview',metric:'revenue',value:10,quality:'historical'},{date:'2026-10-08',dataset:'overview',metric:'revenue',value:12,quality:'partial'}],connections:[]},{rows:[{date:'2026-10-07',dataset:'overview',metric:'revenue',value:20,quality:'historical'}],connections:[]}] as any;
+it('defaults imported reporting to the latest common closed day, excluding partial days',()=>expect(initialReportingDate(new URLSearchParams(),records,'2026-10-08')).toBe('2026-10-07'));
+it('preserves explicit dates and current-day expectations when a live connection is enabled',()=>{expect(initialReportingDate(new URLSearchParams('to=2026-10-08'),records,'2026-10-08')).toBeNull();expect(initialReportingDate(new URLSearchParams(),[{...records[0],connections:[{enabled:true}]}],'2026-10-08')).toBeNull();expect(initialReportingDate(new URLSearchParams('mode=partial'),records,'2026-10-08')).toBeNull();});
