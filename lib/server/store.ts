@@ -1,5 +1,6 @@
-import type {Client,Connection,Observation,SourceBatch,Review,Finding} from '../analytics/contracts';
+import type {Client,Connection,Observation,SourceBatch,Review,Finding,QueryFilters} from '../analytics/contracts';
 import {shiftDate} from '../analytics/windows';
+import {preferredObservations} from '../analytics/source-precedence';
 type Db={prepare:(sql:string)=>any;batch:(statements:any[])=>Promise<any[]>};
 export class Store {
   constructor(public db:Db){}
@@ -8,13 +9,23 @@ export class Store {
   async run(sql:string,...values:unknown[]) {return this.db.prepare(sql).bind(...values).run();}
   async clients(org:string):Promise<Client[]> {return (await this.all('SELECT * FROM clients WHERE organizationId=? ORDER BY name',org)).map(r=>({...r,config:JSON.parse(r.config)}));}
   async connections(org:string,clientId?:string):Promise<Connection[]> {return (await this.all('SELECT * FROM connections WHERE organizationId=?'+(clientId?' AND clientId=?':''),...clientId?[org,clientId]:[org])).map(r=>({...r,enabled:!!r.enabled}));}
-  async observations(org:string,client:string):Promise<Observation[]> {return (await this.all(`SELECT o.payload FROM observations o JOIN current_snapshots c ON c.snapshotId=o.snapshotId AND c.date=o.date JOIN snapshots s ON s.id=o.snapshotId WHERE c.organizationId=? AND c.clientId=? AND s.status='ready'`,org,client)).map(r=>JSON.parse(r.payload));}
+  async observations(org:string,client:string,filters?:QueryFilters,headlinesOnly=false):Promise<Observation[]> {
+    let clause='',values:unknown[]=[org,client];
+    if(filters){const days=Math.round((Date.parse(filters.to)-Date.parse(filters.from))/86400000)+1,offset=filters.compare==='weekday'?7:filters.compare==='fourWeeks'?28:days,priorFrom=shiftDate(filters.from,-offset),priorTo=shiftDate(filters.to,-offset),trendFrom=shiftDate(filters.to,-29),overviewFrom=priorFrom<trendFrom?priorFrom:trendFrom;
+      // Keep headline history and renewal benchmarks; load bulky detail exports
+      // only for the selected, comparison and prior-week periods.
+      clause=` AND ((json_extract(o.payload,'$.dataset')='overview' AND o.date>=? AND o.date<=?) OR json_extract(o.payload,'$.dataset')='subscriptions' OR json_extract(o.payload,'$.metric') IN ('active_ads','active_creatives') OR (o.date BETWEEN ? AND ?) OR (o.date BETWEEN ? AND ?) OR (o.date BETWEEN ? AND ?))`;
+      values.push(overviewFrom,filters.to,filters.from,filters.to,priorFrom,priorTo,shiftDate(filters.from,-7),shiftDate(filters.to,-7));
+    }
+    if(headlinesOnly)clause+=" AND json_extract(o.payload,'$.dataset')='overview'";
+    return preferredObservations((await this.all(`SELECT o.payload FROM observations o JOIN current_snapshots c ON c.snapshotId=o.snapshotId AND c.date=o.date JOIN snapshots s ON s.id=o.snapshotId WHERE c.organizationId=? AND c.clientId=? AND s.status='ready'${clause}`,...values)).map(r=>JSON.parse(r.payload)));
+  }
   async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string}) {
     const id=`${org}:${batch.clientId}:${source}:${key}`;
     const ready=await this.first('SELECT id FROM snapshots WHERE id=? AND status=?',id,'ready');
     await this.run('INSERT INTO snapshots(id,organizationId,clientId,sourceId,retrievedAt,coverageThrough,complete,status,objectKey) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',id,org,batch.clientId,source,now,batch.coverageThrough,Number(batch.complete),'writing',`snapshots/${id}.json`);
     const rows=batch.rows.map(r=>({...r,channels:batch.channels,sourceId:source,retrievedAt:now,coverageThrough:batch.coverageThrough,quality:batch.complete?(r.quality??'complete'):(r.quality==='historical'?'historical':'partial')}));
-    if(!ready)for(let n=0;n<rows.length;n+=80)await this.db.batch(rows.slice(n,n+80).map(r=>this.db.prepare('INSERT INTO observations(snapshotId,date,rowKey,payload) VALUES(?,?,?,?) ON CONFLICT DO NOTHING').bind(id,r.date,JSON.stringify([r.dataset,r.metric,r.start,r.end,Object.entries(r.dimensions).sort()]),JSON.stringify(r))));
+    if(!ready)for(let n=0;n<rows.length;n+=500){const values=rows.slice(n,n+500).map(r=>({date:r.date,rowKey:JSON.stringify([r.dataset,r.metric,r.start,r.end,Object.entries(r.dimensions).sort()]),payload:JSON.stringify(r)}));await this.run("INSERT INTO observations(snapshotId,date,rowKey,payload) SELECT ?,json_extract(value,'$.date'),json_extract(value,'$.rowKey'),json_extract(value,'$.payload') FROM json_each(?) WHERE 1 ON CONFLICT DO NOTHING",id,JSON.stringify(values));}
     const dates=window?(()=>{const d:string[]=[];for(let s=window.from;s<=window.to;s=shiftDate(s,1)){d.push(s);if(d.length>62)throw new Error('Window exceeds 62 days');}return d;})():[...new Set(rows.map(r=>r.date))];
     const pointers=dates.map(d=>this.db.prepare('INSERT INTO current_snapshots(organizationId,clientId,sourceId,date,snapshotId,publishedAt) VALUES(?,?,?,?,?,?) ON CONFLICT(organizationId,clientId,sourceId,date) DO UPDATE SET snapshotId=excluded.snapshotId,publishedAt=excluded.publishedAt WHERE excluded.publishedAt>=current_snapshots.publishedAt').bind(org,batch.clientId,source,d,id,now));
     await this.db.batch([...pointers,this.db.prepare('UPDATE snapshots SET status=? WHERE id=?').bind('ready',id)]);return id;

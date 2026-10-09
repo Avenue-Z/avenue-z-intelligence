@@ -35,3 +35,5 @@ it('tracks a qualified conversion once and keeps it resolved after closing',asyn
  await expect(s.saveFinding('o','a',input,'v',0)).rejects.toThrow('Changed');
  expect(await s.findings('o','a')).toHaveLength(1);
 });
+
+it('clears a corrected empty source day without deleting another day',async()=>{const s=new Store(database()),r={metric:'revenue',value:42,definition:'web',population:'web',currency:'USD',dimensions:{},dataset:'overview'};const batch={clientId:'a',timezone:'UTC',currency:'USD',channels:[],dimensions:[],grain:'daily',complete:true,coverageThrough:null,rows:[{...r,date:'2026-10-06'},{...r,date:'2026-10-07'}]} as any;await s.persistBatch('o','src',batch,'original','2026-10-08T00:00:00Z');await s.persistBatch('o','src',{...batch,rows:[]},'empty','2026-10-08T01:00:00Z',{from:'2026-10-07',to:'2026-10-07'});expect((await s.observations('o','a')).map(r=>r.date)).toEqual(['2026-10-06']);});

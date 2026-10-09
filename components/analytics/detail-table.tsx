@@ -6,7 +6,7 @@ import {Empty,money,number,percent} from './dashboard';
 import type {ClientAnalytics} from '../../lib/analytics/query';
 import type {Observation} from '../../lib/analytics/contracts';
 const title=(s:string)=>s.replaceAll('_',' ').replace(/^./,x=>x.toUpperCase());
-const financial=new Set(['revenue','spend','refunds','gross','discounts','aov','recurring_revenue']);
+const financial=new Set(['revenue','spend','platform_spend','refunds','gross','discounts','aov','recurring_revenue']);
 export function DetailTable({rows,currency,title:heading='Detail',exportHref}:{rows:ClientAnalytics['details'];currency:string;title?:string;exportHref:string}){
   const [search,setSearch]=useState(''),[sort,setSort]=useState(''),[desc,setDesc]=useState(true),[page,setPage]=useState(0),[hidden,setHidden]=useState<string[]>([]),[evidence,setEvidence]=useState<Observation[]|null>(null);
   const dimensionKeys=useMemo(()=>[...new Set(rows.flatMap(r=>Object.keys(r.dimensions)))], [rows]);const metricKeys=useMemo(()=>[...new Set(rows.flatMap(r=>Object.keys(r.metrics)))], [rows]);

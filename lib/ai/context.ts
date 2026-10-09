@@ -18,6 +18,8 @@ export function buildAIContext(records:(ClientRecord&{weekday?:unknown;monthToDa
   const reviews=(selectedReview?[selectedReview]:r.reviews.filter(x=>x.current&&x.storeDate>=filters.from&&x.storeDate<=filters.to)).slice(0,10);
   const referenceReviews=r.reviews.filter(x=>x.current&&!reviews.some(y=>x.id===y.id)&&x.storeDate<filters.from).slice(0,3);
   const expose=(review:typeof r.reviews[number])=>{const id=`review:${review.id}`;sources.push({id,label:`${r.client.name} · ${review.storeDate} · revision ${review.revision}`,url:reviewHref(r.client.id,review.id)});const {type,text,kpis,headlines,sections,methodology,filters}=review.payload;return {sourceId:id,storeDate:review.storeDate,revision:review.revision,scopeLabel:'Fixed saved report; KPI values may differ from the current dashboard selection',payload:{type,text,kpis,headlines,sections,methodology,filters}};};
+  const stripEvidence=(row:ReturnType<typeof detailRows>[number])=>({key:row.key,dimensions:row.dimensions,metrics:row.metrics,summary:row.summary,provenance:[...new Map(row.evidence.map(e=>[JSON.stringify([e.sourceId,e.definition,e.population,e.currency]),{sourceId:e.sourceId,definition:e.definition,population:e.population,currency:e.currency,retrievedAt:e.retrievedAt,coverageThrough:e.coverageThrough,quality:e.quality}])).values()]});
+  const detailDatasets=[...new Set(r.evidence.map(e=>e.dataset))];const datasetDetails=Object.fromEntries(detailDatasets.map(dataset=>{const rows=detailRows(r.evidence.filter(e=>e.dataset===dataset)).sort((a,b)=>(b.summary.sessions??b.summary.revenue??0)-(a.summary.sessions??a.summary.revenue??0));return [dataset,{segmentCount:rows.length,omitted:Math.max(0,rows.length-50),rows:rows.slice(0,50).map(stripEvidence)}];}));
   const details=detailRows(r.evidence).sort((a,b)=>(b.summary.sessions??0)-(a.summary.sessions??0));
   const id=`selection:${r.client.id}`;sources.push({id,label:`${r.client.name} · dashboard selection ${filters.from}–${filters.to}`,url:`/clients/${encodeURIComponent(r.client.id)}?${new URLSearchParams({...filters})}`});
   const revenueChange=change(r.metrics.revenue,r.prior.revenue),spendChange=change(r.metrics.spend,r.prior.spend),mer=ratio(r.metrics.revenue,r.metrics.spend),previousMer=ratio(r.prior.revenue,r.prior.spend);
@@ -26,8 +28,8 @@ export function buildAIContext(records:(ClientRecord&{weekday?:unknown;monthToDa
    selectedReview:selectedReview?{storeDate:selectedReview.storeDate,revision:selectedReview.revision}:null,
    sourceReviews:reviews.map(expose),priorSourceReviews:referenceReviews.map(expose),notes:r.note.body,
    findings:r.findings.map(f=>({id:f.id,title:f.title,detail:f.detail,status:f.status,owner:f.owner,severity:f.severity})),
-   details:details.slice(0,120),detailsOmitted:Math.max(0,details.length-120),comparisonDetails:detailRows(r.comparisonEvidence).slice(0,120),trend:r.series,
-   sourceQuality:[...new Set(r.evidence.map(x=>x.quality))],observedDates:[...new Set(r.evidence.map(x=>x.date))].sort()};
+   datasetDetails,details:details.slice(0,120).map(stripEvidence),detailsOmitted:Math.max(0,details.length-120),comparisonDetails:detailRows(r.comparisonEvidence).slice(0,120).map(stripEvidence),trend:r.series,
+   liveOperations:r.liveOperations??[],sourceQuality:[...new Set(r.evidence.map(x=>x.quality))],observedDates:[...new Set(r.evidence.map(x=>x.date))].sort()};
  });return {filters,clients,sources};
 }
 const answer=z.object({answer:z.string().min(1).max(25000),sourceIds:z.array(z.string()).max(30),followUps:z.array(z.string()).max(6),caveats:z.array(z.string()).max(12)});

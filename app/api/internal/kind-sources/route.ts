@@ -1,0 +1,7 @@
+import {privateRunnerScope} from '../../../../lib/server/private-runner';
+import {connectKindSource} from '../../../../lib/sources/connect-kind';
+import {getStore} from '../../../../lib/server/access';
+import {queryClient} from '../../../../lib/analytics/query';
+import {parseFilters} from '../../../../lib/server/workspace';
+export async function GET(request:Request){try{const scope=await privateRunnerScope(),s=getStore(),client=(await s.clients(scope.organizationId)).find(c=>c.id==='kind-patches')!;const filters=parseFilters(new URL(request.url).searchParams),connections=await s.connections(scope.organizationId,client.id),rows=await s.observations(scope.organizationId,client.id,filters),a=queryClient(client,rows,connections,filters);return Response.json({connections:connections.map(({provider,name,enabled,lastSuccess,coverageThrough,error})=>({provider,name,enabled,lastSuccess,coverageThrough,error})),metrics:a.metrics,prior:a.prior,verdict:a.verdict,subscriptions:a.subscriptions,liveOperations:a.liveOperations,warnings:a.warnings,selectedCount:a.selectedCount,detailCount:a.details.length,cutoff:a.cutoff},{headers:{'Cache-Control':'no-store'}});}catch(e){return Response.json({error:(e as Error).message},{status:403});}}
+export async function POST(request:Request){try{const scope=await privateRunnerScope(),body=await request.json() as {provider:string};return Response.json(await connectKindSource(scope,'kind-patches',body.provider));}catch(e){return Response.json({error:(e as Error).message},{status:403});}}

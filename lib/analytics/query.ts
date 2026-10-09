@@ -24,7 +24,8 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
   let current=filtered(capable,f),previous=filtered(capable,comparison),peers=filtered(capable,{...f,market:''});
   let currentEnd=Date.parse(dayWindow(f.to,client.timezone).end),previousEnd=Date.parse(dayWindow(comparison.to,client.timezone).end);
   if(f.mode==='partial') {
-    const sources=connections.filter(c=>c.enabled),coverage=sources.map(c=>c.coverageThrough);
+    if(connections.some(c=>c.enabled&&c.provider?.startsWith('kind-')&&c.provider!=='kind-triple-whale'))warnings.push('Same-hour comparisons use Triple Whale commerce and media. Shopify detail and AppLovin UTC reports use closed days; current operations are separate snapshots.');
+    const sources=connections.filter(c=>c.enabled&&(!c.provider||c.provider==='gateway'||c.provider==='kind-triple-whale')),coverage=sources.map(c=>c.coverageThrough);
     const known=sources.length>0&&coverage.every((x):x is string=>!!x&&Date.parse(x)>=Date.parse(dayWindow(f.to,client.timezone).start));
     cutoff=known?matchedCutoff(coverage as string[],client.timezone):null;
     if(!cutoff) {current=[];previous=[];peers=[];warnings.push('An intraday comparison needs confirmed, current hourly coverage from every contributing source.');}
@@ -57,7 +58,9 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
   const peerDetails=detailRows(peers.filter(x=>x.dataset===dataset));
   const opportunities=details.filter(r=>r.summary.sessions!==null&&r.summary.cvr!==null).map(r=>{const benchmark=chooseBenchmark(r,peerDetails,priorDetails,client.config.benchmarkMarket),own=priorDetails.find(x=>x.key===r.key),b=benchmark.cvr;return {...r,benchmark:b,benchmarkReason:benchmark.reason,benchmarkEvidence:benchmark.reference?.evidence??[],opportunity:b===null?null:opportunity(r.summary.sessions!,r.summary.cvr!,b),actualOrdersChange:change(r.summary.orders,own?.summary.orders??null)};}).filter(x=>x.opportunity!==null).sort((a,b)=>b.opportunity!-a.opportunity!);
   const actions=opportunities.filter(x=>x.summary.sessions!>=client.config.minSessions&&x.opportunity!>=client.config.minOpportunity).slice(0,client.config.maxActions);
+  const operationalIds=['active_customers','active_ads','active_creatives'];
+  const liveOperations=operationalIds.flatMap(metric=>{const rows=all.filter(r=>r.metric===metric&&r.quality==='complete').sort((a,b)=>b.date.localeCompare(a.date)||b.retrievedAt.localeCompare(a.retrievedAt));return rows[0]?[rows[0]]:[];});
   const availableDimensions=Object.fromEntries(['market','stream','source','device','page'].map(k=>[k,[...new Set(all.flatMap(r=>r.dimensions[k]?[r.dimensions[k]]:[]))].sort()]));
-  return {client,metrics,prior,comparison,verdict,series,details,actions,opportunities,activeIncidents,warnings,cutoff,availableDimensions,evidence:current,comparisonEvidence:previous,connections,selectedCount:current.length,subscriptions:subscriptionComparison(filtered(all,{...f,from:undefined,to:undefined}),f.to,client.config.incidents,f.mode==='partial'?{timezone:client.timezone,cutoff}:undefined)};
+  return {client,metrics,prior,comparison,verdict,series,details,actions,opportunities,activeIncidents,warnings,cutoff,availableDimensions,evidence:current,comparisonEvidence:previous,connections,selectedCount:current.length,liveOperations,subscriptions:subscriptionComparison(filtered(all,{...f,from:undefined,to:undefined}),f.to,client.config.incidents,f.mode==='partial'?{timezone:client.timezone,cutoff}:undefined)};
 }
 export type ClientAnalytics=ReturnType<typeof queryClient>;
