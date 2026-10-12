@@ -21,6 +21,8 @@ function conversionCovered(rows:Observation[],from:string,to:string,timezone:str
   let cursor=Date.parse(day.start);
   const parts=sessions.filter(r=>r.date===date).map(interval).sort((a,b)=>a.start-b.start);
   if(!parts.length)return false;
+  const reconciledPublicPages=sessions.filter(r=>r.date===date).every(r=>r.dataset==='funnels'&&r.definition==='shopify_human_public_landing_pages'&&r.population==='human_public_landing_page_sessions');
+  if(reconciledPublicPages){if(parts.some(p=>p.start<Date.parse(day.start)||p.end>expectedEnd||p.end<=p.start))return false;continue;}
   for(const part of parts){if(part.start!==cursor||part.end<=part.start||part.end>expectedEnd)return false;cursor=part.end;}
   if(cursor!==expectedEnd)return false;
  }

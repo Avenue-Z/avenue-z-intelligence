@@ -7,6 +7,10 @@ function family(r:Observation){return JSON.stringify([r.date,r.dataset,r.metric,
 function fullDay(rows:Observation[],timezone?:string){
  if(!timezone||!rows.length)return false;const window=dayWindow(rows[0].date,timezone),start=Date.parse(window.start),end=Date.parse(window.end);
  if(rows.some(r=>r.quality!=='complete'||!r.coverageThrough||Date.parse(r.coverageThrough)<end))return false;
+ // The public-page export is sparse: absent page/hour groups are zero only
+ // after its bounded full-day query reconciles to independent public totals.
+ // Unlike the dense overview, a page need not receive traffic in every hour.
+ if(rows.every(r=>r.dataset==='funnels'&&r.definition==='shopify_human_public_landing_pages'&&r.population==='human_public_landing_page_sessions'))return rows.every(r=>Number.isFinite(Date.parse(r.start!))&&Number.isFinite(Date.parse(r.end!))&&Date.parse(r.start!)>=start&&Date.parse(r.end!)<=end&&Date.parse(r.start!)<Date.parse(r.end!));
  const intervals=rows.map(r=>[Date.parse(r.start!),Date.parse(r.end!)]).sort((a,b)=>a[0]-b[0]);let cursor=start;
  for(const [a,b] of intervals){if(!Number.isFinite(a)||!Number.isFinite(b)||a<start||b>end||a>=b||a>cursor)return false;cursor=Math.max(cursor,b);}
  return cursor===end;

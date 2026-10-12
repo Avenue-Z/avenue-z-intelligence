@@ -11,7 +11,7 @@ export async function allowGoogleIdentity(profile:Record<string,unknown>|undefin
  if(!profile||profile.email_verified!==true||typeof profile.email!=='string'||typeof profile.sub!=='string')return false;
  const email=profile.email.toLowerCase(),s=getStore(),org=secret('APP_ORGANIZATION_ID')||'avenue-z';
  const member=await s.first('SELECT * FROM members WHERE organizationId=? AND email=?',org,email);
- if(member){await s.run('UPDATE members SET actorId=? WHERE organizationId=? AND email=?',`google:${profile.sub}`,org,email);return true;}
+ if(member){await s.run('INSERT INTO member_identities(organizationId,email,actorId) SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM members WHERE organizationId=? AND email=?) ON CONFLICT(organizationId,actorId) DO UPDATE SET email=excluded.email',org,email,`google:${profile.sub}`,org,email);return true;}
  if(email!==secret('APP_BOOTSTRAP_ADMIN_EMAIL').toLowerCase())return false;
  return !(await s.first('SELECT COUNT(*) AS n FROM members WHERE organizationId=?',org))?.n;
 }

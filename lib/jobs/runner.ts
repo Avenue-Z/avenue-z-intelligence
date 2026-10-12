@@ -14,11 +14,11 @@ async function serviceScope(s:Store):Promise<AccessScope>{
 }
 async function freshCore(s:Store,scope:AccessScope,c:Client,now:Date,due:DueReview|null=dueReview(c,now)){
  const sources=(await s.connections(scope.organizationId,c.id)).filter(x=>x.enabled);
- const core=[];if(!due)return false;
- for(const source of sources){const q=await s.qualification(scope.organizationId,source.id);const profiles=q?.payload?.profiles??[];if(profiles.some((p:any)=>p.dataset==='overview'&&p.metric==='revenue')){if(q.connectionVersion!==source.version||q.clientVersion!==c.version)return false;core.push(source);}}
+ const core=[];let hasRevenue=false;if(!due)return false;
+ for(const source of sources){const q=await s.qualification(scope.organizationId,source.id);const profiles=q?.payload?.profiles??[],revenue=profiles.some((p:any)=>p.dataset==='overview'&&p.metric==='revenue'),sessions=profiles.some((p:any)=>p.dataset==='overview'&&p.metric==='sessions'&&(due.mode==='closed'||p.hourly));if(revenue||sessions){if(q.connectionVersion!==source.version||q.clientVersion!==c.version)return false;hasRevenue ||= revenue;core.push(source);}}
  const window=dayWindow(due.storeDate,c.timezone);
  if(due.mode==='partial'&&now.getTime()>=Date.parse(window.end))return false;
- return core.length>0&&core.every(x=>{
+ return hasRevenue&&core.length>0&&core.every(x=>{
   const covered=Date.parse(x.coverageThrough??''),retrieved=Date.parse(x.lastSuccess??''),maxAge=Math.max(15,x.pollMinutes*2)*60000;
   return !x.error&&Number.isFinite(covered)&&Number.isFinite(retrieved)&&retrieved<=now.getTime()&&now.getTime()-retrieved<=maxAge&&
    (due.mode==='closed'?covered>=Date.parse(window.end):covered>Date.parse(window.start)&&covered<=now.getTime()&&now.getTime()-covered<=maxAge+3600000);

@@ -27,6 +27,10 @@ it('creates one persisted report with an application identity across repeated cr
 it('waits for current coverage even when a provider was recently retrieved',async()=>{
  await state.store.run("UPDATE connections SET coverageThrough='2026-10-11T13:00:00Z'");expect((await reviewTick()).completed).toEqual([]);expect(await state.store.all('SELECT * FROM scheduled_reviews')).toEqual([]);
 });
+it('waits for the connected hourly human feed before generating an intraday report',async()=>{
+ const s=state.store;await s.run("INSERT INTO connections VALUES('sessions','o','kind-patches','Human sessions','kind-shopify-hourly','registered','secret-ref',60,1,'2026-10-12T13:04:00Z','2026-10-11T22:00:00Z',NULL,1)");await s.saveQualification('o','kind-patches','sessions',1,1,{profiles:[{dataset:'overview',metric:'sessions',hourly:true}]},'admin');
+ expect((await reviewTick()).completed).toEqual([]);await s.run("UPDATE connections SET coverageThrough='2026-10-12T13:00:00Z' WHERE id='sessions'");expect((await reviewTick()).completed).toHaveLength(1);
+});
 it('refuses stale qualifications after a connection or client changes',async()=>{
  await state.store.run('UPDATE connections SET version=2');expect((await reviewTick()).completed).toEqual([]);
 });

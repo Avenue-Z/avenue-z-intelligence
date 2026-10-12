@@ -1,6 +1,11 @@
 import {expect,it} from 'vitest';
 import type {Observation} from '../../lib/analytics/contracts';
 import {preferredObservations} from '../../lib/analytics/source-precedence';
+it('uses reconciled closed public-page coverage despite hours with no traffic',()=>{
+ const base={date:'2026-10-07',dataset:'funnels',metric:'sessions',definition:'shopify_human_public_landing_pages',population:'human_public_landing_page_sessions',currency:null,dimensions:{page:'/offer',market:'US'},quality:'complete',coverageThrough:'2026-10-08T00:00:00Z',retrievedAt:'2026-10-08T01:00:00Z'} as any;
+ const old={...base,sourceId:'daily',value:8},fresh={...base,sourceId:'hourly',value:10,start:'2026-10-07T10:00:00Z',end:'2026-10-07T11:00:00Z'};
+ expect(preferredObservations([old,fresh],{timezone:'UTC',partial:false})).toEqual([fresh]);
+});
 const daily={date:'2026-10-12',dataset:'overview',metric:'sessions',value:100,definition:'shopify_human_sessions',population:'human_online_store_sessions',currency:null,dimensions:{},sourceId:'daily',retrievedAt:'2026-10-12T10:00:00Z',coverageThrough:'2026-10-12T22:00:00Z',quality:'complete'} as Observation;
 const hourly={...daily,value:10,sourceId:'hourly',start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z',coverageThrough:'2026-10-11T23:00:00Z'};
 it('retains full daily Shopify authority when only a partial hourly population is available',()=>{

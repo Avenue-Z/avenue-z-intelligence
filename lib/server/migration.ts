@@ -1,5 +1,5 @@
 import type {Store} from './store';
-export const migrationTables=['organizations','clients','members','connections','qualifications','snapshots','observations','current_snapshots','notes','findings','reviews','audit','ai_requests','ai_turns'] as const;
+export const migrationTables=['organizations','clients','members','member_identities','connections','qualifications','snapshots','observations','current_snapshots','notes','findings','reviews','audit','ai_requests','ai_turns'] as const;
 export async function migrationPage(store:Store,org:string,table:string,cursor=0){
  if(!migrationTables.includes(table as typeof migrationTables[number]))throw new Error('Unsupported migration table');
  if(!Number.isSafeInteger(cursor)||cursor<0||cursor>1000000)throw new Error('Invalid migration cursor');

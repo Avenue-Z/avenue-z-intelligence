@@ -10,6 +10,8 @@ import {ClientWorkspace} from '../../components/analytics/client-workspace';
 import {detailRows,queryClient} from '../../lib/analytics/query';
 import {workspacePresentation} from '../../lib/analytics/presentation';
 import type {Client,Observation,QueryFilters} from '../../lib/analytics/contracts';
+import {timestamp} from '../../lib/analytics/display';
+it('renders retrieval times in an explicit store timezone on server and browser',()=>{expect(timestamp('2026-10-12T13:00:00Z','Europe/Stockholm')).toContain('3:00 PM');expect(timestamp('bad','UTC')).toBe('Unavailable');});
 
 const client:Client={id:'test',name:'Test client',slug:'test',timezone:'UTC',currency:'USD',color:'#2549c5',version:1,config:{markets:['US'],benchmarkMarket:'US',revenueDefinition:'net_sales',spendChannels:['meta'],recurringLabel:'Subscriptions',minSessions:100,minOpportunity:5,maxActions:6,reviewTime:'09:00',reviewTimezone:'UTC',reviewMode:'closed',incidents:[]}};
 const filters:QueryFilters={from:'2026-10-07',to:'2026-10-07',compare:'previous',market:'',stream:'',source:'',device:'',page:'',mode:'closed',view:'overview'};

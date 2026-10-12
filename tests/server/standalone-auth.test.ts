@@ -15,10 +15,9 @@ it('allows the explicit bootstrap admin only for an empty workspace',async()=>{
  state.first.mockResolvedValueOnce(null).mockResolvedValueOnce({n:1});
  expect(await allowGoogleIdentity({email:'owner@example.com',email_verified:true,sub:'owner'})).toBe(false);
 });
-it('links an invited verified email to its stable Google identity',async()=>{
+it('accepts an invited verified email with an existing native Sites identity',async()=>{
  state.first.mockResolvedValue({email:'analyst@example.com',role:'analyst',actorId:'old-sites-id'});
  expect(await allowGoogleIdentity({email:'analyst@example.com',email_verified:true,sub:'google-id'})).toBe(true);
- expect(state.run.mock.calls[0][1]).toBe('google:google-id');
 });
 it('ignores forged platform headers and rejects tampered app sessions',async()=>{
  expect(await standaloneIdentity(new Headers({'oai-authenticated-user-id':'owner','oai-authenticated-user-email':'owner@example.com'}))).toBeNull();

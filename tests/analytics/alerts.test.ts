@@ -67,3 +67,8 @@ it('requires sessions and conversions to cover matching intervals',()=>{
  r.actions[0].evidence=r.actions[0].evidence.filter((x:any)=>x.metric!=='converting_sessions'||!x.start.includes('01:00'));
  expect(buildAlertQueue([r],f)).toEqual([]);
 });
+it('uses reconciled public-page coverage for sparse hours without accepting a generic hourly gap',()=>{
+ const f={...filters,mode:'partial'} as any,r=conversionRecord(f,['2026-10-06','2026-10-07'],true);
+ for(const a of r.actions)for(const row of [...a.evidence,...a.benchmarkEvidence]){row.definition='shopify_human_public_landing_pages';row.population='human_public_landing_page_sessions';}
+ expect(buildAlertQueue([r],f)).toHaveLength(1);
+});

@@ -4,6 +4,7 @@ export const money=(value:MetricValue,currency='USD')=>finiteMetric(value)?new I
 export const number=(value:MetricValue)=>finiteMetric(value)?new Intl.NumberFormat('en-US',{maximumFractionDigits:0}).format(value):'—';
 export const percent=(value:MetricValue)=>finiteMetric(value)?`${(value*100).toFixed(2)}%`:'—';
 export const multiple=(value:MetricValue)=>finiteMetric(value)?`${value.toFixed(2)}×`:'—';
+export function timestamp(value:string,timezone:string){const date=new Date(value);return Number.isFinite(date.getTime())?new Intl.DateTimeFormat('en-US',{timeZone:timezone,dateStyle:'medium',timeStyle:'short'}).format(date):'Unavailable';}
 const financial=new Set(['revenue','spend','platform_spend','refunds','gross','discounts','aov','recurring_revenue']);
 export function formatMetric(key:string,value:MetricValue,currency:string){
   if(financial.has(key))return money(value,currency);

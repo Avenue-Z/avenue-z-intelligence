@@ -14,8 +14,8 @@ import {ExecutiveOverview} from './executive-overview';
 import {AIChat,type ChatContext} from './ai-chat';
 import {finiteMetric,money,number,percent} from '../../lib/analytics/display';
 export {money,number,percent} from '../../lib/analytics/display';
-export function Dashboard({initial,clientId,userName}:{initial:Workspace;clientId?:string;userName:string}) {
- const [data,setData]=useState(initial),[section,setSection]=useState('portfolio'),[busy,setBusy]=useState(false),[error,setError]=useState(''),[search,setSearch]=useState(''),[chartId,setChartId]=useState('');
+export function Dashboard({initial,initialSection='portfolio',clientId,userName}:{initial:Workspace;initialSection?:string;clientId?:string;userName:string}) {
+ const [data,setData]=useState(initial),[section,setSection]=useState(initialSection),[busy,setBusy]=useState(false),[error,setError]=useState(''),[search,setSearch]=useState(''),[chartId,setChartId]=useState('');
  const [reviewContext,setReviewContext]=useState<ChatContext>({}),[chatOpen,setChatOpen]=useState(false),[chatContext,setChatContext]=useState<ChatContext>({});
  useLayoutEffect(()=>{const open=(e:Event)=>{setChatContext((e as CustomEvent).detail);setChatOpen(true);};const review=(e:Event)=>{const next=(e as CustomEvent).detail;setReviewContext(next);setChatContext(previous=>previous.reviewId?next:previous);};window.addEventListener('avenuez-review-context',review);window.addEventListener('avenuez-chat',open);return ()=>{window.removeEventListener('avenuez-chat',open);window.removeEventListener('avenuez-review-context',review);};},[]);
  const requestRef=useRef<AbortController|null>(null),selected=data.clients.find(c=>c.client.id===clientId);
@@ -29,7 +29,7 @@ export function Dashboard({initial,clientId,userName}:{initial:Workspace;clientI
  const mutate:Mutate=async(body)=>{const r=await fetch('/api/workspace',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),payload=await r.json() as {error?:string};if(!r.ok)throw new Error(payload.error||'Save failed');await reload();return payload;};
  useEffect(()=>{setSection(new URLSearchParams(window.location.search).get('section')||'portfolio');void reload();const t=setInterval(()=>void reload(),60000);return ()=>{clearInterval(t);requestRef.current?.abort();};},[]);
  const visible=data.clients.filter(c=>c.client.name.toLowerCase().includes(search.toLowerCase())),chart=visible.find(c=>c.client.id===chartId)??visible[0];
- const alerts=buildAlertQueue(visible,data.filters).filter(a=>a.severity!=='watch'),live=data.clients.filter(c=>c.connections.some(s=>s.enabled&&s.lastSuccess)).length;
+ const alerts=buildAlertQueue(visible,data.filters,{includeLatestReview:true}).filter(a=>a.severity!=='watch'),live=data.clients.filter(c=>c.connections.some(s=>s.enabled&&s.lastSuccess)).length;
  const labels:Record<string,string>={portfolio:'Client portfolio',findings:'Actions & alerts',reviews:'Daily reviews',sources:'Connections',settings:'Workspace settings',ai:'AI analyst'};
  function navigate(key:string){if(selected)window.location.href=`/?${new URLSearchParams({...data.filters,section:key})}`;else {setSection(key);filter('section',key);}}
  return <div className="workspace"><aside className="sidebar">
