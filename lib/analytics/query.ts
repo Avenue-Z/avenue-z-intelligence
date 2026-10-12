@@ -25,7 +25,7 @@ function datasetAnalytics(client:Client,current:Observation[],previous:Observati
   return {details,actions,opportunities,viewMetrics:summarize(current)};
 }
 function byDataset(rows:Observation[]){const groups=new Map<string,Observation[]>();for(const row of rows){const group=groups.get(row.dataset);if(group)group.push(row);else groups.set(row.dataset,[row]);}return groups;}
-export function queryClient(client:Client,all:Observation[],connections:Connection[],f:QueryFilters,options:{prepareAllViews?:boolean}={}) {
+export function queryClient(client:Client,all:Observation[],connections:Connection[],f:QueryFilters,options:{prepareAllViews?:boolean;preparedDatasets?:string[]}={}) {
   if(f.market){const market=sourceMarket(f.market);if(market!==f.market)f={...f,market};}
   all=preferredObservations(all.map(r=>{if(!r.dimensions.page)return r;const page=sanitizePage(r.dimensions.page);return page===r.dimensions.page?r:{...r,dimensions:{...r.dimensions,page}};}),{timezone:client.timezone,partial:f.mode==='partial'});
   // Legacy country aliases must be normalized after authority selection:
@@ -73,17 +73,18 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
   const dataset=f.view==='overview'?'funnels':f.view,currentDatasets=byDataset(current),previousDatasets=byDataset(previous),peerDatasets=byDataset(peers);
   // All client tabs share the same dated/dimension-filtered selection. Prepare
   // each aggregate once so navigating a tab does not query sources again.
-  const datasets=options.prepareAllViews?['funnels','traffic','revenue','markets','products','subscriptions','subscriptionEvents','media','creatives','reviews','settings',dataset]:[dataset];
+  const datasets=options.preparedDatasets??(options.prepareAllViews?['overview','funnels','traffic','revenue','markets','products','subscriptions','subscriptionEvents','media','creatives','reviews','settings',dataset]:[dataset]);
   const views:Record<string,ReturnType<typeof datasetAnalytics>>=Object.fromEntries([...new Set(datasets)].map(key=>[key,datasetAnalytics(client,currentDatasets.get(key)??[],previousDatasets.get(key)??[],peerDatasets.get(key)??[],key!=='traffic')]));
-  const {details,actions,opportunities}=views[dataset];
+  const details=views[dataset]?.details??[],actions=views[dataset]?.actions??[],opportunities=views[dataset]?.opportunities??[];
   const operationalIds=['active_customers','active_ads','active_creatives'];
   const liveOperations=operationalIds.flatMap(metric=>{const rows=all.filter(r=>r.metric===metric&&r.quality==='complete').sort((a,b)=>b.date.localeCompare(a.date)||b.retrievedAt.localeCompare(a.retrievedAt));return rows[0]?[rows[0]]:[];});
   const availableDimensions=Object.fromEntries(['market','stream','source','device','page'].map(k=>[k,[...new Set(all.flatMap(r=>r.dimensions[k]?[r.dimensions[k]]:[]))].sort()]));
-  const dailyDatasets=['overview','funnels','traffic','revenue','markets','products','subscriptions','subscriptionEvents','media'];
+  const dailyDatasetNames=['overview','funnels','traffic','revenue','markets','products','subscriptions','subscriptionEvents','media'],dailyDatasets=options.preparedDatasets?dailyDatasetNames.filter(name=>options.preparedDatasets!.includes(name)):dailyDatasetNames;
+  const prepareSeries=options.prepareAllViews||options.preparedDatasets!==undefined;
   function qualifiedDailySeries(rows:Observation[],from:string,to:string,lastEnd:number){
     const result=buildDatasetSeries(rows,from,to,dailyDatasets),overviewDays=new Map<string,Observation[]>();
     for(const row of rows)if(row.dataset==='overview'){const values=overviewDays.get(row.date);if(values)values.push(row);else overviewDays.set(row.date,[row]);}
-    for(const point of result.overview){const day=overviewDays.get(point.date)??[],spend=day.filter(row=>row.metric==='spend'),end=f.mode==='partial'&&point.date===to?lastEnd:Date.parse(dayWindow(point.date,client.timezone).end);
+    for(const point of result.overview??[]){const day=overviewDays.get(point.date)??[],spend=day.filter(row=>row.metric==='spend'),end=f.mode==='partial'&&point.date===to?lastEnd:Date.parse(dayWindow(point.date,client.timezone).end);
       // Use the existing store-day qualification for both current and comparison
       // charts; a raw arithmetic ratio cannot become qualified MER through a view.
       const qualified=day.length>0&&covered(day,point.date,point.date,end)&&day.filter(row=>row.metric==='revenue').every(row=>row.definition===client.config.revenueDefinition)&&client.config.spendChannels.length>0&&spend.length>0&&spend.every(row=>client.config.spendChannels.every(channel=>(row.channels??[]).includes(channel)));
@@ -91,16 +92,16 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
     }
     return result;
   }
-  const datasetSeries=options.prepareAllViews?qualifiedDailySeries(current,f.from,f.to,currentEnd):{},comparisonDatasetSeries=options.prepareAllViews?qualifiedDailySeries(previous,comparison.from,comparison.to,previousEnd):{};
+  const datasetSeries=prepareSeries?qualifiedDailySeries(current,f.from,f.to,currentEnd):{},comparisonDatasetSeries=prepareSeries?qualifiedDailySeries(previous,comparison.from,comparison.to,previousEnd):{};
   const historyClock=f.mode==='partial'&&cutoff?Temporal.Instant.from(cutoff).toZonedDateTimeISO(client.timezone).toPlainTime():null;
-  const marketHistory=options.prepareAllViews?filtered(capable,{...f,from:shiftDate(f.from,-1)}).filter(row=>{
+  const marketHistory=prepareSeries&&dailyDatasets.includes('markets')?filtered(capable,{...f,from:shiftDate(f.from,-1)}).filter(row=>{
     if(row.dataset!=='markets')return false;
     if(f.mode==='closed')return row.date<today;
     if(!historyClock||!row.end)return false;
     const end=Temporal.PlainDate.from(row.date).toZonedDateTime({timeZone:client.timezone,plainTime:historyClock});
     return Date.parse(row.end)<=Number(end.epochMilliseconds);
   }):[];
-  const datasetHistorySeries=options.prepareAllViews?buildDatasetSeries(marketHistory,shiftDate(f.from,-1),f.to,['markets']):{};
-  return {client,metrics,prior,comparison,verdict,series,datasetSeries,comparisonDatasetSeries,datasetHistorySeries,details,actions,opportunities,views,datasetMetrics:views[dataset].viewMetrics,activeIncidents,warnings,cutoff,availableDimensions,evidence:current,comparisonEvidence:previous,connections,selectedCount:current.length,liveOperations,subscriptions:subscriptionComparison(filtered(all,{...f,from:undefined,to:undefined}),f.to,client.config.incidents,f.mode==='partial'?{timezone:client.timezone,cutoff}:undefined)};
+  const datasetHistorySeries=prepareSeries&&dailyDatasets.includes('markets')?buildDatasetSeries(marketHistory,shiftDate(f.from,-1),f.to,['markets']):{};
+  return {client,metrics,prior,comparison,verdict,series,datasetSeries,comparisonDatasetSeries,datasetHistorySeries,details,actions,opportunities,views,preparedDatasets:[...new Set(datasets)],datasetMetrics:views[dataset]?.viewMetrics??summarize([]),activeIncidents,warnings,cutoff,availableDimensions,evidence:current,comparisonEvidence:previous,connections,selectedCount:current.length,liveOperations,subscriptions:subscriptionComparison(filtered(all,{...f,from:undefined,to:undefined}),f.to,client.config.incidents,f.mode==='partial'?{timezone:client.timezone,cutoff}:undefined)};
 }
 export type ClientAnalytics=ReturnType<typeof queryClient>;

@@ -26,3 +26,11 @@ it('reads operational-only snapshots fresh without invalidating the bulky closed
  const {store,queries}=await setup();await store.persistBatch('o','source',batch(),'first','2026-10-12T12:00:00Z');await store.saveQualification('o','a','ops',1,1,{profiles:[{dataset:'media',metric:'active_ads'}]},'u');const inventory=(value:number):SourceBatch=>({...batch(),rows:[row('2026-10-12',value,'media','active_ads')]});await store.persistBatch('o','ops',inventory(3),'ops-first','2026-10-12T12:00:00Z');expect((await store.observations('o','a',filters)).find(value=>value.metric==='active_ads')?.value).toBe(3);const reads=queries.filter(sql=>sql.startsWith('SELECT o.payload')).length;
  await store.persistBatch('o','ops',inventory(4),'ops-next','2026-10-12T13:00:00Z');expect((await store.observations('o','a',filters)).find(value=>value.metric==='active_ads')?.value).toBe(4);expect(queries.filter(sql=>sql.startsWith('SELECT o.payload'))).toHaveLength(reads);
 });
+it('keeps current operational counters separate from a narrow historical dataset selection',async()=>{
+ const {store}=await setup();await store.persistBatch('o','source',batch(),'first','2026-10-12T12:00:00Z');
+ await store.saveQualification('o','a','ops',1,1,{profiles:[{dataset:'media',metric:'active_ads'}]},'u');
+ await store.persistBatch('o','ops',{...batch(),rows:[row('2026-10-12',7,'media','active_ads')]},'ops','2026-10-12T12:00:00Z');
+ const rows=await store.observations('o','a',{...filters,market:'US'},false,undefined,{datasets:['overview'],dimensions:true});
+ expect(rows.find(value=>value.metric==='active_ads')).toMatchObject({value:7,date:'2026-10-12',dataset:'media'});
+ expect(rows.filter(value=>value.metric!=='active_ads').every(value=>value.dataset==='overview')).toBe(true);
+});

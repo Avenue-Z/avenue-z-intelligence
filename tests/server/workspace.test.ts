@@ -1,7 +1,7 @@
 import {it,expect,vi} from 'vitest';
-const state=vi.hoisted(()=>({store:null as any}));
+const state=vi.hoisted(()=>({store:null as any,permitted:['a']}));
 vi.mock('@avenue/runtime',()=>({runtimePlatform:'sites'}));
-vi.mock('../../lib/server/access',()=>({requireClientAccess:async()=>({organizationId:'o',permittedClientIds:['a'],role:'admin'}),getStore:()=>state.store}));
+vi.mock('../../lib/server/access',()=>({requireClientAccess:async()=>({organizationId:'o',permittedClientIds:state.permitted,role:'admin'}),getStore:()=>state.store}));
 vi.mock('../../lib/server/secrets',()=>({serverSecret:()=>null}));
 import {loadWorkspace,workspaceSearchParams,parseFilters} from '../../lib/server/workspace';
 it('preserves shared URL scope for the initial server render',()=>{const p=workspaceSearchParams({from:'2026-09-10',to:'2026-10-08',view:'reviews',section:['findings','portfolio']});expect(p.get('from')).toBe('2026-09-10');expect(p.get('to')).toBe('2026-10-08');expect(p.get('section')).toBe('findings');});
@@ -9,7 +9,17 @@ it('resolves an old archive date before loading its detail tables',async()=>{
  const client={id:'a',name:'A',timezone:'UTC',currency:'USD',config:{incidents:[],spendChannels:[],benchmarkMarket:'US',minSessions:10,minOpportunity:1,maxActions:6}};
  const date='2026-01-03',row={date,dataset:'overview',metric:'revenue',value:100,currency:'USD',definition:'web',population:'web',quality:'historical',dimensions:{},retrievedAt:'old'};
  state.store={first:async()=>null,clients:async()=>[client],connections:async()=>[],observations:async(_o:string,_c:string,f:any,headlineOnly:boolean)=>headlineOnly?[row]:f.from===date?[row,{...row,dataset:'funnels',metric:'sessions',value:10,dimensions:{page:'/lp'}}]:[],findings:async()=>[],reviews:async()=>[],note:async()=>({body:''}),jobs:async()=>[]};
- const result=await loadWorkspace(new URLSearchParams());expect(result.filters.to).toBe(date);expect(result.clients[0].details).toHaveLength(1);
+ const result=await loadWorkspace(new URLSearchParams({clientId:'a'}));expect(result.filters.to).toBe(date);expect(result.clients[0].details).toHaveLength(1);
 });
 
 it("canonicalizes legacy country URL filters before rendering the dropdown",()=>{expect(parseFilters(new URLSearchParams()).market).toBe("");expect(parseFilters(new URLSearchParams({market:"France"})).market).toBe("FR");expect(parseFilters(new URLSearchParams({market:"United Kingdom"})).market).toBe("UK");expect(parseFilters(new URLSearchParams({market:"Atlantis"})).market).toBe("Atlantis");});
+it('loads focused revenue datasets and only headline observations for the other authorized client',async()=>{
+ state.permitted=['a','b'];const reads:{clientId:string;datasets:string[]|undefined}[]=[],clients=['a','b'].map(id=>({id,name:id,timezone:'UTC',currency:'USD',config:{incidents:[],spendChannels:[],benchmarkMarket:'US',minSessions:10,minOpportunity:1,maxActions:6}}));
+ state.store={first:async()=>null,clients:async()=>clients,connections:async()=>[],observations:async(_o:string,clientId:string,_f:any,_headlines:boolean,_options:any,selection:any)=>{reads.push({clientId,datasets:selection?.datasets});return ['overview','revenue','products'].filter(dataset=>!selection||selection.datasets.includes(dataset)).map(dataset=>({date:'2026-10-07',dataset,metric:'revenue',value:clientId==='a'?100:800,currency:'USD',definition:'web',population:'web',quality:'complete',dimensions:{},retrievedAt:'2026-10-08T00:00:00Z',coverageThrough:'2026-10-08T00:00:00Z',sourceId:'source'}));},findings:async()=>[],reviews:async()=>[],note:async()=>({body:''}),jobs:async()=>[]};
+ const result=await loadWorkspace(new URLSearchParams({clientId:'a',view:'revenue',from:'2026-10-07',to:'2026-10-07'}));expect(result).toHaveProperty('focusedClientId','a');expect(reads).toEqual([{clientId:'a',datasets:['overview','revenue','subscriptions','subscriptionEvents']},{clientId:'b',datasets:['overview']}]);expect(result.clients[0].datasetSeries.revenue[0].summary.revenue).toBe(100);expect(result.clients[0].views.products).toBeUndefined();expect(result.clients[1].metrics.revenue).toBe(800);expect(result.clients[1].views.revenue).toBeUndefined();state.permitted=['a'];
+});
+it('rejects an unavailable focused client before loading observations',async()=>{state.permitted=['a'];await expect(loadWorkspace(new URLSearchParams({clientId:'outside'}))).rejects.toThrow('Client');});
+it('keeps an unfocused portfolio to headline and renewal datasets without advertising client tabs',async()=>{
+ const reads:string[][]=[];state.permitted=['a'];state.store={first:async()=>null,clients:async()=>[{id:'a',name:'A',timezone:'UTC',currency:'USD',config:{incidents:[],spendChannels:[],benchmarkMarket:'US',minSessions:10,minOpportunity:1,maxActions:6}}],connections:async()=>[],observations:async(_o:any,_c:any,_f:any,_h:any,_b:any,selection:any)=>{reads.push(selection.datasets);return [];},findings:async()=>[],reviews:async()=>[],note:async()=>({body:''}),jobs:async()=>[]};
+ const result=await loadWorkspace(new URLSearchParams({from:'2026-10-07',to:'2026-10-07'}));expect(reads).toEqual([['overview','subscriptions','subscriptionEvents']]);expect(result.clients[0].views.products).toBeUndefined();expect(result.clients[0].preparedDatasets).toEqual(['overview','subscriptions','subscriptionEvents']);
+});

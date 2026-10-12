@@ -49,3 +49,14 @@ it('prepares only the requested dataset for review and AI queries unless the wor
  expect(Object.keys(analytics.views)).toEqual(['funnels']);
  expect(analytics.details[0].metrics.sessions).toBe(1000);
 });
+it('prepares only explicit datasets while preserving daily chart values and qualification',()=>{
+ const f={...filters,view:'revenue'},analytics=queryClient(client,observations,[],f,{preparedDatasets:['overview','revenue','subscriptions']} as any);
+ expect(Object.keys(analytics.views)).toEqual(['overview','revenue','subscriptions']);expect(analytics.views.products).toBeUndefined();expect(analytics.datasetSeries.revenue[0].summary).toMatchObject({revenue:100,orders:5,aov:20});expect(analytics.datasetSeries.products).toBeUndefined();expect(analytics.comparisonDatasetSeries.revenue[0].date).toBe('2026-10-06');
+});
+it('marks an unrequested displayed dataset as unprepared instead of advertising an empty view',()=>{
+ const f={...filters,view:'revenue'},analytics=queryClient(client,observations,[],f,{preparedDatasets:['overview']} as any);
+ expect(Object.keys(analytics.views)).toEqual(['overview']);expect(analytics.views.revenue).toBeUndefined();expect(analytics.details).toEqual([]);expect(analytics.metrics.revenue).toBe(100);
+});
+it('keeps unsupported dimension metrics unavailable in explicitly prepared sales charts',()=>{
+ const f={...filters,view:'revenue',device:'mobile'},analytics=queryClient(client,observations,[],f,{preparedDatasets:['overview','revenue','subscriptions']});expect(analytics.datasetMetrics.revenue).toBeNull();expect(analytics.datasetSeries.revenue[0].summary.revenue).toBeNull();expect(analytics.warnings.some(warning=>warning.includes('revenue:revenue'))).toBe(true);
+});

@@ -59,7 +59,7 @@ it('isolates an invalid persisted schedule while another brand receives its repo
 it('warms durable closed and partial selections after a successful source job without a browser session',async()=>{
  const s=state.store;await s.enqueue('o','kind-patches','s','warm','2026-10-12T13:00:00Z');await s.finish('o:s:warm');state.syncCompleted=['o:s:warm'];
  await s.persistBatch('o','s',{clientId:'kind-patches',channels:[],complete:true,coverageThrough:'2026-10-12T13:00:00Z',rows:[{date:'2026-10-11',dataset:'overview',metric:'revenue',value:42,definition:'web',currency:'USD',dimensions:{}}]},'warm','2026-10-12T13:00:00Z');
- const result=await syncTick();expect(result.completed).toEqual(['o:s:warm']);expect(result).toHaveProperty('cacheWarm.completed',8);expect(await s.all("SELECT status FROM observation_cache_entries WHERE organizationId='o' AND clientId='kind-patches'")).toEqual(Array.from({length:8},()=>({status:'ready'})));
+ const result=await syncTick();expect(result.completed).toEqual(['o:s:warm']);expect(result).toHaveProperty('cacheWarm.completed',16);expect(await s.all("SELECT status FROM observation_cache_entries WHERE organizationId='o' AND clientId='kind-patches'")).toEqual(Array.from({length:16},()=>({status:'ready'})));
 });
 it('does not warm caches when no source job completed or the cache migration is absent',async()=>{
  const s=state.store,observations=vi.spyOn(s,'observations');expect((await syncTick()).completed).toEqual([]);expect(observations).not.toHaveBeenCalled();
@@ -67,6 +67,9 @@ it('does not warm caches when no source job completed or the cache migration is 
 });
 it('preserves completed source jobs when cache warming fails during a source read',async()=>{
  const s=state.store;await s.enqueue('o','kind-patches','s','warm','2026-10-12T13:00:00Z');await s.finish('o:s:warm');state.syncCompleted=['o:s:warm'];
+ // Simulate legacy/corrupted storage. The dataset expression index now rejects
+ // malformed JSON at write time, before this read-failure recovery path is reached.
+ await s.run('DROP INDEX idx_observations_snapshot_date_dataset_rowkey');
  await s.persistBatch('o','s',{clientId:'kind-patches',channels:[],complete:true,coverageThrough:'2026-10-12T13:00:00Z',rows:[{date:'2026-10-11',dataset:'overview',metric:'revenue',value:42,definition:'web',currency:'USD',dimensions:{}}]},'warm','2026-10-12T13:00:00Z');await s.run("UPDATE observations SET payload='unavailable'");
  const result=await syncTick();expect(result.completed).toEqual(['o:s:warm']);expect(result.failed).toEqual([]);expect(result).toHaveProperty('cacheWarm.completed',0);expect(await s.first("SELECT status FROM jobs WHERE id='o:s:warm'")).toMatchObject({status:'complete'});
 });

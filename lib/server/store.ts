@@ -7,8 +7,8 @@ import {QueryCache} from './query-cache';
 import {observationCodec} from './observation-codec';
 import {durableObservationPayload} from './durable-observation-cache';
 type Db={prepare:(sql:string)=>any;batch:(statements:any[])=>Promise<any[]>;allowCrossRequestCoalescing?:boolean};
-// Both runtime adapters keep their DB object for the lifetime of a warm
-// instance. Keep databases separate even when organization/client ids match.
+// Vercel reuses a warm adapter; Sites owns a fresh adapter per Store. This
+// optional memory cache stays isolated while the durable cache is shared.
 const observationCaches=new WeakMap<Db,QueryCache<Observation[]>>();
 function observationCache(db:Db){let cache=observationCaches.get(db);if(!cache){cache=new QueryCache({ttlMs:60000,maxEntries:16,maxBytes:16*1024*1024,maxEntryBytes:12*1024*1024,coalesce:db.allowCrossRequestCoalescing!==false},observationCodec);observationCaches.set(db,cache);}return cache;}
 export type ScheduledReviewLease={id:string;leaseToken:string};
@@ -44,6 +44,9 @@ export class Store {
     }
     if(headlinesOnly)clause+=" AND json_extract(o.payload,'$.dataset')='overview'";
     const selectedDatasets=selection?[...new Set(selection.datasets)].sort():null,dimensionSelection:Record<string,string>={};let selectionClause='',selectionValues:unknown[]=[];
+    // For IN selections SQLite otherwise favors the row-key ordering index and
+    // decodes every dataset in the snapshot/day. Seek the selected datasets first.
+    const selectionIndex=selectedDatasets?.length?' INDEXED BY idx_observations_snapshot_date_dataset_rowkey':'';
     if(selectedDatasets){selectionClause+=selectedDatasets.length?` AND json_extract(o.payload,'$.dataset') IN (${selectedDatasets.map(()=>'?').join(',')})`:' AND 0';selectionValues.push(...selectedDatasets);
       if(selection?.dimensions&&filters)for(const dimension of ['market','stream','source','device','page'] as const){const value=filters[dimension];if(!value)continue;dimensionSelection[dimension]=value;const aliases=[value];
         if(dimension==='market'&&/^[A-Z]{2}$/.test(value)){const name=new Intl.DisplayNames(['en'],{type:'region',fallback:'code'}).of(value==='UK'?'GB':value);if(name&&name!==value)aliases.push(name);if(value==='UK')aliases.push('GB');}
@@ -99,7 +102,7 @@ export class Store {
     const add=(page:{payload:string}[])=>{for(const r of page){const row=JSON.parse(r.payload);if(accumulator)accumulator.add(row);else rows.push(row);}};
     // Seek within each captured snapshot/date using the primary key. Sorting
     // the entire source set again for every page made large exports quadratic.
-    const readPointer=async(pointer:typeof pointers[number],cursor:string|null=null)=>{for(;;){const page=await readPage<{payload:string;rowKey:string}>(`SELECT o.payload,o.rowKey FROM observations o WHERE o.snapshotId=? AND o.date=?${clause}${cursor?' AND o.rowKey>?':''} ORDER BY o.rowKey LIMIT 2000`,pointer.snapshotId,pointer.date,...values,...cursor?[cursor]:[]);add(page);if(page.length<2000)return;cursor=page[page.length-1].rowKey;}};
+    const readPointer=async(pointer:typeof pointers[number],cursor:string|null=null)=>{for(;;){const page=await readPage<{payload:string;rowKey:string}>(`SELECT o.payload,o.rowKey FROM observations o${selectionIndex} WHERE o.snapshotId=? AND o.date=?${clause}${cursor?' AND o.rowKey>?':''} ORDER BY o.rowKey LIMIT 2000`,pointer.snapshotId,pointer.date,...values,...cursor?[cursor]:[]);add(page);if(page.length<2000)return;cursor=page[page.length-1].rowKey;}};
     const history:typeof pointers=[],groups:(typeof pointers)[]=[];
     for(const pointer of pointers){if(filters&&!detailWindows.some(window=>inWindow(pointer.date,window))||headlinesOnly)history.push(pointer);else groups.push([pointer]);}
     for(let index=0;index<history.length;index+=16)groups.push(history.slice(index,index+16));
@@ -110,7 +113,7 @@ export class Store {
       // not repeat the grouped sort: resume that pointer with its primary-key
       // cursor and read subsequent pointers individually. Captured ids retain
       // snapshot consistency even if a source refresh publishes during I/O.
-      const page=await readPage<{payload:string;rowKey:string;pointerIndex:number}>(`SELECT o.payload,o.rowKey,CAST(p.key AS INTEGER) AS pointerIndex FROM json_each(?) p JOIN observations o ON o.snapshotId=json_extract(p.value,'$.snapshotId') AND o.date=json_extract(p.value,'$.date') WHERE 1=1${clause} ORDER BY CAST(p.key AS INTEGER),o.rowKey LIMIT 2000`,JSON.stringify(group),...values);
+      const page=await readPage<{payload:string;rowKey:string;pointerIndex:number}>(`SELECT o.payload,o.rowKey,CAST(p.key AS INTEGER) AS pointerIndex FROM json_each(?) p JOIN observations o${selectionIndex} ON o.snapshotId=json_extract(p.value,'$.snapshotId') AND o.date=json_extract(p.value,'$.date') WHERE 1=1${clause} ORDER BY CAST(p.key AS INTEGER),o.rowKey LIMIT 2000`,JSON.stringify(group),...values);
       add(page);if(page.length<2000)continue;
       const last=page[page.length-1];await readPointer(group[last.pointerIndex],last.rowKey);
       for(let index=last.pointerIndex+1;index<group.length;index++)await readPointer(group[index]);
@@ -122,7 +125,7 @@ export class Store {
     // A warming deadline must never cancel a browser request coalesced on the
     // same key. Warming populates durable storage without joining that promise.
     const [cached,operations]=await Promise.all([pointers.length?(options?load().then(payload=>observationCodec.decode(payload)):observationCache(this.db).getEncoded(key,load)):Promise.resolve([]),
-      freshOperationalPointers.length?readPage<{payload:string}>(`SELECT json_extract(o.payload,'$') AS payload FROM json_each(?) p JOIN observations o ON o.snapshotId=json_extract(p.value,'$.snapshotId') AND o.date=json_extract(p.value,'$.date') WHERE json_extract(o.payload,'$.metric') IN ('active_customers','active_ads','active_creatives') ${selectionClause} ORDER BY o.date,o.rowKey`,JSON.stringify(freshOperationalPointers),...selectionValues).then(rows=>rows.map(row=>JSON.parse(row.payload) as Observation)):Promise.resolve([])]);
+      freshOperationalPointers.length?readPage<{payload:string}>(`SELECT json_extract(o.payload,'$') AS payload FROM json_each(?) p JOIN observations o ON o.snapshotId=json_extract(p.value,'$.snapshotId') AND o.date=json_extract(p.value,'$.date') WHERE json_extract(o.payload,'$.metric') IN ('active_customers','active_ads','active_creatives') ORDER BY o.date,o.rowKey`,JSON.stringify(freshOperationalPointers)).then(rows=>rows.map(row=>JSON.parse(row.payload) as Observation)):Promise.resolve([])]);
     return operations.length?[...cached,...operations]:cached;
   }
   async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string}) {

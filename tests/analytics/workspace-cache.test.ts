@@ -51,3 +51,18 @@ it('invalidates cached responses after a workspace mutation',()=>{
  cache.invalidate();
  expect(cache.read(filters)).toBeNull();
 });
+it('checks prepared data only for the focused client and rejects missing compound datasets',()=>{
+ const full=workspace({view:'revenue'}),primary=full.clients[0],headline={...primary,client:{...primary.client,id:'beam'},preparedDatasets:['overview'],views:{},details:[],actions:[]};full.clients.push(headline);full.scope.permittedClientIds.push('beam');(full as any).focusedClientId='kind-patches';
+ expect(navigation.selectWorkspaceView(full,'products','kind-patches')).not.toBeNull();
+ const incomplete={...full,clients:[{...primary,preparedDatasets:['overview','traffic','subscriptions'],views:{traffic:primary.views.traffic,subscriptions:primary.views.subscriptions}},headline]};
+ expect(navigation.selectWorkspaceView(incomplete,'traffic','kind-patches')).toBeNull();expect(navigation.selectWorkspaceView(incomplete,'subscriptions','kind-patches')).toBeNull();expect(navigation.selectWorkspaceView({...incomplete,filters:{...incomplete.filters,view:'traffic'}},'traffic','kind-patches')).toBeNull();
+});
+it('retains independently prepared tabs for one selection without refreshing their original age',()=>{
+ const initial=workspace({view:'revenue'});(initial as any).focusedClientId='kind-patches';initial.clients[0].preparedDatasets=['overview','revenue'];initial.clients[0].views={};
+ const cache=new navigation.WorkspaceCache(initial),next=workspace({view:'traffic'});(next as any).focusedClientId='kind-patches';next.loadedAt='2026-10-08T12:00:30Z';next.clients[0].preparedDatasets=['overview','funnels','traffic'];next.clients[0].views={funnels:next.clients[0].views.funnels};cache.remember(next);
+ expect(cache.read({...filters,view:'revenue'},Date.parse('2026-10-08T12:01:05Z'),'kind-patches')?.stale).toBe(true);expect(cache.read({...filters,view:'traffic'},Date.parse('2026-10-08T12:01:05Z'),'kind-patches')?.stale).toBe(false);expect(cache.read({...filters,view:'products'},undefined,'kind-patches')).toBeNull();
+});
+it('refuses a focused overview when its landing-page and spend datasets were not prepared',()=>{
+ const initial=workspace({view:'revenue'});initial.focusedClientId='kind-patches';initial.clients[0].preparedDatasets=['overview','revenue'];initial.clients[0].views={overview:initial.clients[0].views.overview};
+ expect(navigation.selectWorkspaceView(initial,'overview')).toBeNull();initial.focusedClientId=undefined;const overview=navigation.selectWorkspaceView(initial,'overview')!;expect(overview.clients[0].viewMetrics.revenue).toBe(100);expect(overview.clients[0].details).toEqual([]);expect(navigation.selectWorkspaceView(overview,'revenue')?.clients[0].viewMetrics.revenue).toBe(50);
+});

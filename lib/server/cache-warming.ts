@@ -1,5 +1,6 @@
 import type {AccessScope,QueryFilters} from '../analytics/contracts';
 import {shiftDate,todayIn} from '../analytics/windows';
+import {workspaceDatasets} from '../analytics/workspace-datasets';
 import type {Store} from './store';
 
 /** Warm one changed client after its source jobs have already completed.
@@ -16,14 +17,16 @@ export async function warmSuccessfulSourceJobs(store:Store,scope:AccessScope,job
   // open through the ordinary Store path until the migration is installed.
   await store.first('SELECT cacheKey FROM observation_cache_entries WHERE organizationId=? AND clientId=? LIMIT 1',scope.organizationId,client.id);
   const today=todayIn(client.timezone),base={compare:'previous',view:'overview',market:'',stream:'',source:'',device:'',page:''} as const;
-  // Keep all ordinary comparison scopes warm. Each attempt uses the same
-  // bounded scheduler budget; later ticks fill remaining misses as earlier
-  // unchanged closed-date generations become fast cache reads.
-  const comparisons=['fourWeeks','previous','weekday','thirtyDays'] as const;
-  const selections:QueryFilters[]=[...comparisons.map(compare=>({...base,compare,from:shiftDate(today,-1),to:shiftDate(today,-1),mode:'closed' as const})),...comparisons.map(compare=>({...base,compare,from:today,to:today,mode:'partial' as const}))];
+  // Match the exact dataset selection used by foreground workspace reads.
+  // Prioritize the expensive closed Traffic scopes before the lighter modes;
+  // later native ticks fill remaining misses within the same bounded budget.
+  const primary=['previous','fourWeeks'] as const,secondary=['weekday','thirtyDays'] as const;
+  const selections:QueryFilters[]=[];
+  for(const mode of ['closed','partial'] as const)for(const comparisons of [primary,secondary])for(const view of ['traffic','overview'])for(const compare of comparisons){const date=mode==='closed'?shiftDate(today,-1):today;selections.push({...base,view,compare,from:date,to:date,mode});}
+
   for(const filters of selections){
    if(Date.now()+40000>=deadline)break;
-   result.attempted++;await store.observations(scope.organizationId,client.id,filters,false,{deadline});
+   result.attempted++;await store.observations(scope.organizationId,client.id,filters,false,{deadline},{datasets:workspaceDatasets(filters.view)});
    if(Date.now()>=deadline)break;result.completed++;
   }
  }catch{/* Derived cache failures cannot change source job state. */}
