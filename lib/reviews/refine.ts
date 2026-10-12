@@ -23,7 +23,12 @@ export function rankedReviewPages(c:ClientEvidence,f:QueryFilters){
 export function refineReview(result:Result,c:ClientEvidence,f:QueryFilters){
  const pages=rankedReviewPages(c,f);
  // A higher-converting different page is not a qualified conversion benchmark.
- const unsupportedPageBenchmark=(text:string)=>/home[ -]?page.{0,40}benchmark|(?:stronger|strongest|higher[ -]converting)(?:[ -]+[\w/.-]+){0,5}[ -]+benchmark/i.test(text);
+ const unsupportedPageBenchmark=(text:string)=>{
+  if(!/\bpage\b|home[ -]?page|\/pages?\/|\/collections\//i.test(text))return false;
+  const strongest=/(?:stronger|strongest|higher[ -]converting)(?:[ -]+[\w/.-]+){0,5}[ -]+benchmark/i.test(text);
+  const ownHomepage=/home[ -]?page/i.test(text)&&/its own|own matched|own previous|same[ -]home[ -]?page/i.test(text)&&pages.some(p=>p.page==='/'&&p.benchmarkReason==='Own previous period'&&(p.market==='All observed'||text.toLowerCase().split(/[^\p{L}\p{N}]+/u).includes(p.market.toLowerCase())));
+  return strongest||!ownHomepage&&/home[ -]?page.{0,40}benchmark/i.test(text);
+ };
  const comparisonCheck=`A same-page comparison is required for ${f.from}–${f.to} before assigning a conversion opportunity. Check the page in its own matched comparison period or the configured benchmark market; different-page conversion rates do not establish an order gap.`;
  result.actions=result.actions.flatMap(a=>{if(!unsupportedPageBenchmark(`${a.title} ${a.detail} ${a.nextStep}`))return [a];return a.existingFindingId?[{...a,detail:`Existing dated workflow issue; the current different-page benchmark does not establish a new deterioration. ${comparisonCheck}`,nextStep:comparisonCheck,impact:null}]:[];});
  for(const current of result.sections){current.paragraphs=current.paragraphs.map(p=>unsupportedPageBenchmark(p)?comparisonCheck:p);current.bullets=current.bullets.map(p=>unsupportedPageBenchmark(p)?comparisonCheck:p);}
