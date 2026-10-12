@@ -16,7 +16,11 @@ export async function warmSuccessfulSourceJobs(store:Store,scope:AccessScope,job
   // open through the ordinary Store path until the migration is installed.
   await store.first('SELECT cacheKey FROM observation_cache_entries WHERE organizationId=? AND clientId=? LIMIT 1',scope.organizationId,client.id);
   const today=todayIn(client.timezone),base={compare:'previous',view:'overview',market:'',stream:'',source:'',device:'',page:''} as const;
-  const selections:QueryFilters[]=[{...base,from:shiftDate(today,-1),to:shiftDate(today,-1),mode:'closed'},{...base,from:today,to:today,mode:'partial'}];
+  // Keep all ordinary comparison scopes warm. Each attempt uses the same
+  // bounded scheduler budget; later ticks fill remaining misses as earlier
+  // unchanged closed-date generations become fast cache reads.
+  const comparisons=['fourWeeks','previous','weekday','thirtyDays'] as const;
+  const selections:QueryFilters[]=[...comparisons.map(compare=>({...base,compare,from:shiftDate(today,-1),to:shiftDate(today,-1),mode:'closed' as const})),...comparisons.map(compare=>({...base,compare,from:today,to:today,mode:'partial' as const}))];
   for(const filters of selections){
    if(Date.now()+40000>=deadline)break;
    result.attempted++;await store.observations(scope.organizationId,client.id,filters,false,{deadline});

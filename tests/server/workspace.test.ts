@@ -1,5 +1,6 @@
 import {it,expect,vi} from 'vitest';
 const state=vi.hoisted(()=>({store:null as any}));
+vi.mock('@avenue/runtime',()=>({runtimePlatform:'sites'}));
 vi.mock('../../lib/server/access',()=>({requireClientAccess:async()=>({organizationId:'o',permittedClientIds:['a'],role:'admin'}),getStore:()=>state.store}));
 vi.mock('../../lib/server/secrets',()=>({serverSecret:()=>null}));
 import {loadWorkspace,workspaceSearchParams,parseFilters} from '../../lib/server/workspace';

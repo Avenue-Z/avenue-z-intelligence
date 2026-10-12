@@ -1,5 +1,5 @@
 import {it,expect,vi} from 'vitest';
-vi.mock('@avenue/runtime',()=>({env:{}}));
+vi.mock('@avenue/runtime',()=>({env:{},runtimePlatform:'sites'}));
 vi.mock('../../lib/server/access',()=>({getStore:vi.fn(),requireClientAccess:vi.fn()}));
 import {datasetSeries} from '../../lib/analytics/dataset-series';
 import {comparisonPeriod} from '../../lib/analytics/windows';

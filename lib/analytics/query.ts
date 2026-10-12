@@ -50,11 +50,12 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
       const selectedEnd=Temporal.PlainDate.from(f.to).toZonedDateTime({timeZone:client.timezone,plainTime:clock});
       const priorEnd=Temporal.PlainDate.from(comparison.to).toZonedDateTime({timeZone:client.timezone,plainTime:clock});
       currentEnd=Number(selectedEnd.epochMilliseconds);previousEnd=Number(priorEnd.epochMilliseconds);cutoff=selectedEnd.toInstant().toString();
-      current=current.filter(r=>r.end&&Date.parse(r.end)<=currentEnd);previous=previous.filter(r=>r.end&&Date.parse(r.end)<=previousEnd);peers=peers.filter(r=>r.end&&Date.parse(r.end)<=currentEnd);
+      const withinMatchedDay=(row:Observation)=>!!row.end&&Date.parse(row.end)<=Number(Temporal.PlainDate.from(row.date).toZonedDateTime({timeZone:client.timezone,plainTime:clock}).epochMilliseconds);
+      current=current.filter(withinMatchedDay);previous=previous.filter(withinMatchedDay);peers=peers.filter(withinMatchedDay);
       if(!current.length)warnings.push('Daily aggregates cannot supply a same-hour comparison.');
     }
   } else {const today=todayIn(client.timezone);current=current.filter(r=>r.date<today);previous=previous.filter(r=>r.date<today);peers=peers.filter(r=>r.date<today);}
-  function covered(rows:Observation[],from:string,to:string,end:number){return ['revenue','spend','new_orders'].every(metric=>{const values=rows.filter(r=>r.metric===metric);if(!values.length||values.some(r=>r.quality!=='complete'||!r.coverageThrough||Date.parse(r.coverageThrough)<end))return false;for(let date=from;date<=to;date=shiftDate(date,1)){const day=values.filter(r=>r.date===date);if(!day.length)return false;if(f.mode==='partial'&&date===to&&Math.max(...day.map(r=>r.end?Date.parse(r.end):0))<end)return false;}return true;});}
+  function covered(rows:Observation[],from:string,to:string,end:number){const clock=f.mode==='partial'?Temporal.Instant.fromEpochMilliseconds(end).toZonedDateTimeISO(client.timezone).toPlainTime():null;return ['revenue','spend','new_orders'].every(metric=>{const values=rows.filter(r=>r.metric===metric);if(!values.length)return false;for(let date=from;date<=to;date=shiftDate(date,1)){const day=values.filter(r=>r.date===date),requiredEnd=clock?Number(Temporal.PlainDate.from(date).toZonedDateTime({timeZone:client.timezone,plainTime:clock}).epochMilliseconds):Date.parse(dayWindow(date,client.timezone).end);if(!day.length||day.some(r=>r.quality!=='complete'||!r.coverageThrough||Date.parse(r.coverageThrough)<requiredEnd))return false;if(clock&&Math.max(...day.map(r=>r.end?Date.parse(r.end):0))<requiredEnd)return false;}return true;});}
   const headline=current.filter(r=>r.dataset==='overview'),previousHeadline=previous.filter(r=>r.dataset==='overview');
   const metrics=summarize(headline),prior=summarize(previousHeadline);
   const matched=[...headline,...previousHeadline];const spendRows=matched.filter(r=>r.metric==='spend');

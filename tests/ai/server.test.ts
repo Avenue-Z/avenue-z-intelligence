@@ -5,6 +5,7 @@ import {Store} from '../../lib/server/store';
 import {authorize} from '../../lib/server/policy';
 import clients from '../../data/initial-clients.json';
 const state=vi.hoisted(()=>({store:null as any,scope:{organizationId:'o',actorId:'u',role:'analyst',permittedClientIds:['beam']},model:vi.fn()}));
+vi.mock('@avenue/runtime',()=>({runtimePlatform:'sites'}));
 vi.mock('../../lib/server/access',()=>({getStore:()=>state.store,requireClientAccess:async(id?:string)=>authorize(state.scope as any,id)}));
 vi.mock('../../lib/server/secrets',()=>({serverSecret:(name:string)=>name==='OPENAI_API_KEY'?'test-only':null}));
 vi.mock('../../lib/ai/provider',()=>({askOpenAI:state.model}));
@@ -34,4 +35,10 @@ it('uses current evidence without feeding old report measurements back as curren
  await state.store.persistBatch('o','qualified',{clientId:'beam',complete:true,coverageThrough:'2026-10-08T04:00:00Z',rows:[{date:filters.to,dataset:'overview',metric:'revenue',value:100,definition:'net_sales',population:'sales',currency:'USD',dimensions:{}}]} as any,'live','2026-10-08T10:00:00Z');
  state.model.mockResolvedValue({kpis:Array.from({length:4},()=>({label:'Metric',value:'Unavailable',note:'Not supplied'})),headlines:['Spend vs revenue is efficient','Current evidence','Page check','Source check'],sections:REVIEW_SECTIONS.map(title=>({title,paragraphs:['MER proves profit'],bullets:[],tables:[]})),sourceIds:[],actions:[]});
  await generateAIReview(state.scope as any,'beam',filters);expect(state.model.mock.calls[0][2]).not.toContain('38.23');const p=(await state.store.reviews('o','beam'))[0].payload as any;expect(p.headlines[0]).toContain('coverage is unconfirmed');expect(p.sections.find((s:any)=>s.title==='Spend vs revenue').paragraphs[0]).toContain('does not establish');
+});
+
+it('answers chat from one shared detail read rather than a second overlapping month export',async()=>{
+ state.model.mockResolvedValue({answer:'No evidence in this window',sourceIds:['selection:beam'],followUps:[],caveats:[]});
+ const spy=vi.spyOn(state.store,'observations');await answerAI({clientId:'beam',filters,question:'What is shown?'});
+ expect(spy.mock.calls.filter(call=>call[3]!==true)).toHaveLength(1);expect(spy.mock.calls.filter(call=>call[3]===true)).toHaveLength(1);
 });

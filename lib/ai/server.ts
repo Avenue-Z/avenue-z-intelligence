@@ -15,7 +15,11 @@ import {authoritativeSpendReview} from '../reviews/spend-review';
 import {refineReview} from '../reviews/refine';
 import {boundedAIContextForModel} from './model-input';
 import {buildChatModelContext} from './chat-input';
-export async function aiContext(clientId:string|undefined,filters:QueryFilters,reviewId?:string,existingScope?:AccessScope,sourceOnly=false){
+import {withAnalyticsMemory} from '../server/analytics-memory';
+export async function aiContext(clientId:string|undefined,filters:QueryFilters,reviewId?:string,existingScope?:AccessScope,sourceOnly=false,fastChat=false){
+ return withAnalyticsMemory(()=>aiContextWithinBudget(clientId,filters,reviewId,existingScope,sourceOnly,fastChat));
+}
+async function aiContextWithinBudget(clientId:string|undefined,filters:QueryFilters,reviewId?:string,existingScope?:AccessScope,sourceOnly=false,fastChat=false){
  filters=parseFilters(new URLSearchParams({...filters}));
  const scope=existingScope??await requireClientAccess(clientId),s=getStore();if(clientId&&!scope.permittedClientIds.includes(clientId))throw new Error('Client access denied');
  const clients=(await s.clients(scope.organizationId)).filter(c=>scope.permittedClientIds.includes(c.id)&&(!clientId||c.id===clientId));
@@ -33,7 +37,7 @@ export async function aiContext(clientId:string|undefined,filters:QueryFilters,r
  const records=await Promise.all(clients.map(async client=>{
   const [rows,closedRows,connections,note,findings,allReviews]=await Promise.all([
    s.observations(scope.organizationId,client.id,filters),
-   s.observations(scope.organizationId,client.id,{...filters,from:[filters.to.slice(0,8)+'01',shiftDate(filters.to,-7)].sort()[0],mode:'closed',compare:'weekday'}),
+   fastChat?Promise.resolve([]):s.observations(scope.organizationId,client.id,{...filters,from:[filters.to.slice(0,8)+'01',shiftDate(filters.to,-7)].sort()[0],mode:'closed',compare:'weekday'}),
    s.connections(scope.organizationId,client.id),s.note(scope.organizationId,client.id),s.findings(scope.organizationId,client.id),s.reviews(scope.organizationId,client.id)
   ]);
   if(reviewId&&!allReviews.some(r=>r.id===reviewId)){const r=await s.first('SELECT * FROM reviews WHERE organizationId=? AND clientId=? AND id=?',scope.organizationId,client.id,reviewId);if(!r)throw new Error('Review access denied');allReviews.unshift({...r,payload:JSON.parse(r.payload),current:!!r.current});}
@@ -45,7 +49,7 @@ export async function aiContext(clientId:string|undefined,filters:QueryFilters,r
   const summary=(a:ReturnType<typeof queryClient>,from:string,to:string)=>({from,to,metrics:a.metrics,warnings:a.warnings,observedDates:[...new Set(a.evidence.filter(x=>x.dataset==='overview').map(x=>x.date))].sort(),quality:[...new Set(a.evidence.map(x=>x.quality))]});
   return {...queryClient(client,rows,connections,filters),note,findings,reviews:allReviews,
    weekday:{metrics:weekday.prior,period:weekday.comparison,warnings:weekday.warnings},previousDay:{metrics:previousDay.prior,period:previousDay.comparison,warnings:previousDay.warnings},
-   supplemental:supplementalReviewEvidence(client,closedRows,connections,filters),
+   supplemental:supplementalReviewEvidence(client,fastChat?rows:closedRows,connections,filters),
    monthToDate:{current:summary(mt,mtFrom,filters.to),previous:summary(priorMt,priorFrom,priorDate),instruction:'Only call this MTD when contributing revenue/order metrics cover every elapsed day. Otherwise label observed-day totals and report the missing dates.'}
   };
  }));
@@ -80,7 +84,7 @@ export async function generateAIReview(scope:AccessScope,clientId:string,filters
  if(result.actions.some(a=>a.existingFindingId!==null&&!c.findings.some(f=>f.id===a.existingFindingId)))throw new Error('AI returned an unsupported follow-up reference; retry');
  const payload={type:'ai',title:`${c.client.name} daily review`,methodology:'avenuez-strategy · OpenAI evidence analysis',inputFingerprint,filters,generatedAt:new Date().toISOString(),model:serverSecret('OPENAI_MODEL')||'gpt-5.4-mini',...result,reportTiming:c.reportTiming,sources:context.sources,evidence:compactAIContextForModel(context),...(job?{scheduleJobId:job.id}:{})};const id=await s.saveReview(scope.organizationId,clientId,filters.to,await fingerprint(payload),payload,new Date().toISOString(),job);await s.audit(scope.organizationId,clientId,scope.actorId,'review.ai.generated',{id,inputFingerprint});return id;
 }
-export async function answerAI(b:any){if(typeof b.question!=='string'||!b.question.trim()||b.question.length>3000)throw new Error('Ask a question of up to 3,000 characters');const a=parseAIRequest(b),{scope,s,context,scopeKey}=await aiContext(a.clientId,a.filters,a.reviewId);
+export async function answerAI(b:any){if(typeof b.question!=='string'||!b.question.trim()||b.question.length>3000)throw new Error('Ask a question of up to 3,000 characters');const a=parseAIRequest(b),{scope,s,context,scopeKey}=await aiContext(a.clientId,a.filters,a.reviewId,undefined,false,true);
  const key=serverSecret('OPENAI_API_KEY');if(!key)throw new Error('OpenAI is not configured');await reserveAI(s,scope);const history=await aiHistory(s,scope,scopeKey);
  const answer=validateAnswer(await askOpenAI(key,serverSecret('OPENAI_MODEL')||'gpt-5.4-mini',JSON.stringify(buildChatModelContext(context,b.question)),history.slice(-4).map(r=>({question:r.question,answer:r.payload.answer.slice(0,4000)})),b.question),context.sources);
  const payload={...answer,sources:context.sources.filter(s=>answer.sourceIds.includes(s.id)),scope:{filters:context.filters,clients:context.clients.map(c=>c.client.name),reviewId:b.reviewId??null},evidenceFingerprint:await fingerprint(context)},id=crypto.randomUUID(),createdAt=new Date().toISOString();await s.run('INSERT INTO ai_turns(id,organizationId,actorId,scopeKey,question,payload,createdAt) VALUES(?,?,?,?,?,?,?)',id,scope.organizationId,scope.actorId,scopeKey,b.question,JSON.stringify(payload),createdAt);return {id,question:b.question,payload,createdAt};

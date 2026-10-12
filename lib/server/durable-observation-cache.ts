@@ -42,7 +42,7 @@ export async function durableObservationPayload(db:Store['db'],org:string,client
  try{
   const claim=await db.batch([
    db.prepare("INSERT INTO observation_cache_entries(organizationId,clientId,cacheKey,generation,status,chunkCount,characters,payloadHash,createdAt) VALUES(?,?,?,?,'writing',?,?,?,?) ON CONFLICT(organizationId,clientId,cacheKey) DO UPDATE SET generation=excluded.generation,status='writing',chunkCount=excluded.chunkCount,characters=excluded.characters,payloadHash=excluded.payloadHash,createdAt=excluded.createdAt WHERE observation_cache_entries.status='writing' AND observation_cache_entries.createdAt<?").bind(...scope,generation,pieces.length,payload.length,await digest(payload),createdAt,expired),
-   db.prepare('DELETE FROM observation_cache_entries WHERE organizationId=? AND clientId=? AND cacheKey NOT IN (SELECT cacheKey FROM observation_cache_entries WHERE organizationId=? AND clientId=? ORDER BY createdAt DESC,cacheKey LIMIT 4)').bind(org,client,org,client),
+   db.prepare('DELETE FROM observation_cache_entries WHERE organizationId=? AND clientId=? AND cacheKey NOT IN (SELECT cacheKey FROM observation_cache_entries WHERE organizationId=? AND clientId=? ORDER BY createdAt DESC,cacheKey LIMIT 8)').bind(org,client,org,client),
    db.prepare('DELETE FROM observation_cache_chunks WHERE organizationId=? AND clientId=? AND NOT EXISTS (SELECT 1 FROM observation_cache_entries e WHERE e.organizationId=observation_cache_chunks.organizationId AND e.clientId=observation_cache_chunks.clientId AND e.cacheKey=observation_cache_chunks.cacheKey AND e.generation=observation_cache_chunks.generation)').bind(org,client)
   ]);
   if(!claim[0].meta.changes)return payload;

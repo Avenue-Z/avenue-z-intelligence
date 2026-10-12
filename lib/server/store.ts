@@ -1,5 +1,5 @@
 import type {Client,Connection,Observation,SourceBatch,Review,Finding,QueryFilters} from '../analytics/contracts';
-import {shiftDate,dayWindow,matchedCutoff,comparisonPeriod} from '../analytics/windows';
+import {shiftDate,dayWindow,matchedCutoff,comparisonPeriod,todayIn} from '../analytics/windows';
 import {preferredObservations} from '../analytics/source-precedence';
 import {FunnelRollupAccumulator} from '../analytics/funnel-rollup';
 import {Temporal} from '@js-temporal/polyfill';
@@ -32,14 +32,15 @@ export class Store {
     checkBudget();
     if(!capturedPointers.length)return [];
     let clause='',values:unknown[]=[],overviewWindow:[string,string]|undefined,marketWindow:[string,string]|undefined;
-    const detailWindows:[string,string][]=[];
+    const detailWindows:[string,string][]=[];let subscriptionTo:string|undefined;
     if(filters){const comparison=comparisonPeriod(filters),priorFrom=comparison.from,priorTo=comparison.to,trendFrom=shiftDate(filters.to,-29),overviewFrom=priorFrom<trendFrom?priorFrom:trendFrom;
       // Keep headline history and renewal benchmarks; load bulky detail exports
       // only for the selected, comparison and prior-week periods.
-      clause=` AND ((json_extract(o.payload,'$.dataset')='overview' AND o.date>=? AND o.date<=?) OR json_extract(o.payload,'$.dataset')='subscriptions' OR (json_extract(o.payload,'$.dataset')='markets' AND o.date>=? AND o.date<=?) OR json_extract(o.payload,'$.metric') IN ('active_ads','active_creatives') OR (o.date BETWEEN ? AND ?) OR (o.date BETWEEN ? AND ?) OR (o.date BETWEEN ? AND ?))`;
+      clause=` AND ((json_extract(o.payload,'$.dataset')='overview' AND o.date>=? AND o.date<=?) OR (json_extract(o.payload,'$.dataset')='subscriptions' AND o.date<=?) OR (json_extract(o.payload,'$.dataset')='markets' AND o.date>=? AND o.date<=?) OR json_extract(o.payload,'$.metric') IN ('active_ads','active_creatives') OR (o.date BETWEEN ? AND ?) OR (o.date BETWEEN ? AND ?) OR (o.date BETWEEN ? AND ?))`;
       overviewWindow=[overviewFrom,filters.to];detailWindows.push([filters.from,filters.to],[priorFrom,priorTo],[shiftDate(filters.from,-7),shiftDate(filters.to,-7)]);
       marketWindow=[shiftDate(filters.from,-1),filters.to];
-      values.push(overviewFrom,filters.to,shiftDate(filters.from,-1),filters.to,...detailWindows.flat());
+      subscriptionTo=[filters.to,priorTo].sort().at(-1);
+      values.push(overviewFrom,filters.to,subscriptionTo,shiftDate(filters.from,-1),filters.to,...detailWindows.flat());
     }
     if(headlinesOnly)clause+=" AND json_extract(o.payload,'$.dataset')='overview'";
     // Registered sources reject observations outside their metric profiles.
@@ -54,17 +55,22 @@ export class Store {
       profiles.set(qualification.sourceId,[...profiles.get(qualification.sourceId)??[],...registered]);
     }
     const inWindow=(date:string,window:[string,string])=>date>=window[0]&&date<=window[1];
-    const pointers=capturedPointers.filter(pointer=>{
+    const selectedPointers=capturedPointers.filter(pointer=>{
       const registered=profiles.get(pointer.sourceId);if(!registered)return true;
       return registered.some(profile=>{
         if(headlinesOnly&&profile.dataset!=='overview')return false;
         if(!filters)return true;
-        return profile.dataset==='subscriptions'||['active_ads','active_creatives'].includes(profile.metric)||
+        return (profile.dataset==='subscriptions'&&(!subscriptionTo||pointer.date<=subscriptionTo))||['active_ads','active_creatives'].includes(profile.metric)||
           (profile.dataset==='overview'&&!!overviewWindow&&inWindow(pointer.date,overviewWindow))||
           (profile.dataset==='markets'&&!!marketWindow&&inWindow(pointer.date,marketWindow))||detailWindows.some(window=>inWindow(pointer.date,window));
       });
     });
-    if(!pointers.length)return [];
+    const operationalMetrics=new Set(['active_customers','active_ads','active_creatives']);
+    const operationalSources=new Set([...profiles].filter(([,registered])=>registered?.length&&registered.every(profile=>operationalMetrics.has(profile.metric))).map(([sourceId])=>sourceId));
+    const operationalPointers=headlinesOnly?[]:capturedPointers.filter(pointer=>operationalSources.has(pointer.sourceId));
+    const latestOperationalDates=new Map<string,string>();for(const pointer of operationalPointers){const prior=latestOperationalDates.get(pointer.sourceId);if(!prior||pointer.date>prior)latestOperationalDates.set(pointer.sourceId,pointer.date);}
+    const freshOperationalPointers=operationalPointers.filter(pointer=>pointer.date===latestOperationalDates.get(pointer.sourceId));
+    const pointers=selectedPointers.filter(pointer=>!operationalSources.has(pointer.sourceId));
     let cutoffClock:string|undefined;
     if(clientRow&&filters?.mode==='partial'){const contributing=sources.filter(c=>c.enabled&&(!c.provider||c.provider==='gateway'||c.provider==='kind-triple-whale'||c.provider==='kind-shopify-hourly')),coverage=contributing.map(c=>c.coverageThrough),known=contributing.length>0&&coverage.every((x):x is string=>!!x&&Date.parse(x)>=Date.parse(dayWindow(filters.to,clientRow.timezone).start));const cutoff=known?matchedCutoff(coverage as string[],clientRow.timezone):null;if(cutoff)cutoffClock=Temporal.Instant.from(cutoff).toZonedDateTimeISO(clientRow.timezone).toPlainTime().toString();}
     // Observation loading deliberately retains every dataset/dimension for
@@ -72,8 +78,8 @@ export class Store {
     // dimension selections therefore share rows, while load-affecting filters
     // and fresh metadata are part of the key. Published pointers invalidate
     // across refreshes, including refreshes performed by another instance.
-    const version=pointers.map(p=>[p.snapshotId,p.date,p.publishedAt]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
-    const key=JSON.stringify(['chart-series-v2',org,client,filters?[filters.from,filters.to,filters.compare,filters.compareFrom??null,filters.compareTo??null,filters.mode]:null,headlinesOnly,clientRow?.timezone??null,cutoffClock??null,version]);
+    const version=pointers.map(p=>[p.sourceId,p.snapshotId,p.date]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    const key=JSON.stringify(['chart-series-v3',org,client,filters?[filters.from,filters.to,filters.compare,filters.compareFrom??null,filters.compareTo??null,filters.mode]:null,headlinesOnly,clientRow?.timezone??null,cutoffClock??null,version]);
     const load=()=>durableObservationPayload(this.db,org,client,key,async()=>{
     checkBudget();
     // Missing partial coverage must retain raw hourly rows so queryClient can
@@ -105,7 +111,9 @@ export class Store {
     },options?.deadline);
     // A warming deadline must never cancel a browser request coalesced on the
     // same key. Warming populates durable storage without joining that promise.
-    return options?observationCodec.decode(await load()):observationCache(this.db).getEncoded(key,load);
+    const [cached,operations]=await Promise.all([pointers.length?(options?load().then(payload=>observationCodec.decode(payload)):observationCache(this.db).getEncoded(key,load)):Promise.resolve([]),
+      freshOperationalPointers.length?readPage<{payload:string}>("SELECT json_extract(o.payload,'$') AS payload FROM json_each(?) p JOIN observations o ON o.snapshotId=json_extract(p.value,'$.snapshotId') AND o.date=json_extract(p.value,'$.date') WHERE json_extract(o.payload,'$.metric') IN ('active_customers','active_ads','active_creatives') ORDER BY o.date,o.rowKey",JSON.stringify(freshOperationalPointers)).then(rows=>rows.map(row=>JSON.parse(row.payload) as Observation)):Promise.resolve([])]);
+    return operations.length?[...cached,...operations]:cached;
   }
   async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string}) {
     const id=`${org}:${batch.clientId}:${source}:${key}`;
@@ -114,7 +122,19 @@ export class Store {
     const rows=batch.rows.map(r=>({...r,channels:batch.channels,sourceId:source,retrievedAt:now,coverageThrough:batch.coverageThrough,quality:batch.complete?(r.quality??'complete'):(r.quality==='historical'?'historical':'partial')}));
     if(!ready)for(let n=0;n<rows.length;n+=2000){const inserts=[];for(let start=n;start<Math.min(n+2000,rows.length);start+=500){const values=rows.slice(start,start+500).map(r=>({date:r.date,rowKey:JSON.stringify([r.dataset,r.metric,r.start,r.end,Object.entries(r.dimensions).sort()]),payload:JSON.stringify(r)}));inserts.push(this.db.prepare("INSERT INTO observations(snapshotId,date,rowKey,payload) SELECT ?,json_extract(value,'$.date'),json_extract(value,'$.rowKey'),json_extract(value,'$.payload') FROM json_each(?) WHERE 1 ON CONFLICT DO NOTHING").bind(id,JSON.stringify(values)));}await this.db.batch(inserts);}
     const dates=window?(()=>{const d:string[]=[];for(let s=window.from;s<=window.to;s=shiftDate(s,1)){d.push(s);if(d.length>62)throw new Error('Window exceeds 62 days');}return d;})():[...new Set(rows.map(r=>r.date))];
-    const pointers=dates.map(d=>this.db.prepare('INSERT INTO current_snapshots(organizationId,clientId,sourceId,date,snapshotId,publishedAt) VALUES(?,?,?,?,?,?) ON CONFLICT(organizationId,clientId,sourceId,date) DO UPDATE SET snapshotId=excluded.snapshotId,publishedAt=excluded.publishedAt WHERE excluded.publishedAt>=current_snapshots.publishedAt').bind(org,batch.clientId,source,d,id,now));
+    const grouped=new Map<string,Observation[]>();for(const row of rows){const values=grouped.get(row.date);if(values)values.push(row);else grouped.set(row.date,[row]);}
+    const canonical=(value:unknown):unknown=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.entries(value).sort(([a],[b])=>a.localeCompare(b)).map(([field,item])=>[field,canonical(item)])):value;
+    const pointers=[];let today:string|null=null;try{if(batch.timezone&&Number.isFinite(Date.parse(now)))today=todayIn(batch.timezone,new Date(now));}catch{/* Older unqualified archives retain conservative pointer publication. */}
+    for(const date of dates){let dataHash:string|null=null,coveredThrough:string|null=null;
+      if(today&&date<today&&batch.coverageThrough){coveredThrough=dayWindow(date,batch.timezone).end;if(Date.parse(batch.coverageThrough)>=Date.parse(coveredThrough)){
+        const facts=(grouped.get(date)??[]).map(row=>{const {retrievedAt:_retrieval,coverageThrough:_coverage,...fact}=row;return JSON.stringify(canonical(fact));}).sort();
+        const content=JSON.stringify(canonical({date,timezone:batch.timezone,currency:batch.currency,complete:batch.complete,grain:batch.grain,channels:[...(batch.channels??[])].sort(),dimensions:[...(batch.dimensions??[])].sort(),facts}));
+        dataHash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(content))),byte=>byte.toString(16).padStart(2,'0')).join('');
+      }}
+      // The publication watermark still advances on unchanged facts, preventing
+      // delayed older data from replacing the retained immutable snapshot.
+      pointers.push(this.db.prepare("INSERT INTO current_snapshots(organizationId,clientId,sourceId,date,snapshotId,publishedAt,dataHash) VALUES(?,?,?,?,?,?,?) ON CONFLICT(organizationId,clientId,sourceId,date) DO UPDATE SET snapshotId=CASE WHEN excluded.dataHash IS NOT NULL AND current_snapshots.dataHash=excluded.dataHash AND EXISTS (SELECT 1 FROM snapshots old WHERE old.id=current_snapshots.snapshotId AND julianday(old.coverageThrough)>=julianday(?)) THEN current_snapshots.snapshotId ELSE excluded.snapshotId END,publishedAt=excluded.publishedAt,dataHash=excluded.dataHash WHERE excluded.publishedAt>=current_snapshots.publishedAt").bind(org,batch.clientId,source,date,id,now,dataHash,coveredThrough));
+    }
     await this.db.batch([...pointers,this.db.prepare('UPDATE snapshots SET status=? WHERE id=?').bind('ready',id)]);return id;
   }
   async note(org:string,client:string) {return await this.first('SELECT * FROM notes WHERE organizationId=? AND clientId=?',org,client)??{body:'',version:0};}
