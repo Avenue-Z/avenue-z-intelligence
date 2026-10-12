@@ -1,5 +1,6 @@
 import {it,expect,vi,beforeEach} from 'vitest';
 const state=vi.hoisted(()=>({secret:vi.fn(),scope:vi.fn(),identity:vi.fn()}));
+vi.mock('@avenue/runtime',()=>({runtimePlatform:'sites'}));
 vi.mock('../../lib/server/secrets',()=>({serverSecret:state.secret}));
 vi.mock('../../app/chatgpt-auth',()=>({getChatGPTUser:state.identity}));
 vi.mock('../../lib/server/access',()=>({scopeForUser:state.scope}));

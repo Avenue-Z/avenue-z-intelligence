@@ -8,7 +8,9 @@ Portfolio, nine client views, store-local date comparisons, interactive revenue/
 
 ## Current activation status
 
-No live source has been connected or qualified. No unattended schedule is active. Daily summaries currently use deterministic, evidence-based calculations; no LLM provider is configured. Full brand configs, provider transports and dimensional reconciliation remain part of source activation. This is a private working app, not a claim that live analytics are ready.
+Kind Patches has seven qualified feeds from Triple Whale, Shopify, Meta, AppLovin, and Recharge. Its current provider data powers the charts and client views. OpenAI reviews and contextual chat are configured in the private preview. Beam's historical reviews are available; its live providers still need to be connected. Metric scope, provider coverage, and retrieval times remain explicit.
+
+The app's independent Vercel backend is prepared. The current Sites preview is retained, and Vercel deployment is deferred at the user's request. The previous ChatGPT refresh task is paused. Production scheduling is defined in the application's `vercel.json`; it activates with the later Vercel production deployment. See [independent runtime](docs/independent-runtime.md) and [Vercel setup and activation](docs/vercel-deployment.md).
 
 See [source contract](docs/source-contract.md), [activation/runbook](docs/runbook.md), [design](docs/design.md), and [implementation plan](docs/implementation-plan.md).
 
@@ -18,8 +20,8 @@ Node 24 recommended (minimum 22.13). `npm install`, `npm test`, `npm run typeche
 
 ## Hosted synchronization
 
-`POST /api/internal/sync` requires both the private Sites dispatch credential and the app's hosted `RUNNER_SECRET`. `scripts/sync-cloud.mjs` can run on an authorized hosted scheduler. A portable GitHub Actions workflow is included but gated by `SOURCE_SYNC_ENABLED`; the Sites source registry does not execute GitHub Actions. Move source to an authorized GitHub repository or use the authorized Sites cloud updater only after sources and unattended writes are verified. Set up one scheduler, not both. A browser view refresh does not ingest new provider data.
+Vercel Cron invokes `/api/cron/sync` and `/api/cron/reviews` using the application's server-held `CRON_SECRET`. Database-backed leases, retries, and daily report IDs survive worker restarts. The standalone runtime uses Turso/libSQL, private Vercel Blob archives, and Auth.js Google OIDC with app memberships. It requires no assistant task, personal computer, browser session, or ChatGPT connector session. `scripts/sync-cloud.mjs` and the manual GitHub workflow are operational probes; no GitHub cron remains. A browser view refresh reads current persisted data and does not ingest provider data.
 
 ## Sharing
 
-First entry into the new owner-private site initializes the owner's workspace. Later users require both Site access and an app membership grant. Memberships can limit clients. Adding an email in Team & settings records the allowance; it does not send an email or grant platform-level Site access. Keep the site private until the intended team has been granted access through the platform sharing controls.
+In the current owner-private preview, first entry initializes the owner's workspace. Later users require both Site access and an app membership grant. On Vercel, only the explicitly configured bootstrap admin can initialize an empty workspace; verified Google accounts also require app membership. Memberships can limit clients. Adding an email in Team & settings records the allowance; it does not send an email or grant preview platform access. Keep the preview private until the intended team has been granted access through platform sharing controls.

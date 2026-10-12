@@ -1,8 +1,8 @@
 import {z} from 'zod';
 import {parseReviewArchive} from '../reviews/import';
-import {env} from 'cloudflare:workers';
+import {env} from '@avenue/runtime';
 import {getStore,requireClientAccess} from './access';
-import {checkOrigin} from './policy';
+import {checkApplicationOrigin as checkOrigin} from './request-origin';
 import {validateClient,validateConnection} from './configuration';
 import {assertSourceActivation,requireQualifiedSource,validateRegisteredBatch} from '../sources/registered-contract';
 import {validateBatch} from '../sources/qualification';

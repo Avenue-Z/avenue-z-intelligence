@@ -1,8 +1,6 @@
-name: Refresh analytics
+name: Manually check application refresh
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '*/5 * * * *'
 permissions:
   contents: read
 concurrency:
@@ -10,10 +8,10 @@ concurrency:
   cancel-in-progress: false
 jobs:
   refresh:
-    # Keep disabled until sources, private dispatch, and reconciliation pass.
+    # A manual operational check; Vercel owns the production schedule.
     if: vars.SOURCE_SYNC_ENABLED == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,6 +19,5 @@ jobs:
           node-version: '24'
       - run: node scripts/sync-cloud.mjs
         env:
-          SITE_ORIGIN: ${{ vars.SITE_ORIGIN }}
-          RUNNER_SECRET: ${{ secrets.RUNNER_SECRET }}
-          SITE_DISPATCH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+          APP_ORIGIN: ${{ vars.APP_ORIGIN }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}

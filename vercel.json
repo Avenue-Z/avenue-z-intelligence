@@ -1,0 +1,10 @@
+{
+  "$schema":"https://openapi.vercel.sh/vercel.json",
+  "framework":"nextjs",
+  "buildCommand":"npm run build:vercel",
+  "outputDirectory":".next-vercel",
+  "crons":[
+    {"path":"/api/cron/sync","schedule":"*/5 * * * *"},
+    {"path":"/api/cron/reviews","schedule":"2-59/5 * * * *"}
+  ]
+}

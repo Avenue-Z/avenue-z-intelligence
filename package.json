@@ -6,6 +6,10 @@
     "node": ">=22.13.0"
   },
   "scripts": {
+    "build:vercel": "next build --webpack",
+    "dev:vercel": "next dev --webpack",
+    "start:vercel": "next start",
+    "db:migrate:vercel": "node scripts/migrate-vercel.mjs",
     "install:ci": "node scripts/install-ci.mjs",
     "dev": "node scripts/run-framework.mjs dev",
     "build": "node scripts/run-framework.mjs build",
@@ -16,10 +20,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@auth/core": "^0.41.3",
     "@base-ui/react": "^1.7.0",
     "@hookform/resolvers": "^5.7.1",
     "@js-temporal/polyfill": "^0.5.1",
+    "@libsql/client": "^0.18.0",
     "@shadcn/react": "^0.3.0",
+    "@vercel/blob": "^2.8.1",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "cmdk": "^1.1.1",

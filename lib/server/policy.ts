@@ -5,4 +5,4 @@ export function authorize(scope:AccessScope|null,clientId?:string,admin=false):A
   if(admin&&scope.role!=='admin')throw new Error('Administrator access required');
   return scope;
 }
-export function checkOrigin(request:Request) {const origin=request.headers.get('origin');if(origin&&origin!==new URL(request.url).origin)throw new Error('Origin not allowed');}
+export function checkOrigin(request:Request,publicOrigin?:string) {const origin=request.headers.get('origin'),expected=new URL(publicOrigin||request.url).origin;if(origin&&origin!==expected)throw new Error('Origin not allowed');}

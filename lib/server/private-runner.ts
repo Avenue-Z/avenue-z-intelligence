@@ -2,9 +2,11 @@ import {getChatGPTUser} from '../../app/chatgpt-auth';
 import {scopeForUser} from './access';
 import {serverSecret} from './secrets';
 import type {AccessScope} from '../analytics/contracts';
+import {runtimePlatform} from '@avenue/runtime';
 // Native Sites dispatch admits service calls only with its Site-bound bearer.
 // This switch is enabled only for the confirmed owner-private publication.
 export async function privateRunnerScope():Promise<AccessScope>{
+ if(runtimePlatform!=='sites')throw new Error('Private-site runner is unavailable on this runtime');
  if(serverSecret('PRIVATE_SITE_RUNNER_ENABLED')!=='true')throw new Error('Private-site runner is disabled');
  const [identity,visitor]=await Promise.all([getChatGPTUser(),scopeForUser()]);
  if(identity&&!visitor)throw new Error('Workspace membership required');

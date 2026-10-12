@@ -1,0 +1,10 @@
+{
+  "extends":"./tsconfig.json",
+  "exclude":["node_modules","examples",".next"],
+  "compilerOptions":{
+    "paths":{
+      "@/*":["./*"],
+      "@avenue/runtime":["./lib/server/runtime.vercel.ts"]
+    }
+  }
+}

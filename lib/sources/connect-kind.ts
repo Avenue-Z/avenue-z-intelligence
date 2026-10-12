@@ -1,4 +1,4 @@
-import {env} from 'cloudflare:workers';
+import {env} from '@avenue/runtime';
 import {getStore} from '../server/access';
 import {serverSecret} from '../server/secrets';
 import type {AccessScope,Connection} from '../analytics/contracts';

@@ -2,6 +2,7 @@ import type {Client,Connection,Observation,SourceBatch,Review,Finding,QueryFilte
 import {shiftDate} from '../analytics/windows';
 import {preferredObservations} from '../analytics/source-precedence';
 type Db={prepare:(sql:string)=>any;batch:(statements:any[])=>Promise<any[]>};
+export type ScheduledReviewLease={id:string;leaseToken:string};
 export class Store {
   constructor(public db:Db){}
   async all<T=any>(sql:string,...values:unknown[]):Promise<T[]> {return (await this.db.prepare(sql).bind(...values).all()).results;}
@@ -39,14 +40,18 @@ export class Store {
     await this.audit(org,client,actor,'note.updated',{body,expected});return this.note(org,client);
   }
   async audit(org:string,client:string,actor:string,action:string,payload:unknown){await this.run('INSERT INTO audit(id,organizationId,clientId,actorId,action,payload,createdAt) VALUES(?,?,?,?,?,?,?)',crypto.randomUUID(),org,client,actor,action,JSON.stringify(payload),new Date().toISOString());}
-  async saveReview(org:string,client:string,date:string,fingerprint:string,payload:unknown,now:string){
+  async saveReview(org:string,client:string,date:string,fingerprint:string,payload:unknown,now:string,job?:ScheduledReviewLease){
+    if(job&&!await this.first("SELECT id FROM scheduled_reviews WHERE id=? AND organizationId=? AND clientId=? AND storeDate=? AND leaseToken=? AND status='running'",job.id,org,client,date,job.leaseToken))throw new Error('Review job lease expired');
     const current=await this.first('SELECT * FROM reviews WHERE organizationId=? AND clientId=? AND storeDate=? AND current=1',org,client,date);
-    if(current?.fingerprint===fingerprint||current?.createdAt>now)return current.id;
+    const completion=(id:string)=>this.db.prepare("UPDATE scheduled_reviews SET status='complete',reviewId=?,completedAt=?,error=NULL,leaseToken=NULL,leaseUntil=NULL WHERE id=? AND organizationId=? AND clientId=? AND storeDate=? AND leaseToken=? AND status='running' AND EXISTS(SELECT 1 FROM reviews WHERE id=? AND organizationId=? AND clientId=?)").bind(id,now,job!.id,org,client,date,job!.leaseToken,id,org,client);
+    if(current?.fingerprint===fingerprint||current?.createdAt>now){if(job){const r=await completion(current.id).run();if(!r.meta.changes)throw new Error('Review job lease expired');}return current.id;}
     const id=`${org}:${client}:${date}:${fingerprint}:${current?.revision??0}`;
-    await this.db.batch([
-      this.db.prepare('UPDATE reviews SET current=0 WHERE organizationId=? AND clientId=? AND storeDate=? AND createdAt<=? AND NOT EXISTS(SELECT 1 FROM reviews WHERE id=?) AND NOT EXISTS(SELECT 1 FROM reviews WHERE organizationId=? AND clientId=? AND storeDate=? AND createdAt>?)').bind(org,client,date,now,id,org,client,date,now),
-      this.db.prepare('INSERT INTO reviews(id,organizationId,clientId,storeDate,revision,fingerprint,payload,createdAt,current) SELECT ?,?,?,?,COALESCE(MAX(revision),0)+1,?,?,?,1 FROM reviews WHERE organizationId=? AND clientId=? AND storeDate=? HAVING NOT EXISTS(SELECT 1 FROM reviews WHERE organizationId=? AND clientId=? AND storeDate=? AND createdAt>?) ON CONFLICT DO NOTHING').bind(id,org,client,date,fingerprint,JSON.stringify(payload),now,org,client,date,org,client,date,now)
-    ]);return id;
+    const guard=job?" AND EXISTS(SELECT 1 FROM scheduled_reviews WHERE id=? AND leaseToken=? AND status='running')":'',guardValues=job?[job.id,job.leaseToken]:[];
+    const results=await this.db.batch([
+      this.db.prepare('UPDATE reviews SET current=0 WHERE organizationId=? AND clientId=? AND storeDate=? AND createdAt<=? AND NOT EXISTS(SELECT 1 FROM reviews WHERE id=?) AND NOT EXISTS(SELECT 1 FROM reviews WHERE organizationId=? AND clientId=? AND storeDate=? AND createdAt>?)'+guard).bind(org,client,date,now,id,org,client,date,now,...guardValues),
+      this.db.prepare('INSERT INTO reviews(id,organizationId,clientId,storeDate,revision,fingerprint,payload,createdAt,current) SELECT ?,?,?,?,COALESCE(MAX(revision),0)+1,?,?,?,1 FROM reviews WHERE organizationId=? AND clientId=? AND storeDate=? HAVING NOT EXISTS(SELECT 1 FROM reviews WHERE organizationId=? AND clientId=? AND storeDate=? AND createdAt>?)'+guard+' ON CONFLICT DO NOTHING').bind(id,org,client,date,fingerprint,JSON.stringify(payload),now,org,client,date,org,client,date,now,...guardValues),
+      ...(job?[completion(id)]:[])
+    ]);if(job&&!results[results.length-1].meta.changes)throw new Error('Review job lease expired or review changed concurrently');return id;
   }
   async saveQualification(org:string,client:string,source:string,connectionVersion:number,clientVersion:number,payload:unknown,actor:string){await this.run('INSERT INTO qualifications(organizationId,clientId,sourceId,connectionVersion,clientVersion,version,payload,actorId,createdAt) SELECT ?,?,?,?,?,COALESCE(MAX(version),0)+1,?,?,? FROM qualifications WHERE organizationId=? AND sourceId=?',org,client,source,connectionVersion,clientVersion,JSON.stringify(payload),actor,new Date().toISOString(),org,source);}
   async qualification(org:string,source:string){const r=await this.first('SELECT * FROM qualifications WHERE organizationId=? AND sourceId=? ORDER BY version DESC LIMIT 1',org,source);return r?{...r,payload:JSON.parse(r.payload)}:null;}
