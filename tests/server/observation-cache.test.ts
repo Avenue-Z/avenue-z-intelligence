@@ -91,3 +91,10 @@ it('fails a fresh pointer check instead of returning earlier cached evidence',as
  db.prepare=(sql:string)=>{const statement=prepare(sql);if(sql.startsWith('SELECT c.snapshotId'))statement.all=async()=>{throw Error('Metadata unavailable');};return statement;};
  await expect(store.observations('o','a',filters)).rejects.toThrow('Metadata unavailable');
 });
+
+it('retains the previous market day even outside a four-week or custom comparison',async()=>{
+ const {db}=database(),store=new Store(db),base=batch().rows[0];
+ await store.persistBatch('o','markets',{...batch(),rows:['2026-10-10','2026-10-11'].map((date,index)=>({...base,date,dataset:'markets',value:100+index,dimensions:{market:'US'}}))},'market-days','2026-10-12T00:00:00Z');
+ await store.saveQualification('o','a','markets',1,1,{profiles:[{dataset:'markets',metric:'revenue'}]},'u');
+ for(const compare of ['fourWeeks','custom'] as const){const scope={...filters,from:'2026-10-11',to:'2026-10-11',compare,...compare==='custom'?{compareFrom:'2026-08-17',compareTo:'2026-08-17'}:{}};expect((await store.observations('o','a',scope)).map(row=>row.date)).toEqual(['2026-10-10','2026-10-11']);}
+});

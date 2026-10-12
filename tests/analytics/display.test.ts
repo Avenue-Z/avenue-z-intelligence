@@ -63,15 +63,21 @@ describe('detail presentation',()=>{
   it('shows the separate human traffic cut with source and UTM dimensions',()=>{
     const dimensions={market:'FR',device:'mobile',source:'social',utm_source:'meta',utm_campaign:'Prospecting',page:'/pages/glp'};
     const html=workspace('traffic',[observation('sessions',1000,dimensions,'traffic'),observation('converting_sessions',20,dimensions,'traffic')]);
-    expect(html).toContain('Human public-page sessions by country, device, referrer and UTM');
+    expect(html).toContain('Human public-page sessions');
+    expect(html).toContain('UTM campaign');
+    expect(html).toContain('Landing pages &amp; funnels');
+    expect(html).toContain('/pages/glp');
     expect(html).toContain('>SESSIONS<');
     expect(html).toContain('2.00%');
-    expect(html).toContain('Prospecting');
     expect(html).not.toContain('>REVENUE<');
   });
-  it('renders separately attributed Meta ad data on the media tab with currency formatting',()=>{
+  it('omits unmatched platform attribution and empty experimental panels from spend view',()=>{
     const dims={ad:'Ad example',campaign:'Acquisition',reporting_timezone:'Europe/Stockholm',attribution:'account'};
     const html=workspace('media',[observation('meta_ad_spend',1250,dims,'creatives'),observation('meta_ad_impressions',10000,dims,'creatives')]);
-    expect(html).toContain('Meta ad performance · platform attribution');expect(html).toContain('Ad example');expect(html).toContain('$1,250');expect(html).toContain('view=creatives');
+    expect(html).toContain('Spend &amp; efficiency');
+    expect(html).not.toContain('Meta ad performance · platform attribution');
+    expect(html).not.toContain('Ad example');
+    expect(html).not.toContain('Experiments &amp; test context');
+    expect(html).not.toContain('$1,250');
   });
 });

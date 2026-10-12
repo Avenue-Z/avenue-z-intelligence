@@ -1,0 +1,13 @@
+import {it,expect,vi} from 'vitest';
+vi.mock('@avenue/runtime',()=>({env:{}}));
+vi.mock('../../lib/server/access',()=>({getStore:vi.fn(),requireClientAccess:vi.fn()}));
+import {datasetSeries} from '../../lib/analytics/dataset-series';
+import {comparisonPeriod} from '../../lib/analytics/windows';
+import {parseFilters} from '../../lib/server/workspace';
+import type {Observation,QueryFilters} from '../../lib/analytics/contracts';
+const row=(date:string,metric:string,value:number,population='human'):Observation=>({date,dataset:'traffic',metric,value,population,definition:'public_human',currency:null,dimensions:{source:'meta'},sourceId:'s',retrievedAt:'2026-10-12T12:00:00Z',coverageThrough:'2026-10-12T12:00:00Z',quality:'complete'});
+it('keeps missing calendar dates as gaps and calculates rates from matching daily counts',()=>{const result=datasetSeries([row('2026-10-09','sessions',100),row('2026-10-09','converting_sessions',5),row('2026-10-11','sessions',400),row('2026-10-11','converting_sessions',40)],'2026-10-09','2026-10-11',['traffic']).traffic;expect(result.map(x=>x.date)).toEqual(['2026-10-09','2026-10-10','2026-10-11']);expect(result[0].summary.cvr).toBe(.05);expect(result[1].summary.sessions).toBeNull();expect(result[2].summary.cvr).toBe(.1);});
+it('does not combine distinct populations or average independently reported rates',()=>{const result=datasetSeries([row('2026-10-09','sessions',100),row('2026-10-09','converting_sessions',50,'other')],'2026-10-09','2026-10-09',['traffic']);expect(result.traffic[0].summary.cvr).toBeNull();});
+const f:QueryFilters={from:'2026-10-05',to:'2026-10-11',compare:'thirtyDays',mode:'closed',view:'subscriptions',market:'',stream:'',source:'',device:'',page:''};
+it('supports thirty-day and equal-length custom comparisons without changing calendar duration',()=>{expect(comparisonPeriod(f)).toMatchObject({from:'2026-09-05',to:'2026-09-11'});expect(comparisonPeriod({...f,compare:'custom',compareFrom:'2026-08-17'})).toMatchObject({from:'2026-08-17',to:'2026-08-23'});expect(()=>comparisonPeriod({...f,compare:'custom',compareFrom:'2026-08-17',compareTo:'2026-08-24'})).toThrow('7 calendar days');});
+it('preserves custom dates in API scope and redirects legacy funnels to Traffic',()=>{expect(parseFilters(new URLSearchParams({...f,compare:'custom',compareFrom:'2026-08-17',view:'funnels'}))).toMatchObject({compare:'custom',compareFrom:'2026-08-17',compareTo:'2026-08-23',view:'traffic'});});

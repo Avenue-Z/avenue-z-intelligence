@@ -1,4 +1,5 @@
 import {Temporal} from '@js-temporal/polyfill';
+import {fetchRechargeCancellations} from './recharge-cancellations';
 import type {Client,Connection,Observation,SourceBatch} from '../analytics/contracts';
 import {dayWindow,shiftDate,todayIn} from '../analytics/windows';
 import {validateBatch} from './qualification';
@@ -86,7 +87,7 @@ export async function fetchKindSource(connection:Connection,client:Client,w:Kind
   }
   const ids=new Set<string>(),creatives=new Set<string>();let after='';for(let page=0;page<50;page++){const params=new URLSearchParams({fields:'id,creative{id},effective_status',limit:'1000',effective_status:'["ACTIVE"]',...after?{after}:{}}),j=await providerJson(fetcher,`${def.endpoint}/${c.META_API_VERSION}/act_${c.META_AD_ACCOUNT_ID}/ads?${params}`,{headers:{Authorization:`Bearer ${c.META_ACCESS_TOKEN}`}},deadline);if(!Array.isArray(j.data))throw new Error('Meta inventory missing');for(const r of j.data){if(ids.has(r.id))throw new Error('Duplicate Meta inventory page');if(r.effective_status==='ACTIVE'){ids.add(r.id);if(r.creative?.id)creatives.add(r.creative.id);}}if(!j.paging?.next)return sourceBatch(client,[observation(today,'media','active_ads',ids.size,'current_meta_active_inventory_not_historical','meta_current_inventory',null,{channel:'meta'}),observation(today,'media','active_creatives',creatives.size,'current_meta_active_inventory_not_historical','meta_current_inventory',null,{channel:'meta'})],now.toISOString(),['meta']);const next=j.paging?.cursors?.after;if(!next||next===after)throw new Error('Meta pagination did not advance');after=next;}throw new Error('Meta pagination did not complete');
  }
- const headers={'X-Recharge-Access-Token':c.RECHARGE_ADMIN_TOKEN,'X-Recharge-Version':'2021-11'},store=await providerJson(fetcher,`${def.endpoint}/store`,{headers},deadline);if(store?.store?.platform_domain!==c.SHOP_DOMAIN||store?.store?.storefront_domain!=='kindpatches.com'||store?.store?.test_mode!==false)throw new Error('Recharge store identity mismatch');const count=await providerJson(fetcher,`${def.endpoint}/customers/count?status=ACTIVE`,{headers:{...headers,'X-Recharge-Version':'2021-01'}},deadline),value=numeric(count.count);if(!Number.isInteger(value)||value<0)throw new Error('Invalid Recharge active-customer count');return sourceBatch(client,[observation(today,'subscriptions','active_customers',value,'recharge_raw_active_customers_not_subscription_count_or_baseline_adjusted','recharge_active_customers',null,{source:'recharge'})],now.toISOString());
+ const headers={'X-Recharge-Access-Token':c.RECHARGE_ADMIN_TOKEN,'X-Recharge-Version':'2021-11'},store=await providerJson(fetcher,`${def.endpoint}/store`,{headers},deadline);if(store?.store?.platform_domain!==c.SHOP_DOMAIN||store?.store?.storefront_domain!=='kindpatches.com'||store?.store?.test_mode!==false)throw new Error('Recharge store identity mismatch');if(connection.provider==='kind-recharge-cancellations')return fetchRechargeCancellations(client,c,effectiveKindWindow(connection,client,w,now),fetcher,deadline,now);const count=await providerJson(fetcher,`${def.endpoint}/customers/count?status=ACTIVE`,{headers:{...headers,'X-Recharge-Version':'2021-01'}},deadline),value=numeric(count.count);if(!Number.isInteger(value)||value<0)throw new Error('Invalid Recharge active-customer count');return sourceBatch(client,[observation(today,'subscriptions','active_customers',value,'recharge_raw_active_customers_not_subscription_count_or_baseline_adjusted','recharge_active_customers',null,{source:'recharge'})],now.toISOString());
 }
 
 export async function* fetchKindBatches(connection:Connection,client:Client,w:KindWindow,secret:string,fetcher:typeof fetch=fetch,deadline=Date.now()+90000){
@@ -116,6 +117,7 @@ export function effectiveKindWindow(connection:Connection,client:Client,w:KindWi
  if(connection.provider==='kind-shopify-sales')return {from:w.from,to:closedTo};
  if(connection.provider==='kind-shopify-products')return {from:w.from>shiftDate(closedTo,-29)?w.from:shiftDate(closedTo,-29),to:closedTo};
  if(connection.provider==='kind-applovin'){const utc=todayIn('UTC',now);return {from:w.from>shiftDate(utc,-44)?w.from:shiftDate(utc,-44),to:w.to<utc?w.to:shiftDate(utc,-1)};}
+ if(connection.provider==='kind-recharge-cancellations'){const to=w.to<today?w.to:today,minimum=shiftDate(to,w.to<today?-61:-2);return {from:w.from>minimum?w.from:minimum,to};}
  if(connection.provider==='kind-meta'||connection.provider==='kind-recharge')return {from:today,to:today};
  return w;
 }

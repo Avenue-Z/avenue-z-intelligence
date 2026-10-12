@@ -4,10 +4,10 @@ import {MessageSquare,Sparkles,Send,X} from 'lucide-react';
 import type {QueryFilters} from '../../lib/analytics/contracts';
 import type {AIAnswer,AISource} from '../../lib/ai/context';
 type Turn={id:string;question:string;createdAt:string;payload:AIAnswer&{sources:AISource[];scope:{filters:QueryFilters;clients:string[];reviewId:string|null}}};
-export type ChatContext={clientId?:string;reviewId?:string;reviewDate?:string;reviewMode?:'closed'|'partial'};
+export type ChatContext={clientId?:string;reviewId?:string;reviewDate?:string;reviewMode?:'closed'|'partial';filters?:Partial<QueryFilters>};
 function AnswerText({text}:{text:string}){return <>{text.split(/\n\s*\n/).map((p,i)=><p key={i}>{p.split(/(\*\*[^*]+\*\*)/).map((s,j)=>s.startsWith('**')?<strong key={j}>{s.slice(2,-2)}</strong>:s)}</p>)}</>;}
 export function AIChat({filters,context,clientName,onClose,embedded=false}:{filters:QueryFilters;context:ChatContext;clientName?:string;onClose?:()=>void;embedded?:boolean}){
- const scoped={...filters,...context.reviewDate?{from:context.reviewDate,to:context.reviewDate,view:'reviews',mode:context.reviewMode||filters.mode}:{}};
+ const scoped={...filters,...context.filters,...context.reviewDate?{from:context.reviewDate,to:context.reviewDate,view:'reviews',mode:context.reviewMode||filters.mode}:{}};
  const contextKey=JSON.stringify({clientId:context.clientId,reviewId:context.reviewId,filters:scoped});
  const [turns,setTurns]=useState<Turn[]>([]),[question,setQuestion]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[loading,setLoading]=useState(true),[configured,setConfigured]=useState(false);
  const controller=useRef<AbortController|null>(null),keyRef=useRef(contextKey),bottom=useRef<HTMLDivElement|null>(null);keyRef.current=contextKey;

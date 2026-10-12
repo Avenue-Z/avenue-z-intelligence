@@ -19,7 +19,7 @@ export function selectWorkspaceView(workspace:Workspace,view:string):Workspace|n
 }
 
 const scopeKey=(scope:AccessScope)=>JSON.stringify([scope.organizationId,scope.actorId,scope.role,[...scope.permittedClientIds].sort()]);
-const filterKey=(filters:QueryFilters)=>JSON.stringify([filters.from,filters.to,filters.compare,filters.mode,filters.market,filters.stream,filters.source,filters.device,filters.page]);
+const filterKey=(filters:QueryFilters)=>JSON.stringify([filters.from,filters.to,filters.compare,filters.compareFrom??null,filters.compareTo??null,filters.mode,filters.market,filters.stream,filters.source,filters.device,filters.page]);
 
 /** Page-memory cache. Never survives a logout, navigation or browser session. */
 export class WorkspaceCache{

@@ -1,5 +1,5 @@
 import type {Client,Connection,Observation,SourceBatch,Review,Finding,QueryFilters} from '../analytics/contracts';
-import {shiftDate,dayWindow,matchedCutoff} from '../analytics/windows';
+import {shiftDate,dayWindow,matchedCutoff,comparisonPeriod} from '../analytics/windows';
 import {preferredObservations} from '../analytics/source-precedence';
 import {FunnelRollupAccumulator} from '../analytics/funnel-rollup';
 import {Temporal} from '@js-temporal/polyfill';
@@ -31,14 +31,15 @@ export class Store {
     ]);
     checkBudget();
     if(!capturedPointers.length)return [];
-    let clause='',values:unknown[]=[],overviewWindow:[string,string]|undefined;
+    let clause='',values:unknown[]=[],overviewWindow:[string,string]|undefined,marketWindow:[string,string]|undefined;
     const detailWindows:[string,string][]=[];
-    if(filters){const days=Math.round((Date.parse(filters.to)-Date.parse(filters.from))/86400000)+1,offset=filters.compare==='weekday'?7:filters.compare==='fourWeeks'?28:days,priorFrom=shiftDate(filters.from,-offset),priorTo=shiftDate(filters.to,-offset),trendFrom=shiftDate(filters.to,-29),overviewFrom=priorFrom<trendFrom?priorFrom:trendFrom;
+    if(filters){const comparison=comparisonPeriod(filters),priorFrom=comparison.from,priorTo=comparison.to,trendFrom=shiftDate(filters.to,-29),overviewFrom=priorFrom<trendFrom?priorFrom:trendFrom;
       // Keep headline history and renewal benchmarks; load bulky detail exports
       // only for the selected, comparison and prior-week periods.
-      clause=` AND ((json_extract(o.payload,'$.dataset')='overview' AND o.date>=? AND o.date<=?) OR json_extract(o.payload,'$.dataset')='subscriptions' OR json_extract(o.payload,'$.metric') IN ('active_ads','active_creatives') OR (o.date BETWEEN ? AND ?) OR (o.date BETWEEN ? AND ?) OR (o.date BETWEEN ? AND ?))`;
+      clause=` AND ((json_extract(o.payload,'$.dataset')='overview' AND o.date>=? AND o.date<=?) OR json_extract(o.payload,'$.dataset')='subscriptions' OR (json_extract(o.payload,'$.dataset')='markets' AND o.date>=? AND o.date<=?) OR json_extract(o.payload,'$.metric') IN ('active_ads','active_creatives') OR (o.date BETWEEN ? AND ?) OR (o.date BETWEEN ? AND ?) OR (o.date BETWEEN ? AND ?))`;
       overviewWindow=[overviewFrom,filters.to];detailWindows.push([filters.from,filters.to],[priorFrom,priorTo],[shiftDate(filters.from,-7),shiftDate(filters.to,-7)]);
-      values.push(overviewFrom,filters.to,...detailWindows.flat());
+      marketWindow=[shiftDate(filters.from,-1),filters.to];
+      values.push(overviewFrom,filters.to,shiftDate(filters.from,-1),filters.to,...detailWindows.flat());
     }
     if(headlinesOnly)clause+=" AND json_extract(o.payload,'$.dataset')='overview'";
     // Registered sources reject observations outside their metric profiles.
@@ -59,7 +60,8 @@ export class Store {
         if(headlinesOnly&&profile.dataset!=='overview')return false;
         if(!filters)return true;
         return profile.dataset==='subscriptions'||['active_ads','active_creatives'].includes(profile.metric)||
-          (profile.dataset==='overview'&&!!overviewWindow&&inWindow(pointer.date,overviewWindow))||detailWindows.some(window=>inWindow(pointer.date,window));
+          (profile.dataset==='overview'&&!!overviewWindow&&inWindow(pointer.date,overviewWindow))||
+          (profile.dataset==='markets'&&!!marketWindow&&inWindow(pointer.date,marketWindow))||detailWindows.some(window=>inWindow(pointer.date,window));
       });
     });
     if(!pointers.length)return [];
@@ -71,7 +73,7 @@ export class Store {
     // and fresh metadata are part of the key. Published pointers invalidate
     // across refreshes, including refreshes performed by another instance.
     const version=pointers.map(p=>[p.snapshotId,p.date,p.publishedAt]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
-    const key=JSON.stringify([org,client,filters?[filters.from,filters.to,filters.compare,filters.mode]:null,headlinesOnly,clientRow?.timezone??null,cutoffClock??null,version]);
+    const key=JSON.stringify(['chart-series-v2',org,client,filters?[filters.from,filters.to,filters.compare,filters.compareFrom??null,filters.compareTo??null,filters.mode]:null,headlinesOnly,clientRow?.timezone??null,cutoffClock??null,version]);
     const load=()=>durableObservationPayload(this.db,org,client,key,async()=>{
     checkBudget();
     // Missing partial coverage must retain raw hourly rows so queryClient can
