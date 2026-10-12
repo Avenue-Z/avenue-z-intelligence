@@ -7,3 +7,9 @@ it('bounds large simultaneous reads and releases the next read after errors',asy
  const result=await Promise.allSettled([run(1,true),run(2),run(3)]);
  expect(peak).toBe(1);expect(order).toEqual([1,2,3]);expect(result[0].status).toBe('rejected');expect(result[2]).toMatchObject({status:'fulfilled',value:3});expect(await run(4)).toBe(4);
 });
+it('expires a stalled read and frees the worker for subsequent requests',async()=>{
+ vi.useFakeTimers();try{
+  const blocked=withAnalyticsMemory(()=>new Promise<void>(()=>{})),rejected=expect(blocked).rejects.toThrow('took too long');
+  await vi.advanceTimersByTimeAsync(45000);await rejected;expect(await withAnalyticsMemory(async()=>42)).toBe(42);
+ }finally{vi.useRealTimers();}
+});
