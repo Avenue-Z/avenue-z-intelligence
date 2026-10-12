@@ -1,0 +1,4 @@
+import {it,expect} from 'vitest';
+import {authoritativeSpendReview} from '../../lib/reviews/spend-review';
+it('keeps an unqualified ratio unconfirmed even when revenue outpaces spend',()=>{const r=authoritativeSpendReview({revenue:110,spend:80,newOrders:4},{revenue:100,spend:100,newOrders:5},'USD',false);expect(r.headline).toContain('revenue +10.0%, spend -20.0%');expect(r.headline).toContain('coverage is unconfirmed');expect(r.rows[2]).toEqual(['Revenue / spend','1.38×','1.00×','Arithmetic ratio']);expect(r.paragraph).toContain('without margin data');});
+it('preserves missing revenue and acquisition denominators without a growth claim',()=>{const r=authoritativeSpendReview({revenue:null,spend:0,newOrders:null},{revenue:0,spend:1,newOrders:0},'USD',true);expect(r.headline).toContain('relative pace is unavailable');expect(r.rows[3][1]).toBe('Unavailable');expect(r.rows[3][2]).toBe('Unavailable');});
