@@ -32,6 +32,12 @@ it('keeps platform UTC spend out of store-day channel MER evidence',()=>{
  const e=supplementalReviewEvidence(client,[row('2026-10-07','media','spend',50,{channel:'meta'}),row('2026-10-07','media','platform_spend',90,{channel:'applovin',reporting_timezone:'UTC'})],[],filters);
  expect(e.spendChannelTrend[0].channels).toHaveLength(1);expect(e.spendChannelTrend[0].channels[0]).toMatchObject({channel:'meta',spend:50});
 });
+it('includes the selected closed day in seven-day renewal and spend appendices but excludes a partial current day',()=>{
+ const rows=['2026-10-01','2026-10-02','2026-10-08'].flatMap(date=>[row(date,'subscriptions','recurring_revenue',100),row(date,'subscriptions','recurring_orders',4),row(date,'media','spend',20,{channel:'meta'})]);
+ const closed=supplementalReviewEvidence(client,rows,[],{...filters,mode:'closed'}),partial=supplementalReviewEvidence(client,rows,[],filters);
+ expect(closed.dailyRenewals.map(day=>day.storeDate)).toEqual(['2026-10-02','2026-10-08']);expect(closed.spendChannelTrend.map(day=>day.storeDate)).toEqual(['2026-10-02','2026-10-08']);
+ expect(partial.dailyRenewals.map(day=>day.storeDate)).toEqual(['2026-10-01','2026-10-02']);expect(partial.spendChannelTrend.map(day=>day.storeDate)).toEqual(['2026-10-01','2026-10-02']);expect(closed.sources.some(source=>source.id==='closed-renewals:kind-patches:2026-10-08')).toBe(true);
+});
 it('preserves weekday and previous closed-day periods independently',()=>{
  const e=supplementalReviewEvidence(client,[row('2026-10-07','overview','revenue',120),row('2026-10-06','overview','revenue',100),row('2026-09-30','overview','revenue',80)],[],filters);
  expect(e.closedPriorDay.current.storeDate).toBe('2026-10-07');expect(e.closedPriorDay.previousDay.storeDate).toBe('2026-10-06');expect(e.closedPriorDay.sameWeekday.storeDate).toBe('2026-09-30');

@@ -4,6 +4,7 @@ import {it,expect,vi,beforeEach,afterEach} from 'vitest';
 import {Store} from '../../lib/server/store';
 import clients from '../../data/initial-clients.json';
 const state=vi.hoisted(()=>({store:null as any,fail:false,syncCompleted:[] as string[]}));
+vi.mock('@avenue/runtime',()=>({runtimePlatform:'sites'}));
 vi.mock('../../lib/server/access',()=>({getStore:()=>state.store}));
 vi.mock('../../lib/server/secrets',()=>({serverSecret:(key:string)=>key==='APP_ORGANIZATION_ID'?'o':null}));
 vi.mock('../../lib/jobs/sync',()=>({enqueueDue:async()=>{},runSyncBatch:async()=>({completed:state.syncCompleted,failed:[]}),generateReview:async(scope:any,c:any,date:string)=>{if(state.fail)throw new Error('sensitive provider detail');return state.store.saveReview(scope.organizationId,c.id,date,'generated',{actorId:scope.actorId},new Date().toISOString());}}));

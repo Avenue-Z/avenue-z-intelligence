@@ -77,14 +77,15 @@ export function supplementalReviewEvidence(client:Client,rows:Observation[],conn
  const priorDate=shiftDate(filters.to,-1),prior=queryDay(priorDate),previous=queryDay(shiftDate(priorDate,-1)),weekday=queryDay(shiftDate(priorDate,-7));
  const exposeDay=(date:string,a:ReturnType<typeof queryClient>)=>({storeDate:date,sourceId:source('closed-comparison',date),window:dayWindow(date,client.timezone),metrics:a.metrics,spendVerdict:a.verdict,observedDates:[...new Set(a.evidence.map(r=>r.date))],sourceQuality:[...new Set(a.evidence.map(r=>r.quality))],warnings:a.warnings,evidenceCount:a.selectedCount});
  const dailyRenewals=[];
- for(let date=shiftDate(filters.to,-7);date<filters.to;date=shiftDate(date,1)){
+ const appendicesTo=filters.mode==='partial'?shiftDate(filters.to,-1):filters.to;
+ for(let date=shiftDate(appendicesTo,-6);date<=appendicesTo;date=shiftDate(date,1)){
   const current=queryDay(date).evidence.filter(r=>r.dataset==='subscriptions');if(!current.length)continue;
   const priorRows=queryDay(shiftDate(date,-1)).evidence.filter(r=>r.dataset==='subscriptions');
   const summarize=(values:Observation[])=>{const revenue=sumMetric(values,'recurring_revenue'),orders=sumMetric(values,'recurring_orders');return {revenue,orders,aov:ratio(revenue,orders)};};
   const a=summarize(current),b=summarize(priorRows);dailyRenewals.push({storeDate:date,sourceId:source('closed-renewals',date),...a,comparison:{storeDate:shiftDate(date,-1),...b},decomposition:{revenueChange:change(a.revenue,b.revenue),ordersChange:change(a.orders,b.orders),aovChange:change(a.aov,b.aov)},...evidenceDetailRows(current),qualification:'Dated renewal order cohort. Changes in orders and AOV are descriptive, not proof of churn; refunds/cancellations may mature after the order date.'});
  }
  const spendChannelTrend=[];
- for(let date=shiftDate(filters.to,-7);date<filters.to;date=shiftDate(date,1)){
+ for(let date=shiftDate(appendicesTo,-6);date<=appendicesTo;date=shiftDate(date,1)){
   const media=queryDay(date).evidence.filter(r=>r.dataset==='media'&&r.metric==='spend');if(!media.length)continue;
   const channels=[...new Set(media.map(r=>r.dimensions.channel).filter(Boolean))].map(channel=>{const values=media.filter(r=>r.dimensions.channel===channel);return {channel,spend:sumMetric(values,'spend'),qualifiedClosed:values.every(r=>r.quality==='complete'&&r.coverageThrough&&Date.parse(r.coverageThrough)>=Date.parse(dayWindow(date,client.timezone).end)),...evidenceDetailRows(values)};});
   spendChannelTrend.push({storeDate:date,sourceId:source('closed-spend',date),channels,qualification:'Store-day channel spend only. UTC platform_spend and current inventory are separate; channel totals do not establish MER or matched revenue scope.'});

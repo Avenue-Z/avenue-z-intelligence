@@ -19,8 +19,19 @@ it('produces a separate reconciled country, device, source, UTM and public-page 
  expect(()=>validateRegisteredBatch(batch,kindQualification(batch,source.provider))).not.toThrow();
 });
 it('rejects a traffic export that reaches its sentinel or fails independent day-total reconciliation',async()=>{
- await expect(fetchKindSource(source,client,{from:'2026-10-11',to:'2026-10-11'},secret,provider(Array.from({length:5001},()=>row)))).rejects.toThrow('row limit');
+ await expect(fetchKindSource(source,client,{from:'2026-10-11',to:'2026-10-11'},secret,provider(Array.from({length:10000},()=>row)))).rejects.toThrow('row limit');
  await expect(fetchKindSource(source,client,{from:'2026-10-11',to:'2026-10-11'},secret,provider([row],[{day:'2026-10-11',...counts,sessions:200}]))).rejects.toThrow('reconcile');
+});
+it('reconciles 9999 distinct traffic groups while retaining fewer than 50000 observations',async()=>{
+ const raw=Array.from({length:9999},(_,index)=>({...row,utm_campaign:`Campaign ${index}`})),totals=Object.fromEntries(Object.entries(counts).map(([metric,value])=>[metric,value*raw.length])),queries:string[]=[],respond=provider(raw,[{day:row.day,...totals}]);
+ const fetcher:typeof fetch=async(url,options)=>{queries.push(JSON.parse(String(options?.body)).query);return respond(url,options);};
+ const batch=await fetchKindSource(source,client,{from:row.day,to:row.day},secret,fetcher);
+ expect(batch.rows).toHaveLength(49995);expect(new Set(batch.rows.filter(r=>r.metric==='sessions').map(r=>r.dimensions.utm_campaign)).size).toBe(9999);
+ for(const [field,metric] of Object.entries({sessions:'sessions',sessions_with_cart_additions:'atc_sessions',sessions_that_reached_checkout:'checkouts',sessions_that_completed_checkout:'converting_sessions'}))expect(batch.rows.filter(r=>r.metric===metric).reduce((sum,r)=>sum+(r.value??0),0)).toBe(totals[field]);
+ expect(batch.rows.filter(r=>r.metric==='completed_checkouts').reduce((sum,r)=>sum+(r.value??0),0)).toBe(totals.sessions_that_completed_checkout);
+ expect(()=>validateRegisteredBatch(batch,kindQualification(batch,source.provider))).not.toThrow();
+ expect(queries.filter(query=>query.includes('shopifyqlQuery')).every(query=>query.includes('LIMIT 10000'))).toBe(true);
+ await expect(fetchKindSource(source,client,{from:row.day,to:row.day},secret,provider(raw,[{day:row.day,...totals,sessions_with_cart_additions:totals.sessions_with_cart_additions*2}]))).rejects.toThrow('reconcile');
 });
 it('redacts private attribution labels and collapses equivalent sanitized groups without losing counts',async()=>{
  const batch=await fetchKindSource(source,client,{from:'2026-10-11',to:'2026-10-11'},secret,provider([{...row,utm_campaign:'person@example.com'},{...row,landing_page_path:'/pages/glp?other=tracking',utm_campaign:'other@example.com'}],[{day:'2026-10-11',sessions:200,sessions_with_cart_additions:40,sessions_that_reached_checkout:20,sessions_that_completed_checkout:10}]));
@@ -33,8 +44,10 @@ it('qualifies an independently confirmed zero-traffic day with stable metric pro
  const batch=await fetchKindSource(source,client,{from:'2026-10-11',to:'2026-10-11'},secret,provider([],[{day:'2026-10-11',sessions:0,sessions_with_cart_additions:0,sessions_that_reached_checkout:0,sessions_that_completed_checkout:0}]));
  expect(batch.rows).toEqual([]);expect(kindQualification(batch,source.provider).profiles.map(p=>p.metric)).toEqual(['sessions','atc_sessions','checkouts','converting_sessions','completed_checkouts']);
 });
-it('refreshes only the latest closed store day, previous day and same-weekday comparison',async()=>{
+it.each(['kind-shopify-traffic','kind-shopify-funnels'])('%s refreshes three reconciled closed-day cuts with the latest coverage last',async(providerName)=>{
  const dates:string[]=[];const fetcher:typeof fetch=async(_url,options)=>{const query=JSON.parse(String(options?.body)).query;if(query.includes('shop {'))return Response.json({data:{shop:{ianaTimezone:client.timezone,currencyCode:client.currency,myshopifyDomain:'bright-patches.myshopify.com'}}});const day=query.match(/SINCE (\d{4}-\d{2}-\d{2})/)![1];dates.push(day);return Response.json({data:{shopifyqlQuery:{parseErrors:[],tableData:{columns:[],rows:[query.includes('GROUP BY day,landing_page_path')?{...row,day}:{day,...counts}]}}}});};
- const batches=[];for await(const part of fetchKindBatches(source,client,{from:'2026-08-01',to:'2026-10-11'},secret,fetcher))batches.push(part);
+ const batches=[];for await(const part of fetchKindBatches({...source,provider:providerName} as Connection,client,{from:'2026-08-01',to:'2026-10-11'},secret,fetcher))batches.push(part);
  expect(batches.map(b=>b.window)).toEqual([{from:'2026-10-04',to:'2026-10-04'},{from:'2026-10-10',to:'2026-10-10'},{from:'2026-10-11',to:'2026-10-11'}]);expect([...new Set(dates)]).toEqual(['2026-10-04','2026-10-10','2026-10-11']);
+ for(const {batch,window} of batches){expect([...new Set(batch.rows.map(r=>r.date))]).toEqual([window.to]);expect(()=>validateRegisteredBatch(batch,kindQualification(batch,providerName))).not.toThrow();}
+ expect(batches.at(-1)?.batch.coverageThrough).toBe('2026-10-11T22:00:00Z');
 });

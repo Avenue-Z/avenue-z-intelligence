@@ -1,4 +1,4 @@
-import {describe,it,expect} from 'vitest';
+import {describe,it,expect,vi} from 'vitest';
 import {fetchKindSource,effectiveKindWindow} from '../../lib/sources/kind-fetch';
 import {kindQualification} from '../../lib/sources/kind-patches';
 import {requireQualifiedSource,validateRegisteredBatch} from '../../lib/sources/registered-contract';
@@ -13,6 +13,17 @@ const read=(rows:unknown[],next_cursor:string|null=null):typeof fetch=>async url
 const execute=(fetcher:typeof fetch,w=window,now=asOf)=>fetchKindSource(source,client,w,secret,fetcher,Date.now()+10000,now);
 const total=(rows:{date:string;value:number|null}[],date:string)=>rows.filter(row=>row.date===date).reduce((sum,row)=>sum+(row.value??0),0);
 describe('Recharge cancellation-date feed',()=>{
+ it('allows bounded longer historical cursor reads while keeping routine polling and the source deadline capped',async()=>{
+  const timeout=vi.spyOn(AbortSignal,'timeout');
+  try{
+   await fetchKindSource(source,client,{from:'2026-10-01',to:'2026-10-04'},secret,read([]),Date.now()+120000,asOf);
+   expect(timeout.mock.calls.map(call=>call[0])).toEqual([25000,60000]);timeout.mockClear();
+   await fetchKindSource(source,client,window,secret,read([]),Date.now()+120000,asOf);
+   expect(timeout.mock.calls.map(call=>call[0])).toEqual([25000,25000]);timeout.mockClear();
+   await fetchKindSource(source,client,{from:'2026-10-01',to:'2026-10-04'},secret,read([]),Date.now()+5000,asOf);
+   expect(timeout.mock.calls.every(call=>call[0]>0&&call[0]<=5000)).toBe(true);
+  }finally{timeout.mockRestore();}
+ });
  it('bounds automatic initialization and refresh to two closed days plus the partial current day',()=>{
   expect(effectiveKindWindow(source,client,{from:'2026-08-01',to:'2026-10-12'},asOf)).toEqual({from:'2026-10-10',to:'2026-10-12'});
   expect(effectiveKindWindow(source,client,{from:'2026-10-11',to:'2026-10-12'},asOf)).toEqual({from:'2026-10-11',to:'2026-10-12'});

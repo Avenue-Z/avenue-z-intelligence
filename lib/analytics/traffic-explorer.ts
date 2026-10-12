@@ -1,6 +1,6 @@
 import type {ClientAnalytics} from './query';
 
-export type ExplorerRow=Pick<ClientAnalytics['details'][number],'key'|'dimensions'|'metrics'|'summary'>;
+export type ExplorerRow=Pick<ClientAnalytics['details'][number],'key'|'dimensions'|'metrics'|'summary'>&{zeroDenominatorRates?:string[]};
 export type ExplorerMetric='sessions'|'converting_sessions'|'atc_sessions'|'checkouts'|'completed_checkouts'|'cvr'|'atc'|'checkoutCompletion'|'revenue'|'orders'|'aov'|'refunds'|'discounts';
 export type ExplorerSeriesPoint={date:string;metrics:Record<string,number|null>;summary?:Partial<ClientAnalytics['details'][number]['summary']>};
 export type ExplorerGroup={key:string;label:string;metrics:Record<string,number|null>;summary:Partial<ExplorerRow['summary']>;segments:number};
@@ -24,7 +24,7 @@ export function aggregateExplorerRows(rows:ExplorerRow[],dimension:string):Explo
   const metrics:Record<string,number|null>={};
   for(const metric of additive){let total=0,complete=true;for(const row of group.rows){const v=row.metrics[metric];if(!finite(v)){complete=false;break;}total+=v;}metrics[metric]=complete?total:null;}
   const summary:Partial<ExplorerRow['summary']>={};
-  for(const [metric,parts] of Object.entries(rateParts)){const key=metric as keyof ExplorerRow['summary'];summary[key]=group.rows.every(row=>finite(row.summary[key])||row.metrics[parts[0]]===0&&row.metrics[parts[1]]===0)?divide(metrics[parts[0]],metrics[parts[1]]):null;}
+  for(const [metric,parts] of Object.entries(rateParts)){const key=metric as keyof ExplorerRow['summary'];summary[key]=group.rows.every(row=>finite(row.summary[key])||row.metrics[parts[0]]===0&&row.metrics[parts[1]]===0||row.zeroDenominatorRates?.includes(metric)&&finite(row.metrics[parts[0]])&&row.metrics[parts[1]]===0)?divide(metrics[parts[0]],metrics[parts[1]]):null;}
   return {key,label:group.label,metrics,summary,segments:group.rows.length};
  });
 }

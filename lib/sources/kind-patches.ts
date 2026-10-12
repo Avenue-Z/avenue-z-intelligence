@@ -4,6 +4,7 @@ import type {Client,Observation,SourceBatch} from '../analytics/contracts';
 import type {RegisteredContract} from './registered-contract';
 import {dayWindow,shiftDate,todayIn} from '../analytics/windows';
 import {validateBatch} from './qualification';
+import {twDiagnosticProfiles} from './tw-diagnostics';
 export const KIND_SOURCES=[
  {provider:'kind-triple-whale',name:'Triple Whale · hourly commerce & media',endpoint:'https://api.triplewhale.com/api/v2/orcabase/api/sql',pollMinutes:30},
  {provider:'kind-shopify-sales',name:'Shopify · sales channels',endpoint:'https://bright-patches.myshopify.com/admin/api/2026-07/graphql.json',pollMinutes:60},
@@ -16,7 +17,8 @@ export const KIND_SOURCES=[
  {provider:'kind-shopify-traffic',name:'Shopify · closed-day page, country, device & UTM traffic',endpoint:'https://bright-patches.myshopify.com/admin/api/2026-07/graphql.json',pollMinutes:60},
  {provider:'kind-triple-whale-summary',name:'Triple Whale · independent closed-day spend cross-check',endpoint:'https://api.triplewhale.com/api/v2/summary-page/get-data',pollMinutes:60},
  {provider:'kind-meta-performance',name:'Meta · closed-day ad performance & pixel attribution',endpoint:'https://graph.facebook.com',pollMinutes:60},
- {provider:'kind-recharge-cancellations',name:'Recharge · reported cancellations by store date',endpoint:'https://api.rechargeapps.com',pollMinutes:60}
+ {provider:'kind-recharge-cancellations',name:'Recharge · reported cancellations by store date',endpoint:'https://api.rechargeapps.com',pollMinutes:60},
+ {provider:'kind-triple-whale-diagnostics',name:'Triple Whale · order streams, renewal amounts & ONBRAND diagnostics',endpoint:'https://api.triplewhale.com/api/v2/orcabase/api/sql',pollMinutes:60}
 ] as const;
 export type KindProvider=typeof KIND_SOURCES[number]['provider'];
 export function sourceDefinition(provider:string,clientId:string){if(clientId!=='kind-patches')throw new Error('These credentials are scoped to Kind Patches');const def=KIND_SOURCES.find(s=>s.provider===provider);if(!def)throw new Error('Unknown Kind Patches provider');return def;}
@@ -45,8 +47,11 @@ export function hourlySessionCutoff(timezone:string,now=new Date()){
 function sessionCount(value:unknown){const n=numeric(value);if(!Number.isSafeInteger(n)||n<0)throw new Error('Invalid provider session count');return n;}
 export function privateSessionPage(path:string){return /^\/(?:orders|checkouts?|account|cart\/c|tools\/recurring|a\/account)(?:\/|$)/i.test(path);}
 function trafficLabel(value:unknown){let text=String(value??'Unknown').trim()||'Unknown';if(/[^\s/@]+@[^\s/]+\.[^\s/]+/.test(text))return '[private]';if(/^https?:\/\//i.test(text)){try{const url=new URL(text);text=`${url.origin}${url.pathname}`;}catch{return '[invalid]';}}return text.replace(/[A-Za-z0-9_=-]{28,}/g,'[private]').slice(0,200);}
+// Every accepted group contributes five observations; reserve the next group
+// as a truncation sentinel while staying below validateBatch's 50,000-row cap.
+export const TRAFFIC_GROUP_LIMIT=9999;
 export function normalizeTraffic(raw:Raw[],daily:Raw[],client:Client,w:KindWindow):SourceBatch {
- if(raw.length>=5001)throw new Error('Traffic export is incomplete or exceeds the 5000-group row limit');
+ if(raw.length>TRAFFIC_GROUP_LIMIT)throw new Error(`Traffic export is incomplete or exceeds the ${TRAFFIC_GROUP_LIMIT}-group row limit`);
  const seen=new Set<string>(),collapsed=new Map<string,{date:string;dimensions:Record<string,string>;counts:Record<string,number>}>();
  for(const r of raw){checkDate(r.day,w);const rawKey=JSON.stringify([r.day,r.landing_page_path,r.session_country,r.session_device_type,r.referrer_source,r.utm_source,r.utm_medium,r.utm_campaign]);if(seen.has(rawKey))throw new Error('Duplicate traffic aggregate');seen.add(rawKey);const path=sanitizePage(String(r.landing_page_path??'/'));if(privateSessionPage(path))throw new Error('Private landing page returned by public session query');
   const dimensions={page:path,market:sourceMarket(r.session_country),device:trafficLabel(r.session_device_type),source:trafficLabel(r.referrer_source),utm_source:trafficLabel(r.utm_source),utm_medium:trafficLabel(r.utm_medium),utm_campaign:trafficLabel(r.utm_campaign)},key=JSON.stringify([r.day,dimensions]),old=collapsed.get(key),counts=Object.fromEntries(Object.keys(sessionMetrics).map(m=>[m,sessionCount(r[m])]));
@@ -123,14 +128,16 @@ export function kindQualification(b:SourceBatch,provider:string){
  if(provider==='kind-shopify-traffic')for(const metric of [...Object.values(sessionMetrics),'completed_checkouts'])profiles.set(`traffic:${metric}`,{dataset:'traffic',metric,population:'human_public_landing_page_sessions',definition:'shopify_human_public_landing_page_traffic',currency:null,dimensions:['page','market','device','source','utm_source','utm_medium','utm_campaign'],hourly:false});
  if(provider==='kind-meta-performance')for(const metric of metaPerformanceMetrics)profiles.set(`creatives:${metric}`,{dataset:'creatives',metric,population:'meta_platform_ad_report',definition:'meta_per_ad_platform_account_attribution_pixel_purchase_closed_store_day',currency:metric==='meta_ad_spend'||metric==='meta_ad_pixel_purchase_value'?b.currency:null,dimensions:metaPerformanceDimensions,hourly:false});
  if(provider==='kind-recharge-cancellations')profiles.set('subscriptionEvents:subscription_cancellations',{dataset:'subscriptionEvents',metric:'subscription_cancellations',population:'recharge_cancelled_subscription_records',definition:'recharge_current_cancelled_subscription_records_cancelled_at_utc_to_store_date_excludes_reactivated',currency:null,dimensions:[],hourly:true});
+ if(provider==='kind-triple-whale-diagnostics')for(const profile of twDiagnosticProfiles(b.currency))profiles.set(`${profile.dataset}:${profile.metric}`,profile);
  const evidence:Record<string,string>={
   'kind-triple-whale':'Hourly commerce and channel spend reconciled to independent daily aggregate queries; store timezone and currency verified.',
   'kind-shopify-hourly':'Human hourly session and funnel counts reconciled exactly to independent daily queries for the same completed store-hour window; bounded public page-country breakdowns reconciled independently within 0.01%; Shopify timezone, currency and store identity verified.',
-  'kind-shopify-funnels':'Human page-session aggregates reconciled against independently queried public-page daily totals within 0.01%; ungrouped human-session totals remain authoritative; Shopify store identity verified.',
-  'kind-shopify-traffic':'Public human page-country-device-referrer-UTM counts reconciled independently within 0.01% to identical public-page daily totals; fewer than 5001 groups per closed store day; store identity verified. Latest closed, previous day and same-weekday cuts only.',
+  'kind-shopify-funnels':'Human page-session aggregates reconciled against independently queried public-page daily totals within 0.01%; ungrouped human-session totals remain authoritative; Shopify store identity verified. Latest closed, previous day and same-weekday cuts refreshed independently; captured history is retained.',
+  'kind-shopify-traffic':`Public human page-country-device-referrer-UTM counts reconciled independently within 0.01% to identical public-page daily totals; at most ${TRAFFIC_GROUP_LIMIT} groups per closed store day; store identity verified. Latest closed, previous day and same-weekday cuts only.`,
   'kind-triple-whale-summary':'Authenticated summary and SQL reads retain distinct platform-spend measurements for the same closed store day. Signed summary-minus-SQL differences are exposed; disagreement does not overwrite or gate headline efficiency metrics.',
   'kind-meta-performance':'Complete bounded per-ad closed-store-day Insights, with account currency/timezone verified and spend/impressions/clicks reconciled to an independent account-level query. Pixel purchase actions and values use explicit account attribution; missing conversion reporting remains unknown. No headline commerce or spend replacement.',
   'kind-recharge-cancellations':'Authenticated read_subscriptions access and store identity verified. Complete bounded cursor pagination deduplicated by subscription/cancelled_at; UTC timestamps converted to store calendar dates and hourly buckets reconciled to unique reported records. Counts reflect currently cancelled records; reactivated or deleted subscriptions can remove historical cancellations. This is not a complete cancellation-event ledger.',
+  'kind-triple-whale-diagnostics':'Aggregate-only TW SQL configured in USD with verified store timezone and unique order counts. Hourly positive-web nonrecurring streams and all tagged renewals independently reconcile orders, units and merchandise revenue before refunds. Recurring tag/flags reconcile. Tax/shipping-inclusive billed/refund amounts retain reported order currency and reconcile to the same tagged cohort; refund share uses billed amounts. ONBRAND and with/without-promo AOV cover all order-date records including zero/current-cancelled orders, not cancellation/refund event history. Independent day totals establish zeros. Initial sixty-day capture and rolling seven-day corrections.',
   'kind-applovin':'Authenticated report using the script-bound credential; complete pagination, UTC reporting window and USD cost definition.'
  };
  return {clientId:b.clientId,queryId:`${provider}:v1`,timezone:b.timezone,currency:b.currency,hourlyGrain:b.grain==='hourly',requiresHourly:b.grain==='hourly',channels:b.channels,requiredChannels:b.channels,dimensions:b.dimensions,requiredDimensions:b.dimensions,paginationComplete:!b.nextCursor,reconciled:true,reconciliationEvidence:evidence[provider]??'Authenticated provider read; validated store/account identity, complete bounded query/pagination and source-specific metric definition.',profiles:[...profiles.values()]};

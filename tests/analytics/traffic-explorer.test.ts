@@ -37,6 +37,17 @@ describe('traffic explorer counts',()=>{
   const groups=aggregateExplorerRows([row('/a','meta',{sessions:100,checkouts:10,completed_checkouts:4}),row('/a','tiktok',{sessions:100,checkouts:0,completed_checkouts:0})],'page');
   expect(explorerMetric(groups[0],'checkoutCompletion')).toBe(.4);
  });
+ it('pools fully reported matching counts when an individual segment has a zero denominator',()=>{
+  const zero=row('/a','direct',{sessions:100,checkouts:0,completed_checkouts:1});
+  expect(explorerMetric(zero,'checkoutCompletion')).toBeNull();
+  const groups=aggregateExplorerRows([row('/a','meta',{sessions:100,checkouts:10,completed_checkouts:4}),zero],'page');
+  expect(explorerMetric(groups[0],'checkoutCompletion')).toBe(.5);
+ });
+ it('does not pool a zero-denominator numerator from a different population',()=>{
+  const facts=Object.entries({sessions:100,checkouts:0,completed_checkouts:1}).map(([metric,value])=>({date:'2026-10-10',metric,value,dataset:'traffic',dimensions:{page:'/a',source:'direct'},population:metric==='completed_checkouts'?'different_population':'human_public_sessions',definition:'human_public_sessions',currency:null,sourceId:'shopify',retrievedAt:'2026-10-11T00:00:00Z',coverageThrough:'2026-10-11T00:00:00Z',quality:'complete'} as Observation));
+  const zero=detailRows(facts)[0];
+  expect(explorerMetric(aggregateExplorerRows([row('/a','meta',{sessions:100,checkouts:10,completed_checkouts:4}),zero],'page')[0],'checkoutCompletion')).toBeNull();
+ });
 });
 
 describe('aligned period trend',()=>{

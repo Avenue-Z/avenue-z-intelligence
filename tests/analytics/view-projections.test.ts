@@ -24,10 +24,13 @@ it('prepares exact-selection tab aggregates without repeating raw detail evidenc
 it('retains qualified conversion action benchmarks when arriving from a commerce tab',()=>{
  const f={...filters,view:'revenue'},presented=workspacePresentation(queryClient(client,observations,[],f,{prepareAllViews:true}),f);
  expect(presented.actions).toEqual([]);
- expect(presented.views?.funnels?.actions).toHaveLength(1);
- expect(presented.views?.funnels?.actions[0]).toMatchObject({benchmark:.03,benchmarkReason:'Own previous period'});
- expect(presented.views?.funnels?.actions[0].opportunity).toBeCloseTo(20);
- expect(presented.views?.funnels?.actions[0].benchmarkEvidence.every((r:Observation)=>r.date==='2026-10-06')).toBe(true);
+ expect(presented.views?.funnels?.actions).toEqual([]);
+ expect(presented.qualifiedPageAlerts).toHaveLength(1);
+ expect(presented.qualifiedPageAlerts?.[0].figures.find(figure=>figure.label==='Conversion rate')).toMatchObject({current:.01,previous:.03});
+ expect(presented.qualifiedPageAlerts?.[0].impact).toBeCloseTo(20);
+ const url=new URL(presented.qualifiedPageAlerts![0].evidence[1],'https://example.com');
+ expect(url.searchParams.get('page')).toBe('/landing');expect(url.searchParams.get('from')).toBe(filters.from);
+ expect(presented.evidence).toEqual([]);expect(presented.comparisonEvidence).toEqual([]);
 });
 
 it('keeps all tab aggregates unavailable when an intraday selection lacks qualified hourly coverage',()=>{

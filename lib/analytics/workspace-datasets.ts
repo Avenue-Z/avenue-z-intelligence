@@ -1,12 +1,12 @@
 /** Pure dataset scope shared by workspace reads and independent cache warming. */
 export function workspaceDatasets(view:string):string[]{
  const core=['overview','subscriptions','subscriptionEvents'];
- if(view==='overview')return ['overview','funnels','revenue','media','subscriptions','subscriptionEvents'];
+ if(view==='overview')return ['overview','funnels','revenue','media','subscriptions','subscriptionEvents','orderStreams','renewalDiagnostics','orderHygiene'];
  if(view==='traffic'||view==='funnels')return [...core,'funnels','traffic'];
- if(view==='subscriptions')return core;
+ if(view==='subscriptions')return [...core,'orderStreams','renewalDiagnostics'];
  if(view==='media')return [...core,'media'];
  if(view==='reviews'||view==='settings')return [...core,view];
- return ['overview',view,'subscriptions','subscriptionEvents'];
+ return ['overview',view,'subscriptions','subscriptionEvents',...view==='revenue'?['orderStreams','orderHygiene']:view==='products'?['orderHygiene']:[]];
 }
 /** Foreground and native warming share an exact load-affecting selection.
  * Supplemental prior-week detail remains available to AI/review Store callers.

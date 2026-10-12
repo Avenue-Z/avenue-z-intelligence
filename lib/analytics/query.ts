@@ -3,24 +3,38 @@ import {ratio,change,compatibleTotal,spendVerdict,opportunity} from './metrics';
 import {shiftDate,todayIn,dayWindow,matchedCutoff,comparisonPeriod} from './windows';
 import {datasetSeries as buildDatasetSeries} from './dataset-series';
 import {subscriptionComparison} from './subscriptions';
-import {chooseBenchmark} from './benchmark';
+import {benchmarkLookup} from './benchmark';
 import {Temporal} from '@js-temporal/polyfill';
 import {preferredObservations} from './source-precedence';
 import {sanitizePage,sourceMarket} from '../sources/kind-patches';
+import {compatibleZeroDenominatorRates} from './rate-qualification';
 export function filtered(rows:Observation[],f:Partial<QueryFilters>) {return rows.filter(r=>(!f.from||r.date>=f.from)&&(!f.to||r.date<=f.to)&&['market','stream','source','device','page'].every(k=>!(f as any)[k]||r.dimensions[k]===(f as any)[k]));}
 export function sumMetric(rows:Observation[],metric:string) {const r=rows.filter(x=>x.metric===metric);if(metric.endsWith('_rate')&&r.length>1)return null;if(new Set(r.map(x=>x.population)).size>1||new Set(r.map(x=>JSON.stringify(Object.keys(x.dimensions??{}).sort()))).size>1)return null;const seen=new Set<string>();for(const x of r){const key=JSON.stringify([x.date,x.start,x.end,Object.entries(x.dimensions??{}).sort()]);if(seen.has(key))return null;seen.add(key);}return compatibleTotal(r);}
-function populationRatio(rows:Observation[],n:string,d:string){const a=[...new Set(rows.filter(r=>r.metric===n).map(r=>r.population))].sort(),b=[...new Set(rows.filter(r=>r.metric===d).map(r=>r.population))].sort();return !a.length||a.includes(undefined)||JSON.stringify(a)!==JSON.stringify(b)?null:ratio(sumMetric(rows,n),sumMetric(rows,d));}
-export function summarize(rows:Observation[]) {const revenue=sumMetric(rows,'revenue'),orders=sumMetric(rows,'orders'),spend=sumMetric(rows,'spend'),sessions=sumMetric(rows,'sessions');return {revenue,orders,spend,sessions,cvr:populationRatio(rows,'converting_sessions','sessions'),aov:ratio(revenue,orders),mer:ratio(revenue,spend),newOrders:sumMetric(rows,'new_orders'),recurringRevenue:sumMetric(rows,'recurring_revenue'),atc:populationRatio(rows,'atc_sessions','sessions'),checkoutCompletion:populationRatio(rows,'completed_checkouts','checkouts')};}
+type MetricTotal=(metric:string)=>number|null;
+function metricLookup(rows:Observation[]){
+ const groups=new Map<string,Observation[]>(),totals=new Map<string,number|null>();
+ for(const row of rows){const group=groups.get(row.metric);if(group)group.push(row);else groups.set(row.metric,[row]);}
+ const total:MetricTotal=metric=>{if(totals.has(metric))return totals.get(metric)!;const value=sumMetric(groups.get(metric)??[],metric);totals.set(metric,value);return value;};
+ return {total,metricIds:groups.keys()};
+}
+function populationRatio(rows:Observation[],n:string,d:string,total:MetricTotal){const a=[...new Set(rows.filter(r=>r.metric===n).map(r=>r.population))].sort(),b=[...new Set(rows.filter(r=>r.metric===d).map(r=>r.population))].sort();return !a.length||a.includes(undefined)||JSON.stringify(a)!==JSON.stringify(b)?null:ratio(total(n),total(d));}
+function summaryWithTotals(rows:Observation[],total:MetricTotal){const revenue=total('revenue'),orders=total('orders'),spend=total('spend'),sessions=total('sessions');return {revenue,orders,spend,sessions,cvr:populationRatio(rows,'converting_sessions','sessions',total),aov:ratio(revenue,orders),mer:ratio(revenue,spend),newOrders:total('new_orders'),recurringRevenue:total('recurring_revenue'),atc:populationRatio(rows,'atc_sessions','sessions',total),checkoutCompletion:populationRatio(rows,'completed_checkouts','checkouts',total)};}
+export function summarize(rows:Observation[]){return summaryWithTotals(rows,metricLookup(rows).total);}
+/** Metric bags and summaries share totals validated from these exact rows.
+ * Memoization lives only inside this call; callers cannot supply unvalidated
+ * totals or reuse a cache after changing the evidence. */
+export function metricSummary(rows:Observation[]){const lookup=metricLookup(rows),metrics=Object.fromEntries([...lookup.metricIds].map(metric=>[metric,lookup.total(metric)]));return {metrics,summary:summaryWithTotals(rows,lookup.total)};}
 export function detailRows(rows:Observation[]) {
   const groups=new Map<string,Observation[]>();for(const r of rows){const key=JSON.stringify(Object.entries(r.dimensions).sort()),group=groups.get(key);if(group)group.push(r);else groups.set(key,[r]);}
-  return [...groups].map(([key,values])=>{const metrics:Record<string,number|null>={};for(const id of new Set(values.map(x=>x.metric)))metrics[id]=sumMetric(values,id);return {key,dimensions:values[0].dimensions,metrics,summary:summarize(values),evidence:values};});
+  return [...groups].map(([key,values])=>{const {metrics,summary}=metricSummary(values),zeroDenominatorRates=compatibleZeroDenominatorRates(values,metrics);return {key,dimensions:values[0].dimensions,metrics,summary,evidence:values,...zeroDenominatorRates.length?{zeroDenominatorRates}:{}};});
 }
 function datasetAnalytics(client:Client,current:Observation[],previous:Observation[],peers:Observation[],recommend=true){
   const details=detailRows(current),candidates=recommend?details.filter(r=>r.summary.sessions!==null&&r.summary.cvr!==null):[];
   // Attribution cohorts are displayed as evidence, not ranked against a
   // different country/source mix. Commerce datasets need no funnel benchmark.
   const priorDetails=candidates.length?detailRows(previous):[],peerDetails=candidates.length?detailRows(peers):[];
-  const opportunities=candidates.map(r=>{const benchmark=chooseBenchmark(r,peerDetails,priorDetails,client.config.benchmarkMarket),own=priorDetails.find(x=>x.key===r.key),b=benchmark.cvr;return {...r,benchmark:b,benchmarkReason:benchmark.reason,benchmarkEvidence:benchmark.reference?.evidence??[],opportunity:b===null?null:opportunity(r.summary.sessions!,r.summary.cvr!,b),actualOrdersChange:change(r.summary.orders,own?.summary.orders??null)};}).filter(x=>x.opportunity!==null).sort((a,b)=>b.opportunity!-a.opportunity!);
+  const benchmarks=benchmarkLookup(peerDetails,priorDetails,client.config.benchmarkMarket);
+  const opportunities=candidates.map(r=>{const benchmark=benchmarks.choose(r),own=benchmarks.previous(r.key),b=benchmark.cvr;return {...r,benchmark:b,benchmarkReason:benchmark.reason,benchmarkEvidence:benchmark.reference?.evidence??[],opportunity:b===null?null:opportunity(r.summary.sessions!,r.summary.cvr!,b),actualOrdersChange:change(r.summary.orders,own?.summary.orders??null)};}).filter(x=>x.opportunity!==null).sort((a,b)=>b.opportunity!-a.opportunity!);
   const actions=opportunities.filter(x=>x.summary.sessions!>=client.config.minSessions&&x.opportunity!>=client.config.minOpportunity).slice(0,client.config.maxActions);
   return {details,actions,opportunities,viewMetrics:summarize(current)};
 }

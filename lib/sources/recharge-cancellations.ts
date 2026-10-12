@@ -18,7 +18,10 @@ export async function fetchRechargeCancellations(client:Client,config:KindConfig
  const start=Temporal.Instant.from(dayWindow(window.from,client.timezone).start),minimum=start.subtract({seconds:2}),through=window.to<today?dayWindow(window.to,client.timezone).end:hourlySessionCutoff(client.timezone,asOf).through,cutoff=Temporal.Instant.from(through),headers={'X-Recharge-Access-Token':config.RECHARGE_ADMIN_TOKEN,'X-Recharge-Version':'2021-11'};
  const base={status:'cancelled',limit:'250',updated_at_min:minimum.toString().replace(/Z$/,'')},seenCursors=new Set<string>(),events=new Map<string,string>(),counts=new Map<string,number>();let cursor='',complete=false,eligible=0,seenRows=0;
  for(let page=0;page<200;page++){
-  const params=new URLSearchParams(cursor?{limit:'250',cursor}:base),response=await providerJson(fetcher,`https://api.rechargeapps.com/subscriptions?${params}`,{headers},deadline);
+  // Larger historical cursor scans sometimes need longer than the normal
+  // polling request. The whole source deadline still caps each request/retry.
+  const requestTimeout=window.to<today&&dates.length>3?60000:25000;
+  const params=new URLSearchParams(cursor?{limit:'250',cursor}:base),response=await providerJson(fetcher,`https://api.rechargeapps.com/subscriptions?${params}`,{headers},deadline,0,requestTimeout);
   if(!Array.isArray(response.subscriptions)||response.subscriptions.length>250)throw new Error('Recharge subscriptions response exceeds the page limit');
   if(!Object.hasOwn(response,'next_cursor')||response.next_cursor!==null&&typeof response.next_cursor!=='string')throw new Error('Recharge cancellation pagination metadata missing');
   for(const record of response.subscriptions){

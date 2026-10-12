@@ -42,3 +42,15 @@ it('answers chat from one shared detail read rather than a second overlapping mo
  const spy=vi.spyOn(state.store,'observations');await answerAI({clientId:'beam',filters,question:'What is shown?'});
  expect(spy.mock.calls.filter(call=>call[3]!==true)).toHaveLength(1);expect(spy.mock.calls.filter(call=>call[3]===true)).toHaveLength(1);
 });
+it('builds weekday and previous-day headline references without preparing dense Traffic tables',async()=>{
+ const query=await import('../../lib/analytics/query'),spy=vi.spyOn(query,'queryClient');
+ try{
+ const rows=['2026-10-07','2026-10-06','2026-09-30'].flatMap((date,index)=>[{date,dataset:'overview',metric:'revenue',value:[300,200,100][index],definition:'net_sales',population:'sales',currency:'USD',dimensions:{},quality:'complete'},{date,dataset:'traffic',metric:'sessions',value:999,definition:'sessions',population:'sessions',currency:null,dimensions:{page:'/page'},quality:'complete'}]);
+ await state.store.persistBatch('o','qualified',{clientId:'beam',complete:true,coverageThrough:'2026-10-08T04:00:00Z',rows} as any,'headline-references','2026-10-08T10:00:00Z');
+ const result=await aiContext('beam',{...filters,view:'traffic'},undefined,undefined,false,true,'Traffic');const client=result.context.clients[0];
+ expect(client.weekday).toMatchObject({metrics:{revenue:100},period:{from:'2026-09-30',to:'2026-09-30'}});expect(client.previousDay).toMatchObject({metrics:{revenue:200},period:{from:'2026-10-06',to:'2026-10-06'}});
+ const references=spy.mock.calls.filter(call=>call[3].view==='overview'&&call[4]?.preparedDatasets?.join(',')==='overview');expect(references).toHaveLength(2);expect(references.every(call=>call[1].every(row=>row.dataset==='overview'))).toBe(true);expect(spy.mock.calls.find(call=>call[3].view==='traffic')?.[1].some(row=>row.dataset==='traffic')).toBe(true);
+ const unsupported=(await aiContext('beam',{...filters,view:'traffic',device:'mobile'},undefined,undefined,false,true,'Traffic')).context.clients[0];expect(unsupported.weekday).toMatchObject({metrics:{revenue:null}});expect((unsupported.weekday as any).warnings.join(' ')).toContain('Unsupported metrics are unavailable');
+ const partial=(await aiContext('beam',{...filters,view:'traffic',mode:'partial'},undefined,undefined,false,true,'Traffic')).context.clients[0];expect(partial.weekday).toMatchObject({metrics:{revenue:null}});expect((partial.weekday as any).warnings.join(' ')).toContain('confirmed, current hourly coverage');
+ }finally{spy.mockRestore();}
+});

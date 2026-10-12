@@ -17,6 +17,7 @@ import {boundedAIContextForModel} from './model-input';
 import {buildChatModelContext} from './chat-input';
 import {withAnalyticsMemory} from '../server/analytics-memory';
 import {chatDatasets} from './chat-scope';
+import {monthToDateSummary} from '../analytics/month-to-date';
 export async function aiContext(clientId:string|undefined,filters:QueryFilters,reviewId?:string,existingScope?:AccessScope,sourceOnly=false,fastChat=false,question=''){
  return withAnalyticsMemory(()=>aiContextWithinBudget(clientId,filters,reviewId,existingScope,sourceOnly,fastChat,question));
 }
@@ -44,16 +45,16 @@ async function aiContextWithinBudget(clientId:string|undefined,filters:QueryFilt
   if(reviewId&&!allReviews.some(r=>r.id===reviewId)){const r=await s.first('SELECT * FROM reviews WHERE organizationId=? AND clientId=? AND id=?',scope.organizationId,client.id,reviewId);if(!r)throw new Error('Review access denied');allReviews.unshift({...r,payload:JSON.parse(r.payload),current:!!r.current});}
   const priorMonthStart=Temporal.PlainDate.from(filters.to).subtract({months:1}).toString().slice(0,8)+'01';
   const headlineRows=await s.observations(scope.organizationId,client.id,{...filters,from:priorMonthStart,view:'overview'},true),monthRows=headlineRows.filter(r=>r.dataset==='overview');
-  const weekday=queryClient(client,rows,connections,{...filters,compare:'weekday'}),previousDay=queryClient(client,rows,connections,{...filters,compare:'previous'});
+  const referenceRows=rows.filter(row=>row.dataset==='overview');
+  const weekday=queryClient(client,referenceRows,connections,{...filters,view:'overview',compare:'weekday'},{preparedDatasets:['overview']}),previousDay=queryClient(client,referenceRows,connections,{...filters,view:'overview',compare:'previous'},{preparedDatasets:['overview']});
   const mtFrom=filters.to.slice(0,8)+'01',priorDate=Temporal.PlainDate.from(filters.to).subtract({months:1}).toString(),priorFrom=priorDate.slice(0,8)+'01';
-  const mt=queryClient(client,monthRows,connections,{...filters,from:mtFrom}),priorMt=queryClient(client,monthRows,connections,{...filters,from:priorFrom,to:priorDate});
-  const summary=(a:ReturnType<typeof queryClient>,from:string,to:string)=>({from,to,metrics:a.metrics,warnings:a.warnings,observedDates:[...new Set(a.evidence.filter(x=>x.dataset==='overview').map(x=>x.date))].sort(),quality:[...new Set(a.evidence.map(x=>x.quality))]});
   const selected=queryClient(client,rows,connections,filters);
+  const mt=monthToDateSummary(client,monthRows,{...filters,from:mtFrom},selected.cutoff),priorMt=monthToDateSummary(client,monthRows,{...filters,from:priorFrom,to:priorDate},selected.cutoff);
   if(fastChat)selected.warnings.push(`This chat checked numeric detail for ${chatDatasets(filters.view,question).join(', ')}. Other datasets were not loaded for this question.`);
   return {...selected,note,findings,reviews:allReviews,
    weekday:{metrics:weekday.prior,period:weekday.comparison,warnings:weekday.warnings},previousDay:{metrics:previousDay.prior,period:previousDay.comparison,warnings:previousDay.warnings},
    supplemental:supplementalReviewEvidence(client,fastChat?rows:closedRows,connections,filters),
-   monthToDate:{current:summary(mt,mtFrom,filters.to),previous:summary(priorMt,priorFrom,priorDate),instruction:'Only call this MTD when contributing revenue/order metrics cover every elapsed day. Otherwise label observed-day totals and report the missing dates.'}
+   monthToDate:{current:mt,previous:priorMt,instruction:'Use fullElapsedDayCoverage and per-metric coverage, not merely observed dates, before claiming complete MTD. Earlier store days are closed; only the final date uses the shared local partial-day clock. Without a confirmed cutoff or complete revenue/order coverage, label observed totals and report missing or unconfirmed dates.'}
   };
  }));
  if(sourceOnly)for(const record of records){record.findings=record.findings.map(f=>{const copy={...f} as typeof f&{latestCheck?:unknown};delete copy.latestCheck;return copy;});record.reviews=record.reviews.filter(r=>r.payload.type==='historical').map(r=>({...r,current:!record.reviews.some(x=>x.payload.type==='historical'&&x.storeDate===r.storeDate&&x.revision>r.revision)}));}
@@ -87,7 +88,7 @@ export async function generateAIReview(scope:AccessScope,clientId:string,filters
  if(result.actions.some(a=>a.existingFindingId!==null&&!c.findings.some(f=>f.id===a.existingFindingId)))throw new Error('AI returned an unsupported follow-up reference; retry');
  const payload={type:'ai',title:`${c.client.name} daily review`,methodology:'avenuez-strategy · OpenAI evidence analysis',inputFingerprint,filters,generatedAt:new Date().toISOString(),model:serverSecret('OPENAI_MODEL')||'gpt-5.4-mini',...result,reportTiming:c.reportTiming,sources:context.sources,evidence:compactAIContextForModel(context),...(job?{scheduleJobId:job.id}:{})};const id=await s.saveReview(scope.organizationId,clientId,filters.to,await fingerprint(payload),payload,new Date().toISOString(),job);await s.audit(scope.organizationId,clientId,scope.actorId,'review.ai.generated',{id,inputFingerprint});return id;
 }
-export async function answerAI(b:any){if(typeof b.question!=='string'||!b.question.trim()||b.question.length>3000)throw new Error('Ask a question of up to 3,000 characters');const a=parseAIRequest(b),{scope,s,context,scopeKey}=await aiContext(a.clientId,a.filters,a.reviewId,undefined,false,true,b.question);
+export async function answerAI(b:any,existingScope?:AccessScope){if(typeof b.question!=='string'||!b.question.trim()||b.question.length>3000)throw new Error('Ask a question of up to 3,000 characters');const a=parseAIRequest(b),{scope,s,context,scopeKey}=await aiContext(a.clientId,a.filters,a.reviewId,existingScope,false,true,b.question);
  const key=serverSecret('OPENAI_API_KEY');if(!key)throw new Error('OpenAI is not configured');await reserveAI(s,scope);const history=await aiHistory(s,scope,scopeKey);
  const answer=validateAnswer(await askOpenAI(key,serverSecret('OPENAI_MODEL')||'gpt-5.4-mini',JSON.stringify(buildChatModelContext(context,b.question)),history.slice(-4).map(r=>({question:r.question,answer:r.payload.answer.slice(0,4000)})),b.question),context.sources);
  const payload={...answer,sources:context.sources.filter(s=>answer.sourceIds.includes(s.id)),scope:{filters:context.filters,clients:context.clients.map(c=>c.client.name),reviewId:b.reviewId??null},evidenceFingerprint:await fingerprint(context)},id=crypto.randomUUID(),createdAt=new Date().toISOString();await s.run('INSERT INTO ai_turns(id,organizationId,actorId,scopeKey,question,payload,createdAt) VALUES(?,?,?,?,?,?,?)',id,scope.organizationId,scope.actorId,scopeKey,b.question,JSON.stringify(payload),createdAt);return {id,question:b.question,payload,createdAt};

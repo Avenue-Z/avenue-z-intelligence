@@ -1,15 +1,20 @@
 import {Temporal} from '@js-temporal/polyfill';
 import {fetchRechargeCancellations} from './recharge-cancellations';
+import {normalizeTwDiagnostics,twDiagnosticsQueries} from './tw-diagnostics';
 import type {Client,Connection,Observation,SourceBatch} from '../analytics/contracts';
 import {dayWindow,shiftDate,todayIn} from '../analytics/windows';
 import {validateBatch} from './qualification';
-import {sourceDefinition,kindConfiguration,sourceBatch,observation,numeric,boundedRows,checkDate,sourceMarket,sanitizePage,privateSessionPage,reconcileSessions,normalizeHourlyCommerce,normalizeHourlySessions,normalizeTraffic,normalizeSpendCrossCheck,normalizeMetaPerformance,hourlySessionCutoff,sessionMetrics,publicSessionPages,sourceDates,localHourInterval,commerce,providerJson,type KindConfig,type KindWindow,type Raw} from './kind-patches';
+import {sourceDefinition,kindConfiguration,sourceBatch,observation,numeric,boundedRows,checkDate,sourceMarket,sanitizePage,privateSessionPage,reconcileSessions,normalizeHourlyCommerce,normalizeHourlySessions,normalizeTraffic,TRAFFIC_GROUP_LIMIT,normalizeSpendCrossCheck,normalizeMetaPerformance,hourlySessionCutoff,sessionMetrics,publicSessionPages,sourceDates,localHourInterval,commerce,providerJson,type KindConfig,type KindWindow,type Raw} from './kind-patches';
 async function triple(c:KindConfig,query:string,w:KindWindow,fetcher:typeof fetch,deadline:number){return boundedRows(await providerJson(fetcher,'https://api.triplewhale.com/api/v2/orcabase/api/sql',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':c.TRIPLE_WHALE_SQL_KEY},body:JSON.stringify({shopId:c.SHOP_DOMAIN,query,currency:'USD',period:{startDate:w.from,endDate:w.to}})},deadline));}
 async function shop(c:KindConfig,query:string,fetcher:typeof fetch,deadline:number){const j=await providerJson(fetcher,`https://${c.SHOP_DOMAIN}/admin/api/2026-07/graphql.json`,{method:'POST',headers:{'Content-Type':'application/json','X-Shopify-Access-Token':c.SHOPIFY_ADMIN_TOKEN},body:JSON.stringify({query})},deadline);if(j.errors?.length)throw new Error('Shopify GraphQL request rejected');return j.data;}
 async function shopifyql(c:KindConfig,query:string,fetcher:typeof fetch,deadline:number){const data=await shop(c,`query { shopifyqlQuery(query: ${JSON.stringify(query)}) { tableData { columns { name dataType } rows } parseErrors } }`,fetcher,deadline);if(data?.shopifyqlQuery?.parseErrors?.length)throw new Error('ShopifyQL query rejected; source schema needs review');const table=data?.shopifyqlQuery?.tableData;if(!table||!Array.isArray(table.columns))throw new Error('ShopifyQL table missing');return boundedRows(table.rows);}
 function dailyRows(raw:Raw[],w:KindWindow,dataset:string,fields:Record<string,string>,definition:string,population:string,client:Client,dimensions:(r:Raw)=>Record<string,string>){const out=[];const money=new Set(['revenue','gross','discounts','refunds']),seen=new Set<string>();for(const r of raw){checkDate(r.day,w);const dim=dimensions(r),key=JSON.stringify([r.day,Object.entries(dim).sort()]);if(seen.has(key))throw new Error('Duplicate provider daily aggregate');seen.add(key);for(const [field,metric] of Object.entries(fields)){let v=numeric(r[field]);if(metric==='discounts'||metric==='refunds')v=-v;out.push(observation(r.day,dataset,metric,v,definition,population,money.has(metric)?client.currency:null,dim));}}return out;}
 export async function fetchKindSource(connection:Connection,client:Client,w:KindWindow,secret:string,fetcher:typeof fetch=fetch,deadline=Date.now()+45000,asOf=new Date()):Promise<SourceBatch>{
  const def=sourceDefinition(connection.provider,client.id);if(new URL(connection.endpoint).toString()!==new URL(def.endpoint).toString())throw new Error('Kind Patches provider endpoint is fixed');let c:KindConfig;try{c=kindConfiguration.parse(JSON.parse(secret));}catch{throw new Error('Kind Patches server configuration is invalid');}if(client.currency!=='USD'||client.timezone!==c.META_TIME_ZONE)throw new Error('Kind Patches reporting identity changed');const now=asOf,today=todayIn(client.timezone,now),closedTo=w.to<today?w.to:shiftDate(today,-1),closed={from:w.from,to:closedTo};
+ if(connection.provider==='kind-triple-whale-diagnostics'){
+  const window=effectiveKindWindow(connection,client,w,now),responses=[];for(const query of twDiagnosticsQueries(client,window,now))responses.push(await triple(c,query,window,fetcher,deadline));
+  return normalizeTwDiagnostics({streams:responses[0],daily:responses[1],currencies:responses[2]},client,window,now);
+ }
  if(connection.provider==='kind-triple-whale-summary'){
   const period={from:closedTo,to:closedTo},summary=await providerJson(fetcher,def.endpoint,{method:'POST',headers:{'Content-Type':'application/json','x-api-key':c.TRIPLE_WHALE_SUMMARY_KEY},body:JSON.stringify({shopDomain:c.SHOP_DOMAIN,period:{start:closedTo,end:closedTo},todayHour:25})},deadline);
   const daily=await triple(c,'SELECT event_date,channel,SUM(spend) AS spend FROM ads_table WHERE event_date BETWEEN @startDate AND @endDate GROUP BY event_date,channel ORDER BY event_date,channel LIMIT 50000',period,fetcher,deadline);
@@ -35,7 +40,7 @@ export async function fetchKindSource(connection:Connection,client:Client,w:Kind
  if(connection.provider.startsWith('kind-shopify-')){
   const identity=await shop(c,'query { shop { ianaTimezone currencyCode myshopifyDomain } }',fetcher,deadline);if(identity?.shop?.ianaTimezone!==client.timezone||identity?.shop?.currencyCode!==client.currency||identity?.shop?.myshopifyDomain!==c.SHOP_DOMAIN)throw new Error('Shopify store identity mismatch');
   if(connection.provider==='kind-shopify-traffic'){
-   const window={from:closedTo,to:closedTo},show=Object.keys(sessionMetrics).join(','),suffix=`SINCE ${closedTo} UNTIL ${closedTo} ORDER BY day ASC LIMIT 5001`;
+   const window={from:closedTo,to:closedTo},show=Object.keys(sessionMetrics).join(','),suffix=`SINCE ${closedTo} UNTIL ${closedTo} ORDER BY day ASC LIMIT ${TRAFFIC_GROUP_LIMIT+1}`;
    const raw=await shopifyql(c,`FROM sessions SHOW ${show} WHERE ${publicSessionPages} GROUP BY day,landing_page_path,session_country,session_device_type,referrer_source,utm_source,utm_medium,utm_campaign ${suffix}`,fetcher,deadline);
    const daily=await shopifyql(c,`FROM sessions SHOW ${show} WHERE ${publicSessionPages} GROUP BY day ${suffix}`,fetcher,deadline);
    return normalizeTraffic(raw,daily,client,window);
@@ -90,19 +95,17 @@ export async function fetchKindSource(connection:Connection,client:Client,w:Kind
  const headers={'X-Recharge-Access-Token':c.RECHARGE_ADMIN_TOKEN,'X-Recharge-Version':'2021-11'},store=await providerJson(fetcher,`${def.endpoint}/store`,{headers},deadline);if(store?.store?.platform_domain!==c.SHOP_DOMAIN||store?.store?.storefront_domain!=='kindpatches.com'||store?.store?.test_mode!==false)throw new Error('Recharge store identity mismatch');if(connection.provider==='kind-recharge-cancellations')return fetchRechargeCancellations(client,c,effectiveKindWindow(connection,client,w,now),fetcher,deadline,now);const count=await providerJson(fetcher,`${def.endpoint}/customers/count?status=ACTIVE`,{headers:{...headers,'X-Recharge-Version':'2021-01'}},deadline),value=numeric(count.count);if(!Number.isInteger(value)||value<0)throw new Error('Invalid Recharge active-customer count');return sourceBatch(client,[observation(today,'subscriptions','active_customers',value,'recharge_raw_active_customers_not_subscription_count_or_baseline_adjusted','recharge_active_customers',null,{source:'recharge'})],now.toISOString());
 }
 
+function threeClosedCuts(closedTo:string){return [...new Set([shiftDate(closedTo,-7),shiftDate(closedTo,-1),closedTo])];}
 export async function* fetchKindBatches(connection:Connection,client:Client,w:KindWindow,secret:string,fetcher:typeof fetch=fetch,deadline=Date.now()+90000){
  const asOf=new Date(),actualWindow=effectiveKindWindow(connection,client,w,asOf);
- if(connection.provider==='kind-shopify-traffic'){
+ if(connection.provider==='kind-shopify-traffic'||connection.provider==='kind-shopify-funnels'){
   // These three closed-day cuts supply yesterday, its previous day, and its
   // same weekday comparison without polling a large attribution export.
-  for(const day of [actualWindow.from,shiftDate(actualWindow.to,-1),actualWindow.to])yield {batch:await fetchKindSource(connection,client,{from:day,to:day},secret,fetcher,deadline,asOf),window:{from:day,to:day}};
+  for(const day of threeClosedCuts(actualWindow.to))yield {batch:await fetchKindSource(connection,client,{from:day,to:day},secret,fetcher,deadline,asOf),window:{from:day,to:day}};
  }else if(connection.provider==='kind-shopify-hourly'){
   for(let day=actualWindow.from;day<=actualWindow.to;day=shiftDate(day,1)){
    for(let attempt=0;attempt<3;attempt++)try{yield {batch:await fetchKindSource(connection,client,{from:day,to:day},secret,fetcher,deadline,asOf),window:{from:day,to:day}};break;}catch(e){if(attempt===2||!(e as Error).message.includes('reconcile')||Date.now()+5000>=deadline)throw e;}
   }
- }else if(connection.provider==='kind-shopify-funnels'){
-  const closedTo=w.to<todayIn(client.timezone,asOf)?w.to:shiftDate(todayIn(client.timezone,asOf),-1),from=w.from>shiftDate(closedTo,-8)?w.from:shiftDate(closedTo,-8);
-  for(let day=from;day<=closedTo;day=shiftDate(day,1))yield {batch:await fetchKindSource(connection,client,{from:day,to:day},secret,fetcher,deadline,asOf),window:{from:day,to:day}};
  }else{
   for(let attempt=0;attempt<3;attempt++)try{yield {batch:await fetchKindSource(connection,client,w,secret,fetcher,deadline,asOf),window:actualWindow};return;}catch(e){if(attempt===2||!(e as Error).message.includes('reconcile')||Date.now()+5000>=deadline)throw e;}
  }
@@ -110,7 +113,8 @@ export async function* fetchKindBatches(connection:Connection,client:Client,w:Ki
 
 export function effectiveKindWindow(connection:Connection,client:Client,w:KindWindow,now=new Date()){
  const today=todayIn(client.timezone,now),closedTo=w.to<today?w.to:shiftDate(today,-1);
- if(connection.provider==='kind-shopify-traffic')return {from:shiftDate(closedTo,-7),to:closedTo};
+ if(connection.provider==='kind-triple-whale-diagnostics'){const hour=Temporal.Instant.from(now.toISOString()).toZonedDateTimeISO(client.timezone).hour,to=w.to<today?w.to:hour?today:shiftDate(today,-1);return {from:w.from>shiftDate(to,-59)?w.from:shiftDate(to,-59),to};}
+ if(connection.provider==='kind-shopify-traffic'||connection.provider==='kind-shopify-funnels')return {from:shiftDate(closedTo,-7),to:closedTo};
  if(connection.provider==='kind-triple-whale-summary')return {from:closedTo,to:closedTo};
  if(connection.provider==='kind-meta-performance')return {from:closedTo,to:closedTo};
  if(connection.provider==='kind-shopify-hourly'){const to=w.to<today?w.to:today;return {from:w.from>shiftDate(to,-8)?w.from:shiftDate(to,-8),to};}

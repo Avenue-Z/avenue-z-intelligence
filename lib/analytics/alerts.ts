@@ -2,6 +2,7 @@ import {dayWindow,shiftDate} from './windows';
 import {Temporal} from '@js-temporal/polyfill';
 import type {QueryFilters,Finding,Observation} from './contracts';
 import type {Workspace} from '../server/workspace';
+import type {ClientAnalytics} from './query';
 import {reviewHref} from '../reviews/document';
 export type AlertFigure={label:string;current:number|null;previous:number|null;format:'number'|'money'|'percent'|'ratio'};
 export type BusinessAlert={key:string;clientId:string;clientName:string;title:string;detail:string;nextStep:string;category:string;severity:string;status:string;owner:string;evidence:string[];basis:string;impact:number|null;finding?:Finding;period?:QueryFilters;figures:AlertFigure[];currency:string;referenceLabels?:{label:string;url:string}[]};
@@ -28,6 +29,18 @@ function conversionCovered(rows:Observation[],from:string,to:string,timezone:str
  }
  return true;
 }
+/** The same canonical qualification runs before browser presentation strips
+ * bulk observations and on older raw frames. No browser boolean can establish
+ * source coverage or a same-page benchmark. */
+export function qualifiedConversionAlerts(r:Pick<ClientAnalytics,'client'|'actions'|'comparison'|'cutoff'>,filters:QueryFilters):BusinessAlert[]{
+ const result:BusinessAlert[]=[],scope=JSON.stringify([filters.from,filters.to,filters.mode,filters.compare,filters.market,filters.stream,filters.source,filters.device,filters.page]);
+ for(const a of r.actions){const benchmark=a.benchmarkReason==='Own previous period'?r.comparison:filters;
+  if(filters.mode==='partial'&&!r.cutoff||!conversionCovered(a.evidence,filters.from,filters.to,r.client.timezone,r.cutoff)||!conversionCovered(a.benchmarkEvidence,benchmark.from,benchmark.to,r.client.timezone,r.cutoff))continue;
+  const key=`signal:conversion:${r.client.id}:${scope}:${a.key}`;
+  result.push({clientId:r.client.id,clientName:r.client.name,status:'open',owner:'',currency:r.client.currency,key,title:`Review ${a.dimensions.page||'segment'} conversion`,detail:`${a.summary.sessions?.toLocaleString()} sessions at ${((a.summary.cvr??0)*100).toFixed(2)}% CVR, versus ${((a.benchmark??0)*100).toFixed(2)}%. ${a.benchmarkReason}. Estimated gap: ${a.opportunity?.toFixed(0)} orders at this traffic volume.`,nextStep:'Compare source and device mix, offer, pricing, localisation and cart evidence before choosing a change.',category:'Conversion opportunity',severity:'investigate',basis:'Qualified source evidence',impact:a.opportunity,period:filters,figures:[{label:'Sessions',current:a.summary.sessions,previous:null,format:'number'},{label:'Conversion rate',current:a.summary.cvr,previous:a.benchmark,format:'percent'}],evidence:[key,...refs([...a.evidence,...a.benchmarkEvidence])].slice(0,100)});
+ }
+ return result;
+}
 export function buildAlertQueue(records:Omit<Workspace['clients'][number],'scheduleState'>[],filters:QueryFilters,options:{includeLatestReview?:boolean}={}):BusinessAlert[]{
  const result:BusinessAlert[]=[];
  for(const r of records){
@@ -36,14 +49,10 @@ export function buildAlertQueue(records:Omit<Workspace['clients'][number],'sched
   const generated:BusinessAlert[]=[];
   if(r.verdict.growth==='inefficient'&&r.verdict.spendComparison!=='unavailable'){
    const key=`signal:efficiency:${r.client.id}:${scope}`;
-   generated.push({...base,key,title:'Review paid media efficiency',detail:`Revenue ${delta(r.verdict.rd)} versus spend ${delta(r.verdict.sd)}. Cost per new-customer order is ${r.verdict.cost?.toFixed(2)??'unavailable'} ${r.client.currency}, versus ${r.verdict.previousCost?.toFixed(2)??'unavailable'} in the comparison period.`,nextStep:'Inspect channel and campaign changes, then review budgets against new-customer acquisition cost.',category:'Spend efficiency',severity:'act',basis:'Qualified source evidence',impact:null,period:filters,figures:[{label:'Revenue',current:r.metrics.revenue,previous:r.prior.revenue,format:'money'},{label:'Spend',current:r.metrics.spend,previous:r.prior.spend,format:'money'},{label:'MER',current:r.metrics.mer,previous:r.prior.mer,format:'ratio'},{label:'New-customer orders',current:r.metrics.newOrders,previous:r.prior.newOrders,format:'number'},{label:'Spend per new-customer order',current:r.verdict.cost,previous:r.verdict.previousCost,format:'money'}],evidence:[key,...refs([...r.evidence,...r.comparisonEvidence].filter(x=>x.dataset==='overview'&&['revenue','spend','new_orders'].includes(x.metric)))].slice(0,100)});
+   generated.push({...base,key,title:'Review paid media efficiency',detail:`Revenue ${delta(r.verdict.rd)} versus spend ${delta(r.verdict.sd)}. Cost per new-customer order is ${r.verdict.cost?.toFixed(2)??'unavailable'} ${r.client.currency}, versus ${r.verdict.previousCost?.toFixed(2)??'unavailable'} in the comparison period.`,nextStep:'Inspect channel and campaign changes, then review budgets against new-customer acquisition cost.',category:'Spend efficiency',severity:'act',basis:'Qualified source evidence',impact:null,period:filters,figures:[{label:'Revenue',current:r.metrics.revenue,previous:r.prior.revenue,format:'money'},{label:'Spend',current:r.metrics.spend,previous:r.prior.spend,format:'money'},{label:'MER',current:r.metrics.mer,previous:r.prior.mer,format:'ratio'},{label:'New-customer orders',current:r.metrics.newOrders,previous:r.prior.newOrders,format:'number'},{label:'Spend per new-customer order',current:r.verdict.cost,previous:r.verdict.previousCost,format:'money'}],evidence:[key,...((r as typeof r&{efficiencyEvidence?:string[]}).efficiencyEvidence??refs([...r.evidence,...r.comparisonEvidence].filter(x=>x.dataset==='overview'&&['revenue','spend','new_orders'].includes(x.metric))))].slice(0,100)});
   }
-  for(const a of r.actions){
-   const benchmark=a.benchmarkReason==='Own previous period'?r.comparison:filters;
-   if(filters.mode==='partial'&&!r.cutoff||!conversionCovered(a.evidence,filters.from,filters.to,r.client.timezone,r.cutoff)||!conversionCovered(a.benchmarkEvidence,benchmark.from,benchmark.to,r.client.timezone,r.cutoff))continue;
-   const key=`signal:conversion:${r.client.id}:${scope}:${a.key}`;
-   generated.push({...base,key,title:`Review ${a.dimensions.page||'segment'} conversion`,detail:`${a.summary.sessions?.toLocaleString()} sessions at ${((a.summary.cvr??0)*100).toFixed(2)}% CVR, versus ${((a.benchmark??0)*100).toFixed(2)}%. ${a.benchmarkReason}. Estimated gap: ${a.opportunity?.toFixed(0)} orders at this traffic volume.`,nextStep:'Compare source and device mix, offer, pricing, localisation and cart evidence before choosing a change.',category:'Conversion opportunity',severity:'investigate',basis:'Qualified source evidence',impact:a.opportunity,period:filters,figures:[{label:'Sessions',current:a.summary.sessions,previous:null,format:'number'},{label:'Conversion rate',current:a.summary.cvr,previous:a.benchmark,format:'percent'}],evidence:[key,...refs([...a.evidence,...a.benchmarkEvidence])].slice(0,100)});
-  }
+  const prepared=(r as typeof r&{qualifiedPageAlerts?:BusinessAlert[]}).qualifiedPageAlerts;
+  generated.push(...(prepared?prepared.filter(alert=>alert.clientId===r.client.id&&alert.period&&['from','to','mode','compare','compareFrom','compareTo','market','stream','source','device','page'].every(key=>(alert.period as any)[key]===(filters as any)[key])):qualifiedConversionAlerts(r,filters)));
   const sameTitle=(a:string,b:string)=>a.toLowerCase().replace(/[^a-z0-9]/g,'')===b.toLowerCase().replace(/[^a-z0-9]/g,'');
   const matchesScope=(p:unknown)=>!!p&&['from','to','mode','compare','market','stream','source','device','page'].every(k=>(p as any)[k]===(filters as any)[k]);
   const latest=(r.reviews??[]).filter(x=>x.current&&x.payload.type==='ai').sort((a,b)=>b.storeDate.localeCompare(a.storeDate)||b.createdAt.localeCompare(a.createdAt))[0];
