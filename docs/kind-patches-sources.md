@@ -20,7 +20,7 @@ Not yet included: traffic/device/UTM detail, Meta creative performance/attributi
 
 `PRIVATE_SITE_RUNNER_ENABLED=true` enables the shared writer **only for the confirmed owner-private Site**. Keep it disabled if the Site becomes public. Native Sites dispatch supplies the platform access boundary. Signed-in visitors still need administrator membership and Kind Patches access.
 
-A cloud run gets the linked Site with native Sites `get_site`, confirms owner-private access, then obtains its `siwc_bypass_bearer_token` (or the supported native bypass-token operation). Send the token only to the returned live Site origin in `OAI-Sites-Authorization: Bearer ...`. Never save a token or put one in a prompt.
+A cloud run gets the linked Site with native Sites `get_site`, confirms owner-private access, then obtains its `siwc_bypass_bearer_token`. Send the token only to the returned live Site origin in `OAI-Sites-Authorization: Bearer ...`. Never save a token or put one in a prompt. If native service access is unavailable, report the blocker; never create or rotate a bypass token during routine refreshes.
 
 - `POST /api/internal/sync` refreshes due, enabled feeds using existing server-held credentials and persists source snapshots. It does not republish or generate an AI review.
 - `GET /api/internal/kind-sources?from=YYYY-MM-DD&to=YYYY-MM-DD&mode=closed` reads persisted connections and calculated metrics. `mode=partial` reads matched store-hour metrics.

@@ -1,4 +1,5 @@
 import {getStore,requireClientAccess} from './access';
+import {workspacePresentation} from '../analytics/presentation';
 import {queryClient} from '../analytics/query';
 import {todayIn,shiftDate} from '../analytics/windows';
 import {initialReportingDate} from '../analytics/reporting-date';
@@ -11,7 +12,7 @@ export async function loadWorkspace(p:URLSearchParams){
   const history=await Promise.all(clients.map(c=>s.observations(scope.organizationId,c.id,undefined,true)));
   reportingDate=initialReportingDate(p,history.map((rows,i)=>({rows,connections:connections[i]})),filters.to);if(reportingDate){filters.from=reportingDate;filters.to=reportingDate;}
  }
- const all=await Promise.all(clients.map(async(client,i)=>{const [rows,findings,reviews,note]=await Promise.all([s.observations(scope.organizationId,client.id,filters),s.findings(scope.organizationId,client.id),s.reviews(scope.organizationId,client.id),s.note(scope.organizationId,client.id)]);return {...queryClient(client,rows,connections[i],filters),opportunities:[] as ReturnType<typeof queryClient>['opportunities'],findings,reviews,note};}));
+ const all=await Promise.all(clients.map(async(client,i)=>{const [rows,findings,reviews,note]=await Promise.all([s.observations(scope.organizationId,client.id,filters),s.findings(scope.organizationId,client.id),s.reviews(scope.organizationId,client.id),s.note(scope.organizationId,client.id)]);return {...workspacePresentation(queryClient(client,rows,connections[i],filters),filters),findings,reviews,note};}));
  return {scope,filters,clients:all,reportingDateNote:reportingDate?`Latest available closed reporting day · ${reportingDate}`:null,jobs:(await s.jobs(scope.organizationId)).filter(j=>scope.permittedClientIds.includes(j.clientId)),loadedAt:new Date().toISOString()};
 }
 export type Workspace=Awaited<ReturnType<typeof loadWorkspace>>;
