@@ -1,5 +1,5 @@
 type Entry={payload:string;expiresAt:number;bytes:number};
-type CacheOptions={ttlMs:number;maxEntries:number;maxBytes:number;maxEntryBytes:number};
+type CacheOptions={ttlMs:number;maxEntries:number;maxBytes:number;maxEntryBytes:number;coalesce?:boolean};
 type Codec<T>={encode:(value:T)=>string;decode:(payload:string)=>T};
 
 /** Serialized entries keep memory bounded and give every caller its own data.
@@ -20,7 +20,7 @@ export class QueryCache<T> {
   for(const [cachedKey,entry] of this.entries)if(entry.expiresAt<=now)this.remove(cachedKey);
   const cached=this.entries.get(key);
   if(cached){this.entries.delete(key);this.entries.set(key,cached);return this.codec.decode(cached.payload);}
-  const current=this.pending.get(key);if(current)return this.codec.decode(await current);
+  const current=this.options.coalesce===false?undefined:this.pending.get(key);if(current)return this.codec.decode(await current);
   const work=(async()=>{
    const payload=await load(),bytes=2*(key.length+payload.length);
    if(bytes<=this.options.maxEntryBytes&&bytes<=this.options.maxBytes){
@@ -31,7 +31,7 @@ export class QueryCache<T> {
    return payload;
   })();
   // Requests outside the bounded coalescing set still load normally.
-  const coalesced=this.pending.size<this.options.maxEntries;
+  const coalesced=this.options.coalesce!==false&&this.pending.size<this.options.maxEntries;
   if(coalesced)this.pending.set(key,work);
   try{return this.codec.decode(await work);}finally{if(coalesced)this.pending.delete(key);}
  }

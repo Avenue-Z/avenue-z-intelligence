@@ -6,11 +6,11 @@ import {Temporal} from '@js-temporal/polyfill';
 import {QueryCache} from './query-cache';
 import {observationCodec} from './observation-codec';
 import {durableObservationPayload} from './durable-observation-cache';
-type Db={prepare:(sql:string)=>any;batch:(statements:any[])=>Promise<any[]>};
+type Db={prepare:(sql:string)=>any;batch:(statements:any[])=>Promise<any[]>;allowCrossRequestCoalescing?:boolean};
 // Both runtime adapters keep their DB object for the lifetime of a warm
 // instance. Keep databases separate even when organization/client ids match.
 const observationCaches=new WeakMap<Db,QueryCache<Observation[]>>();
-function observationCache(db:Db){let cache=observationCaches.get(db);if(!cache){cache=new QueryCache({ttlMs:60000,maxEntries:16,maxBytes:16*1024*1024,maxEntryBytes:12*1024*1024},observationCodec);observationCaches.set(db,cache);}return cache;}
+function observationCache(db:Db){let cache=observationCaches.get(db);if(!cache){cache=new QueryCache({ttlMs:60000,maxEntries:16,maxBytes:16*1024*1024,maxEntryBytes:12*1024*1024,coalesce:db.allowCrossRequestCoalescing!==false},observationCodec);observationCaches.set(db,cache);}return cache;}
 export type ScheduledReviewLease={id:string;leaseToken:string};
 export class Store {
   constructor(public db:Db){}
