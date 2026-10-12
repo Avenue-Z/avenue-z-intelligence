@@ -4,7 +4,7 @@ import {Store} from './store';
 import {authorize} from './policy';
 import type {AccessScope,Client} from '../analytics/contracts';
 import initialClients from '../../data/initial-clients.json';
-export function getStore(){if(!env.DB)throw new Error('Shared database unavailable');return new Store(env.DB);}
+export function getStore(){const database=env.DB;if(!database)throw new Error('Shared database unavailable');return new Store(database);}
 export async function scopeForUser():Promise<AccessScope|null>{const u=await getChatGPTUser();if(!u)return null;const s=getStore(),settings=env as unknown as Record<string,unknown>,org=runtimePlatform==='vercel'?String(settings.APP_ORGANIZATION_ID||'avenue-z'):'avenue-z';const m=await s.first('SELECT m.* FROM members m WHERE m.organizationId=? AND (m.actorId=? OR EXISTS(SELECT 1 FROM member_identities i WHERE i.organizationId=m.organizationId AND i.email=m.email AND i.actorId=?))',org,u.userId,u.userId);if(!m)return null;const clients=await s.clients(m.organizationId);const ids=JSON.parse(m.clients) as string[];return {organizationId:m.organizationId,actorId:u.userId,role:m.role,permittedClientIds:ids.includes('*')?clients.map(c=>c.id):ids};}
 // Only invoked by the protected browser entry page. New Sites remain owner-private.
 // The first private owner claims the workspace once; subsequent people need an explicit invitation.
