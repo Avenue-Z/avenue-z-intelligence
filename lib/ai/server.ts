@@ -17,6 +17,16 @@ export async function aiContext(clientId:string|undefined,filters:QueryFilters,r
  const scope=existingScope??await requireClientAccess(clientId),s=getStore();if(clientId&&!scope.permittedClientIds.includes(clientId))throw new Error('Client access denied');
  const clients=(await s.clients(scope.organizationId)).filter(c=>scope.permittedClientIds.includes(c.id)&&(!clientId||c.id===clientId));
  if(reviewId&&!clientId)throw new Error('Client identity required for a review');
+ if(reviewId&&clientId){
+  const saved=await s.first("SELECT id,storeDate,revision,json_extract(payload,'$.evidence') AS evidence,json_remove(payload,'$.evidence') AS payload FROM reviews WHERE organizationId=? AND clientId=? AND id=?",scope.organizationId,clientId,reviewId);
+  if(!saved)throw new Error('Review access denied');
+  if(saved.evidence){const context=JSON.parse(saved.evidence) as ReturnType<typeof buildAIContext>;if(context.clients?.length!==1||context.clients[0].client.id!==clientId||context.filters?.to!==saved.storeDate)throw new Error('Saved review evidence scope is invalid');
+   const c=context.clients[0],payload=JSON.parse(saved.payload),sourceId=`review:${saved.id}`;c.selectedReview={storeDate:saved.storeDate,revision:saved.revision};
+   c.sourceReviews=[{sourceId,storeDate:saved.storeDate,revision:saved.revision,scopeLabel:'Fixed saved report and its original evidence; subsequent provider refreshes are outside this report.',payload:{type:payload.type,text:payload.text,kpis:payload.kpis,summary:payload.summary,headlines:payload.headlines,sections:payload.sections,methodology:payload.methodology,filters:payload.filters,reportTiming:payload.reportTiming}}];
+   if(!context.sources.some(x=>x.id===sourceId))context.sources.push({id:sourceId,label:`${c.client.name} · ${saved.storeDate} · revision ${saved.revision}`,url:`/clients/${encodeURIComponent(clientId)}/reviews/${encodeURIComponent(saved.id)}`});
+   const scopeKey=await fingerprint({clientIds:[clientId],filters:context.filters,reviewId});return {scope,s,context,scopeKey};
+  }
+ }
  const records=await Promise.all(clients.map(async client=>{
   const [rows,closedRows,connections,note,findings,allReviews]=await Promise.all([
    s.observations(scope.organizationId,client.id,filters),
