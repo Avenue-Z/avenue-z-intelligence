@@ -18,7 +18,7 @@ export async function connectKindSource(scope:AccessScope,clientId:string,provid
  try{
   const to=todayIn(client.timezone),deadline=Date.now()+180000;let count=0,coverageThrough:string|null=null,q:any;
   if(!env.BUCKET)throw new Error('Snapshot archive unavailable');
-  for await(const {batch,window} of fetchKindBatches(source,client,{from:shiftDate(to,-59),to},secret,fetch,deadline)){
+  for await(const {batch,window} of fetchKindBatches(source,client,{from:shiftDate(to,provider==='kind-shopify-hourly'?-1:-59),to},secret,fetch,deadline)){
    const contract=requireQualifiedSource(kindQualification(batch,def.provider),client);validateRegisteredBatch(batch,contract);q=contract;
    const hash=await fingerprint(batch),now=new Date().toISOString();await env.BUCKET.put(`snapshots/${scope.organizationId}:${client.id}:${source.id}:${hash}.json`,JSON.stringify(batch),{httpMetadata:{contentType:'application/json'}});await s.persistBatch(scope.organizationId,source.id,batch,hash,now,window);count+=batch.rows.length;coverageThrough=batch.coverageThrough;
   }

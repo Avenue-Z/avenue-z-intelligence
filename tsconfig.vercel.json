@@ -1,6 +1,6 @@
 {
   "extends":"./tsconfig.json",
-  "exclude":["node_modules","examples",".next"],
+  "exclude":["node_modules","examples",".next","vite.config.ts"],
   "compilerOptions":{
     "paths":{
       "@/*":["./*"],
