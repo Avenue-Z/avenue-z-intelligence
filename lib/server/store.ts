@@ -34,7 +34,8 @@ export class Store {
     // the entire source set again for every page made large exports quadratic.
     const read=async()=>{for(;;){const pointer=pointers[nextPointer++];if(!pointer)return;let cursor:string|null=null;for(;;){const page:{payload:string;rowKey:string}[]=await this.all(`SELECT o.payload,o.rowKey FROM observations o WHERE o.snapshotId=? AND o.date=?${clause}${cursor?' AND o.rowKey>?':''} ORDER BY o.rowKey LIMIT 2000`,pointer.snapshotId,pointer.date,...values.slice(1),...cursor?[cursor]:[]);for(const r of page){const row=JSON.parse(r.payload);if(accumulator)accumulator.add(row);else rows.push(row);}if(page.length<2000)break;cursor=page[page.length-1].rowKey;}}};
     await Promise.all(Array.from({length:Math.min(4,pointers.length)},()=>read()));
-    return preferredObservations(accumulator?accumulator.finish():rows);
+    const stable=(accumulator?accumulator.finish():rows).map(row=>({row,key:JSON.stringify([row.sourceId,row.date,row.dataset,row.metric,row.definition,row.population,row.currency,row.start,row.end,Object.entries(row.dimensions).sort(),row.retrievedAt,row.quality])})).sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0).map(x=>x.row);
+    return preferredObservations(stable);
   }
   async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string}) {
     const id=`${org}:${batch.clientId}:${source}:${key}`;

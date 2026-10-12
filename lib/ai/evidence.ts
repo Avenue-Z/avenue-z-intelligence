@@ -4,15 +4,26 @@ import {change,ratio} from '../analytics/metrics';
 import {dayWindow,shiftDate,todayIn} from '../analytics/windows';
 
 type ObservedInterval={start:string;end:string;intervalCount:number;intervalMilliseconds:number};
+type AggregatedObservation=Observation&{aggregation?:string;contributionCount?:number};
+const aggregation=(row:Observation)=>{const value=(row as AggregatedObservation).aggregation;return typeof value==='string'&&value?value:undefined;};
+const knownContributionCount=(row:Observation)=>{const count=(row as AggregatedObservation).contributionCount;return aggregation(row)&&typeof count==='number'&&Number.isSafeInteger(count)&&count>0?count:null;};
+// Counts distinguish stored aggregate records from the hourly observations they
+// represent. An unknown contribution count is explicitly qualified in provenance.
+const representedCount=(row:Observation)=>knownContributionCount(row)??1;
 export function compressedProvenance(rows:Observation[]){
- const groups=new Map<string,{scope:{date:string;dataset:string;metric:string;sourceId:string;definition:string;population:string|null;currency:string|null;quality:Observation['quality'];retrievedAt:string;coverageThrough:string|null};rows:Observation[]}>();
+ const groups=new Map<string,{scope:{date:string;dataset:string;metric:string;sourceId:string;definition:string;population:string|null;currency:string|null;quality:Observation['quality'];retrievedAt:string;coverageThrough:string|null;aggregation?:string};rows:Observation[]}>();
  for(const row of rows){
-  const scope={date:row.date,dataset:row.dataset,metric:row.metric,sourceId:row.sourceId,definition:row.definition,population:row.population??null,currency:row.currency,quality:row.quality,retrievedAt:row.retrievedAt,coverageThrough:row.coverageThrough};
+  const scope={date:row.date,dataset:row.dataset,metric:row.metric,sourceId:row.sourceId,definition:row.definition,population:row.population??null,currency:row.currency,quality:row.quality,retrievedAt:row.retrievedAt,coverageThrough:row.coverageThrough,...aggregation(row)?{aggregation:aggregation(row)}:{}};
   const key=JSON.stringify(scope),group=groups.get(key);if(group)group.rows.push(row);else groups.set(key,{scope,rows:[row]});
  }
  return [...groups.values()].map(({scope,rows:values})=>{
-  const timed=new Map<string,{start:string;end:string}>(),incomplete=new Map<string,{start:string|null;end:string|null;observationCount:number}>();let intervalObservationCount=0,withoutIntervalCount=0;
+  const timed=new Map<string,{start:string;end:string}>(),incomplete=new Map<string,{start:string|null;end:string|null;observationCount:number}>();const contributedBounds:{start:string|null;end:string|null;contributionCount:number|null;continuity:'unknown'}[]=[];let intervalObservationCount=0,withoutIntervalCount=0;
   for(const row of values){
+   if(aggregation(row)){
+    // A rollup's min/max bounds may span absent page/hour groups. Its continuity
+    // is unknown; it must never masquerade as an observed continuous interval.
+    contributedBounds.push({start:row.start??null,end:row.end??null,contributionCount:knownContributionCount(row),continuity:'unknown'});continue;
+   }
    if(row.start&&row.end&&Number.isFinite(Date.parse(row.start))&&Date.parse(row.end)>Date.parse(row.start)){intervalObservationCount++;timed.set(JSON.stringify([row.start,row.end]),{start:row.start,end:row.end});}
    else if(!row.start&&!row.end)withoutIntervalCount++;
    else {const key=JSON.stringify([row.start??null,row.end??null]),existing=incomplete.get(key);if(existing)existing.observationCount++;else incomplete.set(key,{start:row.start??null,end:row.end??null,observationCount:1});}
@@ -24,13 +35,14 @@ export function compressedProvenance(rows:Observation[]){
    if(prior&&prior.end===interval.start&&prior.intervalMilliseconds===duration){prior.end=interval.end;prior.intervalCount++;}
    else observedIntervals.push({...interval,intervalCount:1,intervalMilliseconds:duration});
   }
-  return {...scope,observationCount:values.length,intervalObservationCount,withoutIntervalCount,duplicateIntervalObservationCount:intervalObservationCount-timed.size,observedIntervals,incompleteIntervals:[...incomplete.values()]};
+  const unknownContributionCounts=scope.aggregation?values.filter(row=>knownContributionCount(row)===null).length:0;
+  return {...scope,storedObservationCount:values.length,observationCount:values.reduce((sum,row)=>sum+representedCount(row),0),...scope.aggregation?{contributionCount:unknownContributionCounts?null:values.reduce((sum,row)=>sum+representedCount(row),0),unknownContributionCounts,observationCountBasis:unknownContributionCounts?'Stored records where contribution counts are unknown':'Represented contributed observations'}:{},contributedBounds,intervalObservationCount,withoutIntervalCount,duplicateIntervalObservationCount:intervalObservationCount-timed.size,observedIntervals,incompleteIntervals:[...incomplete.values()]};
  });
 }
 export function evidenceDetailRows(rows:Observation[],limit=80){
  const grouped=detailRows(rows).sort((a,b)=>(b.summary.sessions??b.summary.revenue??0)-(a.summary.sessions??a.summary.revenue??0)),selected=grouped.slice(0,limit);
- const returnedObservationCount=selected.reduce((sum,row)=>sum+row.evidence.length,0);
- return {segmentCount:grouped.length,returnedSegmentCount:selected.length,omitted:Math.max(0,grouped.length-limit),observationCount:rows.length,returnedObservationCount,omittedObservationCount:rows.length-returnedObservationCount,rows:selected.map(row=>({key:row.key,dimensions:row.dimensions,metrics:row.metrics,summary:row.summary,
+ const returnedStoredObservationCount=selected.reduce((sum,row)=>sum+row.evidence.length,0),observationCount=rows.reduce((sum,row)=>sum+representedCount(row),0),returnedObservationCount=selected.reduce((sum,row)=>sum+row.evidence.reduce((n,e)=>n+representedCount(e),0),0);
+ return {segmentCount:grouped.length,returnedSegmentCount:selected.length,omitted:Math.max(0,grouped.length-limit),storedObservationCount:rows.length,returnedStoredObservationCount,omittedStoredObservationCount:rows.length-returnedStoredObservationCount,observationCount,returnedObservationCount,omittedObservationCount:observationCount-returnedObservationCount,rows:selected.map(row=>({key:row.key,dimensions:row.dimensions,metrics:row.metrics,summary:row.summary,
   derived:{discountRate:ratio(row.metrics.discounts??null,row.metrics.gross??null),atcToOrderClose:ratio(row.summary.cvr,row.summary.atc)},
   provenance:compressedProvenance(row.evidence)}))};
 }

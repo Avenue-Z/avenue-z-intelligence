@@ -1,6 +1,7 @@
 import {it,expect} from 'vitest';
 import {evidenceDetailRows,supplementalReviewEvidence} from '../../lib/ai/evidence';
 import clients from '../../data/initial-clients.json';
+import {FunnelRollupAccumulator} from '../../lib/analytics/funnel-rollup';
 import type {Observation} from '../../lib/analytics/contracts';
 const client=clients[0] as any;
 const filters={from:'2026-10-08',to:'2026-10-08',view:'overview',mode:'partial',compare:'previous',market:'',source:'',page:'',stream:'',device:''} as const;
@@ -43,4 +44,22 @@ it('keeps partial quality and unknown coverage distinct from complete hourly evi
  const timed={...row('2026-10-07','media','spend',5,{channel:'meta'}),start:'2026-10-07T00:00:00Z',end:'2026-10-07T01:00:00Z'};
  const details=evidenceDetailRows([timed,{...timed,start:'2026-10-07T01:00:00Z',end:'2026-10-07T02:00:00Z',quality:'partial',coverageThrough:null}],80);
  expect(details.rows[0].provenance).toHaveLength(2);expect(details.rows[0].provenance.find(p=>p.quality==='partial')).toMatchObject({coverageThrough:null,observationCount:1});
+});
+
+it('keeps sparse funnel rollup bounds explicit with unknown continuity and counts the represented hourly observations',()=>{
+ const accumulator=new FunnelRollupAccumulator({timezone:'UTC'}),base={...row('2026-10-07','funnels','sessions',10,{page:'/offer',market:'US'}),definition:'shopify_human_public_landing_pages',population:'human_public_landing_page_sessions',start:'2026-10-07T00:00:00Z',end:'2026-10-07T01:00:00Z'};
+ accumulator.add(base);accumulator.add({...base,value:7,start:'2026-10-07T04:00:00Z',end:'2026-10-07T05:00:00Z'});
+ const rolled=accumulator.finish(),details=evidenceDetailRows(rolled),provenance=details.rows[0].provenance[0];
+ expect(details.rows[0].metrics.sessions).toBe(17);expect(details).toMatchObject({storedObservationCount:1,observationCount:2,returnedStoredObservationCount:1,returnedObservationCount:2,omittedObservationCount:0});
+ expect(provenance).toMatchObject({aggregation:'hourly_public_page_funnel_rollup',contributionCount:2,storedObservationCount:1,observationCount:2,intervalObservationCount:0,observedIntervals:[],contributedBounds:[{start:'2026-10-07T00:00:00Z',end:'2026-10-07T05:00:00Z',contributionCount:2,continuity:'unknown'}]});
+ const mixed=evidenceDetailRows([...rolled,{...base,value:3,start:'2026-10-07T06:00:00Z',end:'2026-10-07T07:00:00Z'}]);
+ expect(mixed.rows[0].metrics.sessions).toBe(20);expect(mixed.observationCount).toBe(3);expect(mixed.storedObservationCount).toBe(2);expect(mixed.rows[0].provenance).toHaveLength(2);expect(mixed.rows[0].provenance.reduce((sum,p)=>sum+p.observationCount,0)).toBe(mixed.observationCount);
+ expect(mixed.rows[0].provenance.find(p=>!p.aggregation)?.observedIntervals).toEqual([{start:'2026-10-07T06:00:00Z',end:'2026-10-07T07:00:00Z',intervalCount:1,intervalMilliseconds:3600000}]);
+});
+it('keeps omitted rollup contribution counts coherent with the returned segment limit',()=>{
+ const accumulator=new FunnelRollupAccumulator({timezone:'UTC'}),base={...row('2026-10-07','funnels','sessions',10,{page:'/offer',market:'US'}),definition:'shopify_human_public_landing_pages',population:'human_public_landing_page_sessions'};
+ for(let hour=0;hour<3;hour++){const start=`2026-10-07T0${hour}:00:00Z`,end=`2026-10-07T0${hour+1}:00:00Z`;accumulator.add({...base,start,end});if(hour<2)accumulator.add({...base,value:1,dimensions:{page:'/other',market:'US'},start,end});}
+ const details=evidenceDetailRows(accumulator.finish(),1);
+ expect(details).toMatchObject({segmentCount:2,returnedSegmentCount:1,omitted:1,storedObservationCount:2,returnedStoredObservationCount:1,omittedStoredObservationCount:1,observationCount:5,returnedObservationCount:3,omittedObservationCount:2});
+ expect(details.rows[0].provenance.reduce((sum,p)=>sum+p.observationCount,0)).toBe(details.returnedObservationCount);
 });

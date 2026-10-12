@@ -3,7 +3,7 @@ import {parseFilters} from '../server/workspace';
 import {queryClient} from '../analytics/query';
 import {fingerprint} from '../reviews/build';
 import {serverSecret} from '../server/secrets';
-import {buildAIContext,compactAIContextForModel,validateAnswer,reviewSchema,REVIEW_SECTIONS} from './context';
+import {buildAIContext,compactAIContextForModel,restoreAIContextSnapshot,validateAnswer,reviewSchema,REVIEW_SECTIONS} from './context';
 import {askOpenAI} from './provider';
 import type {QueryFilters,AccessScope} from '../analytics/contracts';
 import type {Store,ScheduledReviewLease} from '../server/store';
@@ -20,7 +20,7 @@ export async function aiContext(clientId:string|undefined,filters:QueryFilters,r
  if(reviewId&&clientId){
   const saved=await s.first("SELECT id,storeDate,revision,json_extract(payload,'$.evidence') AS evidence,json_remove(payload,'$.evidence') AS payload FROM reviews WHERE organizationId=? AND clientId=? AND id=?",scope.organizationId,clientId,reviewId);
   if(!saved)throw new Error('Review access denied');
-  if(saved.evidence){const context=JSON.parse(saved.evidence) as ReturnType<typeof buildAIContext>;if(context.clients?.length!==1||context.clients[0].client.id!==clientId||context.filters?.to!==saved.storeDate)throw new Error('Saved review evidence scope is invalid');
+  if(saved.evidence){const context=restoreAIContextSnapshot(JSON.parse(saved.evidence));if(context.clients?.length!==1||context.clients[0].client.id!==clientId||context.filters?.to!==saved.storeDate)throw new Error('Saved review evidence scope is invalid');
    const c=context.clients[0],payload=JSON.parse(saved.payload),sourceId=`review:${saved.id}`;c.selectedReview={storeDate:saved.storeDate,revision:saved.revision};
    c.sourceReviews=[{sourceId,storeDate:saved.storeDate,revision:saved.revision,scopeLabel:'Fixed saved report and its original evidence; subsequent provider refreshes are outside this report.',payload:{type:payload.type,text:payload.text,kpis:payload.kpis,summary:payload.summary,headlines:payload.headlines,sections:payload.sections,methodology:payload.methodology,filters:payload.filters,reportTiming:payload.reportTiming}}];
    if(!context.sources.some(x=>x.id===sourceId))context.sources.push({id:sourceId,label:`${c.client.name} · ${saved.storeDate} · revision ${saved.revision}`,url:`/clients/${encodeURIComponent(clientId)}/reviews/${encodeURIComponent(saved.id)}`});
@@ -74,7 +74,7 @@ export async function generateAIReview(scope:AccessScope,clientId:string,filters
  result.sections.sort((a,b)=>REVIEW_SECTIONS.indexOf(a.title)-REVIEW_SECTIONS.indexOf(b.title));
  if([...result.sourceIds,...result.actions.flatMap(a=>a.sourceIds),...result.sections.flatMap(section=>(section.tables??[]).flatMap(t=>t.sourceIds))].some(id=>!context.sources.some(s=>s.id===id)))throw new Error('AI returned an unsupported citation; retry');if(result.actions.length>c.client.config.maxActions)throw new Error('AI exceeded the configured action limit; retry');
  if(result.actions.some(a=>a.existingFindingId!==null&&!c.findings.some(f=>f.id===a.existingFindingId)))throw new Error('AI returned an unsupported follow-up reference; retry');
- const payload={type:'ai',title:`${c.client.name} daily review`,methodology:'avenuez-strategy · OpenAI evidence analysis',inputFingerprint,filters,generatedAt:new Date().toISOString(),model:serverSecret('OPENAI_MODEL')||'gpt-5.4-mini',...result,reportTiming:c.reportTiming,sources:context.sources,evidence:context,...(job?{scheduleJobId:job.id}:{})};const id=await s.saveReview(scope.organizationId,clientId,filters.to,await fingerprint(payload),payload,new Date().toISOString(),job);await s.audit(scope.organizationId,clientId,scope.actorId,'review.ai.generated',{id,inputFingerprint});return id;
+ const payload={type:'ai',title:`${c.client.name} daily review`,methodology:'avenuez-strategy · OpenAI evidence analysis',inputFingerprint,filters,generatedAt:new Date().toISOString(),model:serverSecret('OPENAI_MODEL')||'gpt-5.4-mini',...result,reportTiming:c.reportTiming,sources:context.sources,evidence:compactAIContextForModel(context),...(job?{scheduleJobId:job.id}:{})};const id=await s.saveReview(scope.organizationId,clientId,filters.to,await fingerprint(payload),payload,new Date().toISOString(),job);await s.audit(scope.organizationId,clientId,scope.actorId,'review.ai.generated',{id,inputFingerprint});return id;
 }
 export async function answerAI(b:any){if(typeof b.question!=='string'||!b.question.trim()||b.question.length>3000)throw new Error('Ask a question of up to 3,000 characters');const a=parseAIRequest(b),{scope,s,context,scopeKey}=await aiContext(a.clientId,a.filters,a.reviewId);
  const key=serverSecret('OPENAI_API_KEY');if(!key)throw new Error('OpenAI is not configured');await reserveAI(s,scope);const history=await aiHistory(s,scope,scopeKey);

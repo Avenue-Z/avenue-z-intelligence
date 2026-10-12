@@ -9,7 +9,7 @@ vi.mock('../../lib/server/access',()=>({getStore:()=>state.store,requireClientAc
 vi.mock('../../lib/server/secrets',()=>({serverSecret:(name:string)=>name==='OPENAI_API_KEY'?'test-only':null}));
 vi.mock('../../lib/ai/provider',()=>({askOpenAI:state.model}));
 import {aiContext,aiHistory,answerAI,generateAIReview} from '../../lib/ai/server';
-import {REVIEW_SECTIONS} from '../../lib/ai/context';
+import {REVIEW_SECTIONS,compactAIContextForModel} from '../../lib/ai/context';
 const filters={from:'2026-10-07',to:'2026-10-07',mode:'closed',compare:'previous',view:'overview',market:'',source:'',page:'',device:'',stream:''} as const;
 function database(){const db=new DatabaseSync(':memory:');for(const f of readdirSync('drizzle').filter(f=>f.endsWith('.sql')))db.exec(readFileSync(`drizzle/${f}`,'utf8'));return {prepare(sql:string){let values:any[]=[];const p={bind(...v:any[]){values=v;return p;},async first(){return db.prepare(sql).get(...values)??null;},async all(){return {results:db.prepare(sql).all(...values)};},async run(){return {meta:{changes:Number(db.prepare(sql).run(...values).changes)}};}};return p;},async batch(statements:any[]){db.exec('BEGIN');try{const r=[];for(const s of statements)r.push(await s.run());db.exec('COMMIT');return r;}catch(e){db.exec('ROLLBACK');throw e;}}};}
 beforeEach(async()=>{state.store=new Store(database());state.model.mockReset();for(const c of clients)await state.store.run('INSERT INTO clients(id,organizationId,name,slug,timezone,currency,color,config,version) VALUES(?,?,?,?,?,?,?,?,?)',c.id,'o',c.name,c.slug,c.timezone,c.currency,c.color,JSON.stringify(c.config),1);});
@@ -17,7 +17,7 @@ it('rejects a forbidden client and an unrelated review before any model request'
 it('answers a saved AI review from its original evidence even after live snapshots change',async()=>{
  const batch={clientId:'beam',complete:true,coverageThrough:'2026-10-08T04:00:00Z',rows:[{date:filters.to,dataset:'overview',metric:'revenue',value:100,definition:'net_sales',population:'sales',currency:'USD',dimensions:{}}]} as any;
  await state.store.persistBatch('o','qualified',batch,'original','2026-10-08T10:00:00Z');const original=(await aiContext('beam',filters)).context;
- const id=await state.store.saveReview('o','beam',filters.to,'fixed',{type:'ai',filters,evidence:original,headlines:['Revenue was $100']},'2026-10-08T10:01:00Z');
+ const id=await state.store.saveReview('o','beam',filters.to,'fixed',{type:'ai',filters,evidence:compactAIContextForModel(original),headlines:['Revenue was $100']},'2026-10-08T10:01:00Z');
  await state.store.persistBatch('o','qualified',{...batch,rows:batch.rows.map((r:any)=>({...r,value:999}))},'changed','2026-10-08T11:00:00Z');
  const fixed=await aiContext('beam',{...filters,to:'2026-10-08'},id);expect(fixed.context.clients[0].metrics.revenue).toBe(100);expect(fixed.context.filters.to).toBe(filters.to);expect(fixed.context.clients[0].selectedReview?.revision).toBe(1);expect(fixed.context.sources.some(s=>s.id===`review:${id}`)).toBe(true);
 });

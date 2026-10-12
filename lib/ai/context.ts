@@ -73,6 +73,12 @@ export function compactAIContextForModel(input:ReturnType<typeof buildAIContext>
 }
 
 const answer=z.object({answer:z.string().min(1).max(25000),sourceIds:z.array(z.string()).max(30),followUps:z.array(z.string()).max(6),caveats:z.array(z.string()).max(12)});
+/** Expand the lossless stored registry; older uncompressed snapshots remain readable. */
+export function restoreAIContextSnapshot(value:any):ReturnType<typeof buildAIContext>{
+ if(value?.format!=='avenuez-evidence-registry-v1')return value;
+ const expand=(item:any):any=>{if(Array.isArray(item))return item.map(expand);if(!item||typeof item!=='object')return item;if(item.evidenceRowId){const entry=value.evidenceRows[item.evidenceRowId];if(!entry)throw new Error('Saved evidence row is unavailable');const {provenanceScopeIds,...row}=entry;return {...row,provenance:provenanceScopeIds.map((id:string)=>{if(!value.provenanceScopes[id])throw new Error('Saved evidence scope is unavailable');return value.provenanceScopes[id];})};}return Object.fromEntries(Object.entries(item).map(([key,child])=>[key,expand(child)]));};
+ return expand(value.context);
+}
 export type AIAnswer=z.infer<typeof answer>;
 export function validateAnswer(input:unknown,sources:AISource[]):AIAnswer {const a=answer.parse(input);if(a.sourceIds.some(id=>!sources.some(s=>s.id===id)))throw new Error('AI returned an unsupported citation; please retry');return a;}
 export const REVIEW_SECTIONS=['Spend vs revenue','Where the orders are — impact-ranked','Action items','Watch list','Non-page notes','Detail tables','Sources & limitations',"Tomorrow's checks"];
