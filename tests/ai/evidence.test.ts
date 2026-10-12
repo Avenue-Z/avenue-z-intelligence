@@ -1,11 +1,19 @@
 import {it,expect} from 'vitest';
-import {evidenceDetailRows,supplementalReviewEvidence} from '../../lib/ai/evidence';
+import {evidenceDetailRows,supplementalReviewEvidence,closedTrafficReviewCuts} from '../../lib/ai/evidence';
 import clients from '../../data/initial-clients.json';
 import {FunnelRollupAccumulator} from '../../lib/analytics/funnel-rollup';
 import type {Observation} from '../../lib/analytics/contracts';
 const client=clients[0] as any;
 const filters={from:'2026-10-08',to:'2026-10-08',view:'overview',mode:'partial',compare:'previous',market:'',source:'',page:'',stream:'',device:''} as const;
 const row=(date:string,dataset:string,metric:string,value:number,dimensions:Record<string,string>={}):Observation=>({date,dataset,metric,value,dimensions,definition:'qualified definition',population:dataset,currency:['revenue','spend','recurring_revenue'].includes(metric)?client.currency:null,sourceId:'shopify',retrievedAt:'2026-10-08T12:00:00Z',coverageThrough:'2026-10-09T04:00:00Z',quality:'complete'});
+it('aggregates complete closed traffic cuts before the detail cap and preserves the dated scope',()=>{
+ const traffic=Array.from({length:85},(_,i)=>row('2026-10-07','traffic','sessions',10,{market:'US',device:i%2?'mobile':'desktop',source:'social',utm_source:'meta',utm_campaign:`campaign-${i}`}));
+ const cuts=closedTrafficReviewCuts(traffic,client,filters);
+ expect(cuts?.storeDate).toBe('2026-10-07');expect(cuts?.countries.rows[0].summary.sessions).toBe(850);expect(cuts?.devices.rows.reduce((n,r)=>n+(r.summary.sessions??0),0)).toBe(850);
+ expect(cuts?.sources).toMatchObject({segmentCount:85,returnedSegmentCount:80,omitted:5});
+ expect(cuts?.countries.rows[0].provenance[0].observationCount).toBe(85);
+ expect(closedTrafficReviewCuts(traffic.map(r=>({...r,date:'2026-10-08'})),client,filters)).toBeNull();
+});
 it('keeps last closed detail dated and separate from intraday current evidence',()=>{
  const e=supplementalReviewEvidence(client,[row('2026-10-07','funnels','sessions',1600,{page:'/offer',market:'US'}),row('2026-10-07','funnels','converting_sessions',32,{page:'/offer',market:'US'})],[],filters);
  expect(e.priorClosedDetail.datasets.funnels.storeDate).toBe('2026-10-07');

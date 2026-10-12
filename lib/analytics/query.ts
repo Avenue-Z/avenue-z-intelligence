@@ -14,7 +14,17 @@ export function detailRows(rows:Observation[]) {
   const groups=new Map<string,Observation[]>();for(const r of rows){const key=JSON.stringify(Object.entries(r.dimensions).sort()),group=groups.get(key);if(group)group.push(r);else groups.set(key,[r]);}
   return [...groups].map(([key,values])=>{const metrics:Record<string,number|null>={};for(const id of new Set(values.map(x=>x.metric)))metrics[id]=sumMetric(values,id);return {key,dimensions:values[0].dimensions,metrics,summary:summarize(values),evidence:values};});
 }
-export function queryClient(client:Client,all:Observation[],connections:Connection[],f:QueryFilters) {
+function datasetAnalytics(client:Client,current:Observation[],previous:Observation[],peers:Observation[],recommend=true){
+  const details=detailRows(current),candidates=recommend?details.filter(r=>r.summary.sessions!==null&&r.summary.cvr!==null):[];
+  // Attribution cohorts are displayed as evidence, not ranked against a
+  // different country/source mix. Commerce datasets need no funnel benchmark.
+  const priorDetails=candidates.length?detailRows(previous):[],peerDetails=candidates.length?detailRows(peers):[];
+  const opportunities=candidates.map(r=>{const benchmark=chooseBenchmark(r,peerDetails,priorDetails,client.config.benchmarkMarket),own=priorDetails.find(x=>x.key===r.key),b=benchmark.cvr;return {...r,benchmark:b,benchmarkReason:benchmark.reason,benchmarkEvidence:benchmark.reference?.evidence??[],opportunity:b===null?null:opportunity(r.summary.sessions!,r.summary.cvr!,b),actualOrdersChange:change(r.summary.orders,own?.summary.orders??null)};}).filter(x=>x.opportunity!==null).sort((a,b)=>b.opportunity!-a.opportunity!);
+  const actions=opportunities.filter(x=>x.summary.sessions!>=client.config.minSessions&&x.opportunity!>=client.config.minOpportunity).slice(0,client.config.maxActions);
+  return {details,actions,opportunities,viewMetrics:summarize(current)};
+}
+function byDataset(rows:Observation[]){const groups=new Map<string,Observation[]>();for(const row of rows){const group=groups.get(row.dataset);if(group)group.push(row);else groups.set(row.dataset,[row]);}return groups;}
+export function queryClient(client:Client,all:Observation[],connections:Connection[],f:QueryFilters,options:{prepareAllViews?:boolean}={}) {
   all=preferredObservations(all.map(r=>r.dimensions.page?{...r,dimensions:{...r.dimensions,page:sanitizePage(r.dimensions.page)}}:r),{timezone:client.timezone,partial:f.mode==='partial'});
   const days=Math.round((Date.parse(f.to)-Date.parse(f.from))/86400000)+1,offset=f.compare==='weekday'?7:f.compare==='fourWeeks'?28:days;
   const comparison={...f,from:shiftDate(f.from,-offset),to:shiftDate(f.to,-offset)};
@@ -55,15 +65,15 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
   const activeIncidents=client.config.incidents.filter(i=>f.to>=i.start&&comparison.from<=(i.end??i.start));
   const today=todayIn(client.timezone);const history=filtered(capable,{...f,from:shiftDate(f.to,-29)}).filter(r=>r.dataset==='overview'&&r.date<today);
   const series=[];if(history.length)for(let date=shiftDate(f.to,-29);date<=f.to&&date<today;date=shiftDate(date,1)){const day=history.filter(x=>x.date===date),summary=summarize(day),spend=day.filter(r=>r.metric==='spend'),qualified=day.length>0&&covered(day,date,date,Date.parse(dayWindow(date,client.timezone).end))&&day.filter(r=>r.metric==='revenue').every(r=>r.definition===client.config.revenueDefinition)&&client.config.spendChannels.length>0&&spend.length>0&&spend.every(r=>client.config.spendChannels.every(c=>(r.channels??[]).includes(c)));series.push({date,...summary,mer:qualified?summary.mer:null});}
-  const dataset=f.view==='overview'?'funnels':f.view;
-  const details=detailRows(current.filter(r=>r.dataset===dataset));
-  const priorDetails=detailRows(previous.filter(r=>r.dataset===dataset));
-  const peerDetails=detailRows(peers.filter(x=>x.dataset===dataset));
-  const opportunities=details.filter(r=>r.summary.sessions!==null&&r.summary.cvr!==null).map(r=>{const benchmark=chooseBenchmark(r,peerDetails,priorDetails,client.config.benchmarkMarket),own=priorDetails.find(x=>x.key===r.key),b=benchmark.cvr;return {...r,benchmark:b,benchmarkReason:benchmark.reason,benchmarkEvidence:benchmark.reference?.evidence??[],opportunity:b===null?null:opportunity(r.summary.sessions!,r.summary.cvr!,b),actualOrdersChange:change(r.summary.orders,own?.summary.orders??null)};}).filter(x=>x.opportunity!==null).sort((a,b)=>b.opportunity!-a.opportunity!);
-  const actions=opportunities.filter(x=>x.summary.sessions!>=client.config.minSessions&&x.opportunity!>=client.config.minOpportunity).slice(0,client.config.maxActions);
+  const dataset=f.view==='overview'?'funnels':f.view,currentDatasets=byDataset(current),previousDatasets=byDataset(previous),peerDatasets=byDataset(peers);
+  // All client tabs share the same dated/dimension-filtered selection. Prepare
+  // each aggregate once so navigating a tab does not query sources again.
+  const datasets=options.prepareAllViews?['funnels','traffic','revenue','markets','products','subscriptions','media','creatives','reviews','settings',dataset]:[dataset];
+  const views:Record<string,ReturnType<typeof datasetAnalytics>>=Object.fromEntries([...new Set(datasets)].map(key=>[key,datasetAnalytics(client,currentDatasets.get(key)??[],previousDatasets.get(key)??[],peerDatasets.get(key)??[],key!=='traffic')]));
+  const {details,actions,opportunities}=views[dataset];
   const operationalIds=['active_customers','active_ads','active_creatives'];
   const liveOperations=operationalIds.flatMap(metric=>{const rows=all.filter(r=>r.metric===metric&&r.quality==='complete').sort((a,b)=>b.date.localeCompare(a.date)||b.retrievedAt.localeCompare(a.retrievedAt));return rows[0]?[rows[0]]:[];});
   const availableDimensions=Object.fromEntries(['market','stream','source','device','page'].map(k=>[k,[...new Set(all.flatMap(r=>r.dimensions[k]?[r.dimensions[k]]:[]))].sort()]));
-  return {client,metrics,prior,comparison,verdict,series,details,actions,opportunities,activeIncidents,warnings,cutoff,availableDimensions,evidence:current,comparisonEvidence:previous,connections,selectedCount:current.length,liveOperations,subscriptions:subscriptionComparison(filtered(all,{...f,from:undefined,to:undefined}),f.to,client.config.incidents,f.mode==='partial'?{timezone:client.timezone,cutoff}:undefined)};
+  return {client,metrics,prior,comparison,verdict,series,details,actions,opportunities,views,datasetMetrics:views[dataset].viewMetrics,activeIncidents,warnings,cutoff,availableDimensions,evidence:current,comparisonEvidence:previous,connections,selectedCount:current.length,liveOperations,subscriptions:subscriptionComparison(filtered(all,{...f,from:undefined,to:undefined}),f.to,client.config.incidents,f.mode==='partial'?{timezone:client.timezone,cutoff}:undefined)};
 }
 export type ClientAnalytics=ReturnType<typeof queryClient>;

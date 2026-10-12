@@ -36,6 +36,7 @@
       "when": 1791820000000,
       "tag": "0004_member_identities",
       "breakpoints": true
-    }
+    },
+    {"idx":5,"version":"6","when":1791828000000,"tag":"0005_observation_cache","breakpoints":true}
   ]
 }

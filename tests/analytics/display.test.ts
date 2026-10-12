@@ -16,7 +16,7 @@ it('renders retrieval times in an explicit store timezone on server and browser'
 const client:Client={id:'test',name:'Test client',slug:'test',timezone:'UTC',currency:'USD',color:'#2549c5',version:1,config:{markets:['US'],benchmarkMarket:'US',revenueDefinition:'net_sales',spendChannels:['meta'],recurringLabel:'Subscriptions',minSessions:100,minOpportunity:5,maxActions:6,reviewTime:'09:00',reviewTimezone:'UTC',reviewMode:'closed',incidents:[]}};
 const filters:QueryFilters={from:'2026-10-07',to:'2026-10-07',compare:'previous',market:'',stream:'',source:'',device:'',page:'',mode:'closed',view:'overview'};
 function observation(metric:string,value:number,dimensions:Record<string,string>,dataset='funnels'):Observation{return {date:filters.to,metric,value,dataset,dimensions,population:'human_sessions',definition:metric,currency:metric==='revenue'?'USD':null,sourceId:'source',retrievedAt:'2026-10-08T00:00:00Z',coverageThrough:'2026-10-08T00:00:00Z',quality:'complete'};}
-function workspace(view:string,observations:Observation[]){const f={...filters,view},record={...workspacePresentation(queryClient(client,observations,[],f),f),reviews:[],findings:[],note:{body:'',version:0}};return renderToStaticMarkup(createElement(ClientWorkspace,{record,filters:f,mutate:async()=>({}),update:()=>{},admin:true}));}
+function workspace(view:string,observations:Observation[]){const f={...filters,view},record={...workspacePresentation(queryClient(client,observations,[],f,{prepareAllViews:true}),f),reviews:[],findings:[],note:{body:'',version:0}};return renderToStaticMarkup(createElement(ClientWorkspace,{record,filters:f,mutate:async()=>({}),update:()=>{},admin:true}));}
 
 describe('metric display',()=>{
   it.each([null,undefined,NaN,Infinity,-Infinity])('keeps unavailable or invalid values out of the display (%s)',value=>{
@@ -59,5 +59,19 @@ describe('detail presentation',()=>{
     expect(html).not.toContain('>CHECKOUT COMPLETION<');
     expect(html).toContain(view==='products'?'>PRODUCT ORDERS<':'>ORDERS<');
     expect(html).toContain('$20');
+  });
+  it('shows the separate human traffic cut with source and UTM dimensions',()=>{
+    const dimensions={market:'FR',device:'mobile',source:'social',utm_source:'meta',utm_campaign:'Prospecting',page:'/pages/glp'};
+    const html=workspace('traffic',[observation('sessions',1000,dimensions,'traffic'),observation('converting_sessions',20,dimensions,'traffic')]);
+    expect(html).toContain('Human public-page sessions by country, device, referrer and UTM');
+    expect(html).toContain('>SESSIONS<');
+    expect(html).toContain('2.00%');
+    expect(html).toContain('Prospecting');
+    expect(html).not.toContain('>REVENUE<');
+  });
+  it('renders separately attributed Meta ad data on the media tab with currency formatting',()=>{
+    const dims={ad:'Ad example',campaign:'Acquisition',reporting_timezone:'Europe/Stockholm',attribution:'account'};
+    const html=workspace('media',[observation('meta_ad_spend',1250,dims,'creatives'),observation('meta_ad_impressions',10000,dims,'creatives')]);
+    expect(html).toContain('Meta ad performance · platform attribution');expect(html).toContain('Ad example');expect(html).toContain('$1,250');expect(html).toContain('view=creatives');
   });
 });

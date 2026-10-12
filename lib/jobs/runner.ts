@@ -5,6 +5,7 @@ import {enqueueDue,runSyncBatch,generateReview} from './sync';
 import type {AccessScope,Client} from '../analytics/contracts';
 import type {Store} from '../server/store';
 import {dayWindow} from '../analytics/windows';
+import {warmSuccessfulSourceJobs} from '../server/cache-warming';
 
 async function serviceScope(s:Store):Promise<AccessScope>{
  const organizationId=serverSecret('APP_ORGANIZATION_ID')||'avenue-z';
@@ -27,7 +28,7 @@ async function freshCore(s:Store,scope:AccessScope,c:Client,now:Date,due:DueRevi
 export async function syncTick(){
  const s=getStore(),scope=await serviceScope(s),scheduler=new DailyScheduler(s),id=`${scope.organizationId}:sync`,token=await scheduler.acquire(id,new Date().toISOString());
  if(!token)return {skipped:'already-running',completed:[],failed:[]};
- try{await enqueueDue(scope);return await runSyncBatch(scope,{maxJobs:7,deadline:Date.now()+240000});}
+ try{const started=Date.now();await enqueueDue(scope);const result=await runSyncBatch(scope,{maxJobs:7,deadline:started+220000});const cacheWarm=await warmSuccessfulSourceJobs(s,scope,result.completed,started+270000);return {...result,cacheWarm};}
  finally{await scheduler.release(id,token);}
 }
 export async function reviewTick(){

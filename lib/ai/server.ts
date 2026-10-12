@@ -12,6 +12,7 @@ import {supplementalReviewEvidence} from './evidence';
 import {shiftDate} from '../analytics/windows';
 import {evidenceReviewTables} from '../reviews/tables';
 import {authoritativeSpendReview} from '../reviews/spend-review';
+import {refineReview} from '../reviews/refine';
 export async function aiContext(clientId:string|undefined,filters:QueryFilters,reviewId?:string,existingScope?:AccessScope,sourceOnly=false){
  filters=parseFilters(new URLSearchParams({...filters}));
  const scope=existingScope??await requireClientAccess(clientId),s=getStore();if(clientId&&!scope.permittedClientIds.includes(clientId))throw new Error('Client access denied');
@@ -70,6 +71,7 @@ export async function generateAIReview(scope:AccessScope,clientId:string,filters
  // prose explains the findings; it cannot replace these source-backed figures.
  const detailSection=result.sections.find(s=>s.title==='Detail tables');
  if(detailSection){detailSection.tables=evidenceReviewTables(c,filters).slice(0,30);delete detailSection.table;}
+ refineReview(result,c,filters);
  if(REVIEW_SECTIONS.some(title=>result.sections.filter(s=>s.title===title).length!==1)||result.sections.length!==REVIEW_SECTIONS.length)throw new Error('AI review omitted a required section; retry');
  result.sections.sort((a,b)=>REVIEW_SECTIONS.indexOf(a.title)-REVIEW_SECTIONS.indexOf(b.title));
  if([...result.sourceIds,...result.actions.flatMap(a=>a.sourceIds),...result.sections.flatMap(section=>(section.tables??[]).flatMap(t=>t.sourceIds))].some(id=>!context.sources.some(s=>s.id===id)))throw new Error('AI returned an unsupported citation; retry');if(result.actions.length>c.client.config.maxActions)throw new Error('AI exceeded the configured action limit; retry');

@@ -40,11 +40,27 @@ export function compressedProvenance(rows:Observation[]){
  });
 }
 export function evidenceDetailRows(rows:Observation[],limit=80){
- const grouped=detailRows(rows).sort((a,b)=>(b.summary.sessions??b.summary.revenue??0)-(a.summary.sessions??a.summary.revenue??0)),selected=grouped.slice(0,limit);
+ const score=(r:ReturnType<typeof detailRows>[number])=>r.summary.sessions??r.summary.revenue??r.summary.spend??r.metrics.meta_ad_spend??r.metrics.platform_spend??0;
+ const grouped=detailRows(rows).sort((a,b)=>score(b)-score(a)),selected=grouped.slice(0,limit);
  const returnedStoredObservationCount=selected.reduce((sum,row)=>sum+row.evidence.length,0),observationCount=rows.reduce((sum,row)=>sum+representedCount(row),0),returnedObservationCount=selected.reduce((sum,row)=>sum+row.evidence.reduce((n,e)=>n+representedCount(e),0),0);
  return {segmentCount:grouped.length,returnedSegmentCount:selected.length,omitted:Math.max(0,grouped.length-limit),storedObservationCount:rows.length,returnedStoredObservationCount,omittedStoredObservationCount:rows.length-returnedStoredObservationCount,observationCount,returnedObservationCount,omittedObservationCount:observationCount-returnedObservationCount,rows:selected.map(row=>({key:row.key,dimensions:row.dimensions,metrics:row.metrics,summary:row.summary,
   derived:{discountRate:ratio(row.metrics.discounts??null,row.metrics.gross??null),atcToOrderClose:ratio(row.summary.cvr,row.summary.atc)},
   provenance:compressedProvenance(row.evidence)}))};
+}
+
+/** Aggregate the entire supplied traffic cut before limiting displayed rows. */
+export function closedTrafficReviewCuts(rows:Observation[],client:Client,filters:QueryFilters){
+ const before=filters.mode==='partial'?filters.to:shiftDate(filters.to,1),dates=rows.filter(r=>r.dataset==='traffic'&&r.date<before&&r.date<todayIn(client.timezone)).map(r=>r.date).sort(),date=dates.at(-1);
+ if(!date)return null;
+ const selected=queryClient(client,rows,[],{...filters,from:date,to:date,mode:'closed'}).evidence.filter(r=>r.dataset==='traffic');
+ if(!selected.length)return null;
+ const aggregate=(keys:string[])=>{
+  const groups=new Map<string,Observation[]>();
+  for(const r of selected){const dimensions=Object.fromEntries(keys.flatMap(k=>r.dimensions[k]===undefined?[]:[[k,r.dimensions[k]]]));const key=JSON.stringify([dimensions,r.metric,r.sourceId,r.definition,r.population,r.currency,r.quality,r.retrievedAt,r.coverageThrough]);const group=groups.get(key);if(group)group.push(r);else groups.set(key,[r]);}
+  const rolled=[...groups.values()].map(values=>({...values[0],dimensions:Object.fromEntries(keys.flatMap(k=>values[0].dimensions[k]===undefined?[]:[[k,values[0].dimensions[k]]])),value:sumMetric(values,values[0].metric),aggregation:'human_traffic_dimension_rollup',contributionCount:values.length}));
+  return evidenceDetailRows(rolled);
+ };
+ return {storeDate:date,sourceId:`closed-traffic:${client.id}:${date}`,scopeLabel:`Closed-day human public-page traffic reference · ${date} · ${client.timezone}${filters.mode==='partial'?'; not the current partial day':''}`,countries:aggregate(['market']),devices:aggregate(['device']),sources:aggregate(['source','utm_source','utm_medium','utm_campaign']),pages:aggregate(['market','page','source','device','utm_source','utm_medium','utm_campaign'])};
 }
 
 const arithmetic=(current:ReturnType<typeof queryClient>['metrics'],previous:ReturnType<typeof queryClient>['metrics'])=>({revenueChange:change(current.revenue,previous.revenue),ordersChange:change(current.orders,previous.orders),sessionsChange:change(current.sessions,previous.sessions),cvrChangePoints:current.cvr===null||previous.cvr===null?null:current.cvr-previous.cvr,spendChange:change(current.spend,previous.spend)});
@@ -76,6 +92,7 @@ export function supplementalReviewEvidence(client:Client,rows:Observation[],conn
  const recurringDate=filters.mode==='partial'?priorDate:filters.to,recurring=queryDay(recurringDate).subscriptions;
  const recurringCoverage=(from:string,to:string)=>{const observedDates=[...new Set(closed.filter(r=>r.dataset==='subscriptions'&&r.metric==='recurring_revenue'&&r.date>=from&&r.date<=to).map(r=>r.date))].sort(),missingDates:string[]=[];for(let d=from;d<=to;d=shiftDate(d,1))if(!observedDates.includes(d))missingDates.push(d);return {observedDates,missingDates};};
  const closedRecurringWeeks={sourceId:source('closed-recurring',recurringDate),storeDate:recurringDate,...recurring,coverage:{current:recurringCoverage(recurring.current.from,recurring.current.to),comparison:recurringCoverage(recurring.comparison.from,recurring.comparison.to)},scopeLabel:`Closed Monday-start weeks through ${recurringDate}, compared four weeks earlier. Missing dates invalidate a complete-period claim; per-day values use elapsed calendar days, not a renewal cohort forecast.`};
+ const traffic=closedTrafficReviewCuts(rows,client,filters);if(traffic)source('closed-traffic',traffic.storeDate);
  const mtdFrom=filters.to.slice(0,8)+'01',mtdTo=filters.mode==='partial'?shiftDate(filters.to,-1):filters.to;
  const expectedDates:string[]=[];for(let date=mtdFrom;date<=mtdTo;date=shiftDate(date,1))expectedDates.push(date);
  const channelMonthToDate=['revenue','media'].map(dataset=>{
@@ -87,5 +104,5 @@ export function supplementalReviewEvidence(client:Client,rows:Observation[],conn
   if(scoped.length&&!sources.some(s=>s.id===sourceId))sources.push({id:sourceId,label:`${client.name} · closed-day channel totals ${mtdFrom}–${mtdTo}`,url:`/clients/${encodeURIComponent(client.id)}?${new URLSearchParams({...filters,from:mtdFrom,to:mtdTo,mode:'closed',view:dataset})}`});
   return {dataset,sourceId,from:mtdFrom,to:mtdTo,observedDates,missingDates,fullElapsedDayCoverage:expectedDates.length>0&&!missingDates.length&&scoped.length>0&&scoped.every(r=>r.quality==='complete'&&r.coverageThrough&&Date.parse(r.coverageThrough)>=Date.parse(dayWindow(mtdTo,client.timezone).end)),scopeLabel:`Closed-day channel totals ${mtdFrom}–${mtdTo}; current partial store day excluded. Without fullElapsedDayCoverage, label as observed-day totals, not complete MTD.`,...evidenceDetailRows(scoped)};
  });
- return {sources,priorClosedDetail:{instruction:'Use these as explicitly dated closed-day references. Never blend them into selected-day KPI totals or describe their rates as current intraday rates.',datasets:newestByDataset},closedPriorDay:{current:exposeDay(priorDate,prior),previousDay:exposeDay(shiftDate(priorDate,-1),previous),sameWeekday:exposeDay(shiftDate(priorDate,-7),weekday),arithmetic:{previousDay:arithmetic(prior.metrics,previous.metrics),sameWeekday:arithmetic(prior.metrics,weekday.metrics)},instruction:'Closed prior store day compared with its previous closed day and same weekday. Separate from partial-day same-hour comparisons.'},dailyRenewals,spendChannelTrend,channelMonthToDate,closedRecurringWeeks};
+ return {sources,priorClosedDetail:{instruction:'Use these as explicitly dated closed-day references. Never blend them into selected-day KPI totals or describe their rates as current intraday rates.',datasets:newestByDataset},closedPriorDay:{current:exposeDay(priorDate,prior),previousDay:exposeDay(shiftDate(priorDate,-1),previous),sameWeekday:exposeDay(shiftDate(priorDate,-7),weekday),arithmetic:{previousDay:arithmetic(prior.metrics,previous.metrics),sameWeekday:arithmetic(prior.metrics,weekday.metrics)},instruction:'Closed prior store day compared with its previous closed day and same weekday. Separate from partial-day same-hour comparisons.'},dailyRenewals,spendChannelTrend,channelMonthToDate,closedRecurringWeeks,traffic};
 }

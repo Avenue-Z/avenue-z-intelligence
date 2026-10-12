@@ -1,5 +1,5 @@
 'use client';
-import {useEffect,useLayoutEffect,useState,useRef} from 'react';
+import {useEffect,useLayoutEffect,useState,useRef,useCallback} from 'react';
 import {LayoutDashboard,TriangleAlert,FileText,Database,Settings,Search,RefreshCw,ChartNoAxesCombined,Plus,ArrowUpRight,ChevronRight,Sparkles} from 'lucide-react';
 import {Button} from '../ui/button';
 import type {Workspace} from '../../lib/server/workspace';
@@ -13,21 +13,31 @@ import {TrendChart} from './chart';
 import {ExecutiveOverview} from './executive-overview';
 import {AIChat,type ChatContext} from './ai-chat';
 import {finiteMetric,money,number,percent} from '../../lib/analytics/display';
+import {WorkspaceCache,selectWorkspaceView} from '../../lib/analytics/workspace-cache';
+import type {QueryFilters} from '../../lib/analytics/contracts';
 export {money,number,percent} from '../../lib/analytics/display';
 export function Dashboard({initial,initialSection='portfolio',clientId,userName}:{initial:Workspace;initialSection?:string;clientId?:string;userName:string}) {
  const [data,setData]=useState(initial),[section,setSection]=useState(initialSection),[busy,setBusy]=useState(false),[error,setError]=useState(''),[search,setSearch]=useState(''),[chartId,setChartId]=useState('');
  const [reviewContext,setReviewContext]=useState<ChatContext>({}),[chatOpen,setChatOpen]=useState(false),[chatContext,setChatContext]=useState<ChatContext>({});
  useLayoutEffect(()=>{const open=(e:Event)=>{setChatContext((e as CustomEvent).detail);setChatOpen(true);};const review=(e:Event)=>{const next=(e as CustomEvent).detail;setReviewContext(next);setChatContext(previous=>previous.reviewId?next:previous);};window.addEventListener('avenuez-review-context',review);window.addEventListener('avenuez-chat',open);return ()=>{window.removeEventListener('avenuez-chat',open);window.removeEventListener('avenuez-review-context',review);};},[]);
- const requestRef=useRef<AbortController|null>(null),selected=data.clients.find(c=>c.client.id===clientId);
- async function reload(p=new URLSearchParams(window.location.search)){
-  requestRef.current?.abort();const controller=new AbortController();requestRef.current=controller;setBusy(true);setError('');
-  try{const r=await fetch(`/api/workspace?${p}`,{signal:controller.signal}),next=await r.json() as Workspace & {error?:string};if(!r.ok)throw new Error(next.error);if(!controller.signal.aborted)setData(next);}
-  catch(e){if(!controller.signal.aborted)setError((e as Error).message);}finally{if(!controller.signal.aborted)setBusy(false);}
+ const requestRef=useRef<AbortController|null>(null),requestKeyRef=useRef(''),dataRef=useRef(initial),cacheRef=useRef<WorkspaceCache|null>(null),selected=data.clients.find(c=>c.client.id===clientId);
+ if(cacheRef.current===null)cacheRef.current=new WorkspaceCache(initial);
+ const params=useCallback(()=>{const p=new URLSearchParams(window.location.search);for(const [key,value]of Object.entries(dataRef.current.filters))if(!p.has(key))p.set(key,value);return p;},[]);
+ const apply=useCallback((next:Workspace)=>{dataRef.current=next;setData(next);},[]);
+ const reload=useCallback(async(p=params(),force=false)=>{
+  const key=JSON.stringify([...p].filter(([name])=>name!=='view'&&name!=='section').sort());
+  if(!force&&requestRef.current&&!requestRef.current.signal.aborted&&requestKeyRef.current===key)return;
+  requestRef.current?.abort();const controller=new AbortController();requestRef.current=controller;requestKeyRef.current=key;setBusy(true);setError('');
+  try{const r=await fetch(`/api/workspace?${p}`,{signal:controller.signal}),next=await r.json() as Workspace & {error?:string};if(!r.ok)throw new Error(next.error||'Workspace unavailable');if(!controller.signal.aborted){cacheRef.current!.remember(next);apply(selectWorkspaceView(next,new URLSearchParams(window.location.search).get('view')||next.filters.view)??next);}}
+  catch(e){if(!controller.signal.aborted)setError((e as Error).message);}finally{if(!controller.signal.aborted){requestRef.current=null;requestKeyRef.current='';setBusy(false);}}
+ },[params,apply]);
+ function update(changes:Record<string,string>){setChatContext({});const p=params();for(const [key,value]of Object.entries(changes)){if(value||key in dataRef.current.filters)p.set(key,value);else p.delete(key);}if(p.get('from')!>p.get('to')!){if(changes.from)p.set('to',changes.from);else if(changes.to)p.set('from',changes.to);}window.history.replaceState(null,'',`${window.location.pathname}?${p}`);
+  if(Object.keys(changes).every(key=>key==='view'||key==='section')){const next=selectWorkspaceView(dataRef.current,p.get('view')||'overview');if(next){apply(next);return;}}
+  const filters=Object.fromEntries(Object.keys(dataRef.current.filters).map(key=>[key,p.get(key)??''])) as QueryFilters,cached=cacheRef.current!.read(filters);if(cached){requestRef.current?.abort();requestRef.current=null;requestKeyRef.current='';setBusy(false);setError('');apply(cached.workspace);if(cached.stale)void reload(p);}else void reload(p);
  }
- function update(changes:Record<string,string>){setChatContext({});const p=new URLSearchParams(window.location.search);for(const [key,value]of Object.entries(changes)){if(value)p.set(key,value);else p.delete(key);}if(p.get('from')!>p.get('to')!){if(changes.from)p.set('to',changes.from);else if(changes.to)p.set('from',changes.to);}window.history.replaceState(null,'',`${window.location.pathname}?${p}`);void reload(p);}
  function filter(key:string,value:string){update({[key]:value});}
- const mutate:Mutate=async(body)=>{const r=await fetch('/api/workspace',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),payload=await r.json() as {error?:string};if(!r.ok)throw new Error(payload.error||'Save failed');await reload();return payload;};
- useEffect(()=>{setSection(new URLSearchParams(window.location.search).get('section')||'portfolio');void reload();const t=setInterval(()=>void reload(),60000);return ()=>{clearInterval(t);requestRef.current?.abort();};},[]);
+ const mutate:Mutate=async(body)=>{const r=await fetch('/api/workspace',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),payload=await r.json() as {error?:string};if(!r.ok)throw new Error(payload.error||'Save failed');cacheRef.current!.invalidate();await reload(params(),true);return payload;};
+ useEffect(()=>{const cached=cacheRef.current!.read(dataRef.current.filters);if(cached?.stale)void reload();const t=setInterval(()=>void reload(),60000);return ()=>{clearInterval(t);requestRef.current?.abort();};},[reload]);
  const visible=data.clients.filter(c=>c.client.name.toLowerCase().includes(search.toLowerCase())),chart=visible.find(c=>c.client.id===chartId)??visible[0];
  const alerts=buildAlertQueue(visible,data.filters,{includeLatestReview:true}).filter(a=>a.severity!=='watch'),live=data.clients.filter(c=>c.connections.some(s=>s.enabled&&s.lastSuccess)).length;
  const labels:Record<string,string>={portfolio:'Client portfolio',findings:'Actions & alerts',reviews:'Daily reviews',sources:'Connections',settings:'Workspace settings',ai:'AI analyst'};

@@ -3,7 +3,14 @@ import {shiftDate,dayWindow,matchedCutoff} from '../analytics/windows';
 import {preferredObservations} from '../analytics/source-precedence';
 import {FunnelRollupAccumulator} from '../analytics/funnel-rollup';
 import {Temporal} from '@js-temporal/polyfill';
+import {QueryCache} from './query-cache';
+import {observationCodec} from './observation-codec';
+import {durableObservationPayload} from './durable-observation-cache';
 type Db={prepare:(sql:string)=>any;batch:(statements:any[])=>Promise<any[]>};
+// Both runtime adapters keep their DB object for the lifetime of a warm
+// instance. Keep databases separate even when organization/client ids match.
+const observationCaches=new WeakMap<Db,QueryCache<Observation[]>>();
+function observationCache(db:Db){let cache=observationCaches.get(db);if(!cache){cache=new QueryCache({ttlMs:60000,maxEntries:16,maxBytes:16*1024*1024,maxEntryBytes:12*1024*1024},observationCodec);observationCaches.set(db,cache);}return cache;}
 export type ScheduledReviewLease={id:string;leaseToken:string};
 export class Store {
   constructor(public db:Db){}
@@ -12,30 +19,91 @@ export class Store {
   async run(sql:string,...values:unknown[]) {return this.db.prepare(sql).bind(...values).run();}
   async clients(org:string):Promise<Client[]> {return (await this.all('SELECT * FROM clients WHERE organizationId=? ORDER BY name',org)).map(r=>({...r,config:JSON.parse(r.config)}));}
   async connections(org:string,clientId?:string):Promise<Connection[]> {return (await this.all('SELECT * FROM connections WHERE organizationId=?'+(clientId?' AND clientId=?':''),...clientId?[org,clientId]:[org])).map(r=>({...r,enabled:!!r.enabled}));}
-  async observations(org:string,client:string,filters?:QueryFilters,headlinesOnly=false):Promise<Observation[]> {
-    const pointers=await this.all<{snapshotId:string;date:string}>("SELECT c.snapshotId,c.date FROM current_snapshots c JOIN snapshots s ON s.id=c.snapshotId WHERE c.organizationId=? AND c.clientId=? AND s.status='ready'",org,client);
-    if(!pointers.length)return [];
-    let clause='',values:unknown[]=[JSON.stringify(pointers)];
+  async observations(org:string,client:string,filters?:QueryFilters,headlinesOnly=false,options?:{deadline:number}):Promise<Observation[]> {
+    const checkBudget=()=>{if(options&&Date.now()>=options.deadline)throw Error('Observation cache warm budget elapsed');};
+    const readPage=async<T>(sql:string,...values:unknown[])=>{checkBudget();const rows=await this.all<T>(sql,...values);checkBudget();return rows;};
+    checkBudget();
+    const [capturedPointers,clientRow,sources,qualifications]=await Promise.all([
+      this.all<{snapshotId:string;sourceId:string;date:string;publishedAt:string}>("SELECT c.snapshotId,c.sourceId,c.date,c.publishedAt FROM current_snapshots c JOIN snapshots s ON s.id=c.snapshotId WHERE c.organizationId=? AND c.clientId=? AND s.status='ready'",org,client),
+      this.first<{timezone:string}>('SELECT timezone FROM clients WHERE organizationId=? AND id=?',org,client),
+      filters?.mode==='partial'?this.connections(org,client):Promise.resolve([]),
+      filters||headlinesOnly?this.all<{sourceId:string;profiles:string|null}>("SELECT sourceId,json_extract(payload,'$.profiles') AS profiles FROM qualifications WHERE organizationId=? AND clientId=?",org,client):Promise.resolve([])
+    ]);
+    checkBudget();
+    if(!capturedPointers.length)return [];
+    let clause='',values:unknown[]=[],overviewWindow:[string,string]|undefined;
+    const detailWindows:[string,string][]=[];
     if(filters){const days=Math.round((Date.parse(filters.to)-Date.parse(filters.from))/86400000)+1,offset=filters.compare==='weekday'?7:filters.compare==='fourWeeks'?28:days,priorFrom=shiftDate(filters.from,-offset),priorTo=shiftDate(filters.to,-offset),trendFrom=shiftDate(filters.to,-29),overviewFrom=priorFrom<trendFrom?priorFrom:trendFrom;
       // Keep headline history and renewal benchmarks; load bulky detail exports
       // only for the selected, comparison and prior-week periods.
       clause=` AND ((json_extract(o.payload,'$.dataset')='overview' AND o.date>=? AND o.date<=?) OR json_extract(o.payload,'$.dataset')='subscriptions' OR json_extract(o.payload,'$.metric') IN ('active_ads','active_creatives') OR (o.date BETWEEN ? AND ?) OR (o.date BETWEEN ? AND ?) OR (o.date BETWEEN ? AND ?))`;
-      values.push(overviewFrom,filters.to,filters.from,filters.to,priorFrom,priorTo,shiftDate(filters.from,-7),shiftDate(filters.to,-7));
+      overviewWindow=[overviewFrom,filters.to];detailWindows.push([filters.from,filters.to],[priorFrom,priorTo],[shiftDate(filters.from,-7),shiftDate(filters.to,-7)]);
+      values.push(overviewFrom,filters.to,...detailWindows.flat());
     }
     if(headlinesOnly)clause+=" AND json_extract(o.payload,'$.dataset')='overview'";
-    const clientRow=await this.first<{timezone:string}>('SELECT timezone FROM clients WHERE organizationId=? AND id=?',org,client);
+    // Registered sources reject observations outside their metric profiles.
+    // Use the union of every historical qualification, not only the latest,
+    // so changing a contract cannot hide older renewal/inventory rows. Sources
+    // without a complete profile history (including archives) stay conservative.
+    const profiles=new Map<string,{dataset:string;metric:string}[]|null>();
+    for(const qualification of qualifications){
+      let registered:unknown;try{registered=JSON.parse(qualification.profiles??'null');}catch{registered=null;}
+      if(!Array.isArray(registered)||!registered.length||registered.some(p=>!p||typeof p.dataset!=='string'||typeof p.metric!=='string')){profiles.set(qualification.sourceId,null);continue;}
+      if(profiles.get(qualification.sourceId)===null)continue;
+      profiles.set(qualification.sourceId,[...profiles.get(qualification.sourceId)??[],...registered]);
+    }
+    const inWindow=(date:string,window:[string,string])=>date>=window[0]&&date<=window[1];
+    const pointers=capturedPointers.filter(pointer=>{
+      const registered=profiles.get(pointer.sourceId);if(!registered)return true;
+      return registered.some(profile=>{
+        if(headlinesOnly&&profile.dataset!=='overview')return false;
+        if(!filters)return true;
+        return profile.dataset==='subscriptions'||['active_ads','active_creatives'].includes(profile.metric)||
+          (profile.dataset==='overview'&&!!overviewWindow&&inWindow(pointer.date,overviewWindow))||detailWindows.some(window=>inWindow(pointer.date,window));
+      });
+    });
+    if(!pointers.length)return [];
     let cutoffClock:string|undefined;
-    if(clientRow&&filters?.mode==='partial'){const sources=(await this.connections(org,client)).filter(c=>c.enabled&&(!c.provider||c.provider==='gateway'||c.provider==='kind-triple-whale'||c.provider==='kind-shopify-hourly')),coverage=sources.map(c=>c.coverageThrough),known=sources.length>0&&coverage.every((x):x is string=>!!x&&Date.parse(x)>=Date.parse(dayWindow(filters.to,clientRow.timezone).start));const cutoff=known?matchedCutoff(coverage as string[],clientRow.timezone):null;if(cutoff)cutoffClock=Temporal.Instant.from(cutoff).toZonedDateTimeISO(clientRow.timezone).toPlainTime().toString();}
+    if(clientRow&&filters?.mode==='partial'){const contributing=sources.filter(c=>c.enabled&&(!c.provider||c.provider==='gateway'||c.provider==='kind-triple-whale'||c.provider==='kind-shopify-hourly')),coverage=contributing.map(c=>c.coverageThrough),known=contributing.length>0&&coverage.every((x):x is string=>!!x&&Date.parse(x)>=Date.parse(dayWindow(filters.to,clientRow.timezone).start));const cutoff=known?matchedCutoff(coverage as string[],clientRow.timezone):null;if(cutoff)cutoffClock=Temporal.Instant.from(cutoff).toZonedDateTimeISO(clientRow.timezone).toPlainTime().toString();}
+    // Observation loading deliberately retains every dataset/dimension for
+    // queryClient's unsupported-filter checks, peers and navigation. View and
+    // dimension selections therefore share rows, while load-affecting filters
+    // and fresh metadata are part of the key. Published pointers invalidate
+    // across refreshes, including refreshes performed by another instance.
+    const version=pointers.map(p=>[p.snapshotId,p.date,p.publishedAt]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    const key=JSON.stringify([org,client,filters?[filters.from,filters.to,filters.compare,filters.mode]:null,headlinesOnly,clientRow?.timezone??null,cutoffClock??null,version]);
+    const load=()=>durableObservationPayload(this.db,org,client,key,async()=>{
+    checkBudget();
     // Missing partial coverage must retain raw hourly rows so queryClient can
     // decline the comparison; it must never turn a full day into a partial day.
     const accumulator=clientRow&&(!filters||filters.mode==='closed'||cutoffClock)?new FunnelRollupAccumulator({timezone:clientRow.timezone,cutoffClock}):null;
-    const rows:Observation[]=[];let nextPointer=0;
+    const rows:Observation[]=[];
+    const add=(page:{payload:string}[])=>{for(const r of page){const row=JSON.parse(r.payload);if(accumulator)accumulator.add(row);else rows.push(row);}};
     // Seek within each captured snapshot/date using the primary key. Sorting
     // the entire source set again for every page made large exports quadratic.
-    const read=async()=>{for(;;){const pointer=pointers[nextPointer++];if(!pointer)return;let cursor:string|null=null;for(;;){const page:{payload:string;rowKey:string}[]=await this.all(`SELECT o.payload,o.rowKey FROM observations o WHERE o.snapshotId=? AND o.date=?${clause}${cursor?' AND o.rowKey>?':''} ORDER BY o.rowKey LIMIT 2000`,pointer.snapshotId,pointer.date,...values.slice(1),...cursor?[cursor]:[]);for(const r of page){const row=JSON.parse(r.payload);if(accumulator)accumulator.add(row);else rows.push(row);}if(page.length<2000)break;cursor=page[page.length-1].rowKey;}}};
-    await Promise.all(Array.from({length:Math.min(4,pointers.length)},()=>read()));
+    const readPointer=async(pointer:typeof pointers[number],cursor:string|null=null)=>{for(;;){const page=await readPage<{payload:string;rowKey:string}>(`SELECT o.payload,o.rowKey FROM observations o WHERE o.snapshotId=? AND o.date=?${clause}${cursor?' AND o.rowKey>?':''} ORDER BY o.rowKey LIMIT 2000`,pointer.snapshotId,pointer.date,...values,...cursor?[cursor]:[]);add(page);if(page.length<2000)return;cursor=page[page.length-1].rowKey;}};
+    const history:typeof pointers=[],groups:(typeof pointers)[]=[];
+    for(const pointer of pointers){if(filters&&!detailWindows.some(window=>inWindow(pointer.date,window))||headlinesOnly)history.push(pointer);else groups.push([pointer]);}
+    for(let index=0;index<history.length;index+=16)groups.push(history.slice(index,index+16));
+    let nextGroup=0;
+    const read=async()=>{for(;;){const group=groups[nextGroup++];if(!group)return;
+      if(group.length===1){await readPointer(group[0]);continue;}
+      // Constrained history normally fits one response. If it overflows, do
+      // not repeat the grouped sort: resume that pointer with its primary-key
+      // cursor and read subsequent pointers individually. Captured ids retain
+      // snapshot consistency even if a source refresh publishes during I/O.
+      const page=await readPage<{payload:string;rowKey:string;pointerIndex:number}>(`SELECT o.payload,o.rowKey,CAST(p.key AS INTEGER) AS pointerIndex FROM json_each(?) p JOIN observations o ON o.snapshotId=json_extract(p.value,'$.snapshotId') AND o.date=json_extract(p.value,'$.date') WHERE 1=1${clause} ORDER BY CAST(p.key AS INTEGER),o.rowKey LIMIT 2000`,JSON.stringify(group),...values);
+      add(page);if(page.length<2000)continue;
+      const last=page[page.length-1];await readPointer(group[last.pointerIndex],last.rowKey);
+      for(let index=last.pointerIndex+1;index<group.length;index++)await readPointer(group[index]);
+    }};
+    await Promise.all(Array.from({length:Math.min(4,groups.length)},()=>read()));
     const stable=(accumulator?accumulator.finish():rows).map(row=>({row,key:JSON.stringify([row.sourceId,row.date,row.dataset,row.metric,row.definition,row.population,row.currency,row.start,row.end,Object.entries(row.dimensions).sort(),row.retrievedAt,row.quality])})).sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0).map(x=>x.row);
-    return preferredObservations(stable);
+    checkBudget();return observationCodec.encode(preferredObservations(stable));
+    },options?.deadline);
+    // A warming deadline must never cancel a browser request coalesced on the
+    // same key. Warming populates durable storage without joining that promise.
+    return options?observationCodec.decode(await load()):observationCache(this.db).getEncoded(key,load);
   }
   async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string}) {
     const id=`${org}:${batch.clientId}:${source}:${key}`;

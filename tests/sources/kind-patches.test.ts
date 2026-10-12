@@ -1,5 +1,5 @@
 import {it,expect} from 'vitest';
-import {normalizeHourlyCommerce,reconcileSessions,sanitizePage,sourceDefinition} from '../../lib/sources/kind-patches';
+import {normalizeHourlyCommerce,reconcileSessions,sanitizePage,sourceDefinition,sourceMarket} from '../../lib/sources/kind-patches';
 import {preferredObservations} from '../../lib/analytics/source-precedence';
 const client={id:'kind-patches',timezone:'Europe/Stockholm',currency:'USD'} as any;
 const input={hourly:[{event_date:'2026-10-07',event_hour:0,revenue:100,orders:4,new_orders:3}],daily:[{event_date:'2026-10-07',revenue:100,orders:4,new_orders:3}],ads:[{event_date:'2026-10-07',event_hour:0,channel:'facebook-ads',spend:50}],adDaily:[{event_date:'2026-10-07',channel:'facebook-ads',spend:50}]};
@@ -13,3 +13,9 @@ it("allows only a tiny disclosed session-count reconciliation residual",()=>{exp
 
 it('preserves a provider repeated-hour bucket on a 25-hour store day',()=>{const date='2026-10-25',data={hourly:[{event_date:date,event_hour:2,revenue:100,orders:4,new_orders:3}],daily:[{event_date:date,revenue:100,orders:4,new_orders:3}],ads:[],adDaily:[]};const b=normalizeHourlyCommerce(data,client,{from:date,to:date},new Date('2026-10-26T12:00:00Z')),r=b.rows.find(r=>r.metric==='revenue'&&r.value===100)!;expect(Date.parse(r.end!)-Date.parse(r.start!)).toBe(7200000);expect(b.rows.filter(r=>r.metric==='revenue')).toHaveLength(24);expect(b.coverageThrough).toBe('2026-10-25T23:00:00Z');});
 it('does not invent the skipped local hour on a 23-hour store day',()=>{const date='2026-03-29',data={hourly:[{event_date:date,event_hour:3,revenue:100,orders:4,new_orders:3}],daily:[{event_date:date,revenue:100,orders:4,new_orders:3}],ads:[],adDaily:[]};const b=normalizeHourlyCommerce(data,client,{from:date,to:date},new Date('2026-03-30T12:00:00Z'));expect(b.rows.filter(r=>r.metric==='revenue')).toHaveLength(23);expect(new Set(b.rows.filter(r=>r.metric==='revenue').map(r=>r.start)).size).toBe(23);});
+
+it('joins documented country names and ISO aliases into one market filter without guessing unknown names',()=>{
+ expect(['France','FR','Germany','DE','Malta','MT','United Kingdom','GB','UK'].map(sourceMarket)).toEqual(['FR','FR','DE','DE','MT','MT','UK','UK','UK']);
+ expect(sourceMarket('Unrecognized Territory')).toBe('Unrecognized Territory');
+ expect(sourceMarket(null)).toBe('Unknown');
+});
