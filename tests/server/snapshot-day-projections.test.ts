@@ -15,7 +15,7 @@ const filters:QueryFilters={from:'2026-10-10',to:'2026-10-11',compare:'previous'
 function batch(clientId='a',value=42):SourceBatch{return {clientId,timezone:'UTC',currency:'USD',channels:['web'],dimensions:['device'],grain:'daily',complete:true,coverageThrough:'2026-10-12T00:00:00Z',rows:['2026-10-10','2026-10-11'].map(date=>({date,dataset:'traffic',metric:'sessions',value,currency:'USD',definition:'web',dimensions:{device:'mobile'},sourceId:'',retrievedAt:'',coverageThrough:null,quality:'complete'}))};}
 const rawReads=(queries:string[])=>queries.filter(sql=>sql.startsWith('SELECT o.payload')).length;
 it('reuses ingestion projections across new date ranges and database instances without transferring raw facts',async()=>{
- const {connect,queries}=database(),store=new Store(connect());await store.persistBatch('o','source',batch(),'one','2026-10-12T00:00:00Z');
+ const {connect,queries}=database(),store=new Store(connect());await store.persistBatch('o','source',batch(),'one','2026-10-12T00:00:00Z');await store.saveQualification('o','a','source',1,1,{profiles:[{dataset:'traffic',metric:'sessions'}]},'admin');
  expect(await store.observations('o','a',filters,false,undefined,{datasets:['traffic']})).toHaveLength(2);
  expect(await new Store(connect()).observations('o','a',{...filters,from:'2026-10-11',compare:'weekday'},false,undefined,{datasets:['traffic']})).toHaveLength(1);
  expect(rawReads(queries)).toBe(0);
@@ -95,4 +95,14 @@ it('keeps indexed scoped reads when a qualified mixed-source projection would tr
  const {connect,queries}=database(),store=new Store(connect()),base=batch().rows[0];await store.persistBatch('o','mixed',{...batch(),rows:[{...base,dataset:'revenue',metric:'net_sales'},...Array.from({length:2500},(_,index)=>({...base,dataset:'funnels',dimensions:{page:`/${index}`}}))]},'large','2026-10-12T00:00:00Z');
  await store.saveQualification('o','a','mixed',1,1,{profiles:[{dataset:'revenue',metric:'net_sales'},{dataset:'funnels',metric:'sessions'}]},'admin');const before=queries.length;
  expect(await new Store(connect()).observations('o','a',filters,false,undefined,{datasets:['revenue']})).toHaveLength(1);expect(queries.slice(before).filter(sql=>sql.includes('FROM snapshot_day_projection_chunks')||sql.includes('JOIN snapshot_day_projection_chunks'))).toHaveLength(0);expect(rawReads(queries)).toBe(1);
+});
+it('uses dense projections only for pointer dates inside selected, comparison or prior-week detail windows',async()=>{
+ const projected=database(),legacy=database(false),base=batch().rows[0],rows=['2026-10-01','2026-10-02','2026-10-10'].flatMap(date=>[{...base,date,dataset:'overview',metric:'revenue',value:100,dimensions:{}},...Array.from({length:2500},(_,index)=>({...base,date,dataset:'funnels',dimensions:{page:`/${index}-${'detail'.repeat(20)}`}}))]);
+ for(const fixture of [projected,legacy]){const store=new Store(fixture.connect());await store.persistBatch('o','mixed',{...batch(),rows},'history','2026-10-12T00:00:00Z');await store.saveQualification('o','a','mixed',1,1,{profiles:[{dataset:'overview',metric:'revenue'},{dataset:'funnels',metric:'sessions'}]},'admin');}
+ const db=projected.connect(),prepare=db.prepare,chunkReads:unknown[][]=[];
+ db.prepare=(sql:string)=>{const statement=prepare(sql);if(sql.startsWith('SELECT')&&sql.includes('snapshot_day_projection_chunks')){const bind=statement.bind;statement.bind=(...values:unknown[])=>{chunkReads.push(values);return bind(...values);};}return statement;};
+ const selection={datasets:['overview','funnels','traffic']},actual=await new Store(db).observations('o','a',filters,false,undefined,selection),expected=await new Store(legacy.connect()).observations('o','a',filters,false,undefined,selection);
+ expect(actual).toEqual(expected);expect(actual).toHaveLength(2503);expect(actual.filter(row=>row.dataset==='overview').map(row=>[row.date,row.value])).toEqual([['2026-10-01',100],['2026-10-02',100],['2026-10-10',100]]);
+ expect(chunkReads.length).toBeGreaterThan(0);expect(JSON.stringify(chunkReads)).toContain('2026-10-10');expect(JSON.stringify(chunkReads)).not.toContain('2026-10-01');expect(JSON.stringify(chunkReads)).not.toContain('2026-10-02');expect(rawReads(projected.queries)).toBe(1);
+ expect(projected.queries.find(sql=>sql.startsWith('SELECT o.payload'))).toContain("json_extract(o.payload,'$.dataset') IN (?)");
 });

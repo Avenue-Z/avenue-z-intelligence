@@ -7,7 +7,7 @@ import {initialReportingDate} from '../analytics/reporting-date';
 import type {QueryFilters} from '../analytics/contracts';
 import {serverSecret} from './secrets';
 import {withAnalyticsMemory} from './analytics-memory';
-import {workspaceDatasets} from '../analytics/workspace-datasets';
+import {workspaceDatasets,workspaceObservationSelection} from '../analytics/workspace-datasets';
 export {workspaceDatasets} from '../analytics/workspace-datasets';
 export function workspaceSearchParams(input:Record<string,string|string[]|undefined>){const p=new URLSearchParams();for(const [key,value]of Object.entries(input))if(value!==undefined)p.set(key,Array.isArray(value)?value[0]:value);return p;}
 export function parseFilters(p:URLSearchParams):QueryFilters {
@@ -29,8 +29,8 @@ async function loadWorkspaceWithinBudget(p:URLSearchParams){
  }
  const all=await Promise.all(clients.map(async(client,i)=>{
   const preparedDatasets=focusedClientId?(client.id===focusedClientId?workspaceDatasets(filters.view):['overview']):['overview','subscriptions','subscriptionEvents'];
-  const datasets=preparedDatasets.filter(dataset=>dataset!=='reviews'&&dataset!=='settings');
-  const [rows,findings,reviews,note,lastJob]=await Promise.all([s.observations(scope.organizationId,client.id,filters,false,undefined,{datasets}),s.findings(scope.organizationId,client.id),s.reviews(scope.organizationId,client.id),s.note(scope.organizationId,client.id),s.first('SELECT storeDate,mode,status,completedAt,error FROM scheduled_reviews WHERE organizationId=? AND clientId=? ORDER BY dueAt DESC LIMIT 1',scope.organizationId,client.id)]);
+  const selection=workspaceObservationSelection(preparedDatasets);
+  const [rows,findings,reviews,note,lastJob]=await Promise.all([s.observations(scope.organizationId,client.id,filters,false,undefined,selection),s.findings(scope.organizationId,client.id),s.reviews(scope.organizationId,client.id),s.note(scope.organizationId,client.id),s.first('SELECT storeDate,mode,status,completedAt,error FROM scheduled_reviews WHERE organizationId=? AND clientId=? ORDER BY dueAt DESC LIMIT 1',scope.organizationId,client.id)]);
   return {...workspacePresentation(queryClient(client,rows,connections[i],filters,{preparedDatasets}),filters),findings,reviews,note,scheduleState:{active:serverSecret('APP_SCHEDULER_ACTIVE')==='true',waitingForSources:!connections[i].some(c=>c.enabled),lastJob:lastJob??undefined}};
  }));
  return {scope,filters,...focusedClientId?{focusedClientId}:{},clients:all,reportingDateNote:reportingDate?`Latest available closed reporting day · ${reportingDate}`:null,jobs:(await s.jobs(scope.organizationId)).filter(j=>scope.permittedClientIds.includes(j.clientId)),loadedAt:new Date().toISOString()};

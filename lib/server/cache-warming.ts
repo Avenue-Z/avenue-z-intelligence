@@ -1,6 +1,6 @@
 import type {AccessScope,QueryFilters} from '../analytics/contracts';
 import {shiftDate,todayIn} from '../analytics/windows';
-import {workspaceDatasets} from '../analytics/workspace-datasets';
+import {workspaceObservationSelection} from '../analytics/workspace-datasets';
 import type {Store} from './store';
 
 /** Warm one changed client after its source jobs have already completed.
@@ -26,7 +26,7 @@ export async function warmSuccessfulSourceJobs(store:Store,scope:AccessScope,job
 
   for(const filters of selections){
    if(Date.now()+40000>=deadline)break;
-   result.attempted++;await store.observations(scope.organizationId,client.id,filters,false,{deadline},{datasets:workspaceDatasets(filters.view)});
+   result.attempted++;await store.observations(scope.organizationId,client.id,filters,false,{deadline},workspaceObservationSelection(filters.view));
    if(Date.now()>=deadline)break;result.completed++;
   }
  }catch{/* Derived cache failures cannot change source job state. */}

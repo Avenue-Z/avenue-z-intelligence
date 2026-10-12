@@ -3,7 +3,7 @@ import {readFileSync,readdirSync} from 'node:fs';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {Store} from '../../lib/server/store';
 import {warmSuccessfulSourceJobs} from '../../lib/server/cache-warming';
-import {workspaceDatasets} from '../../lib/analytics/workspace-datasets';
+import {workspaceDatasets,workspaceObservationSelection} from '../../lib/analytics/workspace-datasets';
 import type {AccessScope,Client,QueryFilters,SourceBatch} from '../../lib/analytics/contracts';
 const scope:AccessScope={organizationId:'o',actorId:'application-scheduler',role:'admin',permittedClientIds:['kind-patches']};
 const client:Client={id:'kind-patches',name:'Kind Patches',slug:'kind-patches',timezone:'UTC',currency:'USD',color:'blue',version:1,config:{markets:['US'],benchmarkMarket:'US',revenueDefinition:'web',spendChannels:['meta'],recurringLabel:'Recurring',minSessions:100,minOpportunity:10,maxActions:6,reviewTime:'09:00',reviewTimezone:'UTC',reviewMode:'closed',incidents:[]}};
@@ -13,10 +13,10 @@ async function fixture(){const d=database(),s=d.store;await s.run('INSERT INTO c
 beforeEach(()=>{vi.useFakeTimers();vi.setSystemTime('2026-10-12T13:05:00Z');});afterEach(()=>vi.useRealTimers());
 it('warms the exact scoped Traffic and Overview keys used by foreground reads',async()=>{
  const {store,queries}=await fixture();const result=await warmSuccessfulSourceJobs(store,scope,['o:source:warm'],Date.now()+270000);expect(result).toEqual({attempted:16,completed:16});const before=queries.filter(sql=>sql.startsWith('SELECT o.payload')).length;
- for(const view of ['traffic','overview'])for(const compare of ['previous','fourWeeks','weekday','thirtyDays'] as const)for(const mode of ['closed','partial'] as const){const date=mode==='closed'?base.to:'2026-10-12';await store.observations('o',client.id,{...base,view,compare,mode,from:date,to:date},false,undefined,{datasets:workspaceDatasets(view)});}
+ for(const view of ['traffic','overview'])for(const compare of ['previous','fourWeeks','weekday','thirtyDays'] as const)for(const mode of ['closed','partial'] as const){const date=mode==='closed'?base.to:'2026-10-12';await store.observations('o',client.id,{...base,view,compare,mode,from:date,to:date},false,undefined,workspaceObservationSelection(view));}
  expect(queries.filter(sql=>sql.startsWith('SELECT o.payload'))).toHaveLength(before);expect(await store.all('SELECT status FROM observation_cache_entries')).toHaveLength(16);
 });
 it('prioritizes closed previous Traffic then four-week Traffic and stops within the existing budget',async()=>{
- const {store}=await fixture(),seen:{view:string;compare:string;datasets:string[]|undefined}[]=[],observations=store.observations.bind(store);store.observations=async(org,id,filters,headlines,options,selection)=>{seen.push({view:filters!.view,compare:filters!.compare,datasets:selection?.datasets});const rows=await observations(org,id,filters,headlines,options,selection);if(seen.length===2)vi.setSystemTime(Date.now()+240000);return rows;};
- const result=await warmSuccessfulSourceJobs(store,scope,['o:source:warm'],Date.now()+270000);expect(result).toEqual({attempted:2,completed:2});expect(seen).toEqual([{view:'traffic',compare:'previous',datasets:workspaceDatasets('traffic')},{view:'traffic',compare:'fourWeeks',datasets:workspaceDatasets('traffic')}]);
+ const {store}=await fixture(),seen:{view:string;compare:string;datasets:string[]|undefined;includePriorWeek:boolean|undefined}[]=[],observations=store.observations.bind(store);store.observations=async(org,id,filters,headlines,options,selection)=>{seen.push({view:filters!.view,compare:filters!.compare,datasets:selection?.datasets,includePriorWeek:selection?.includePriorWeek});const rows=await observations(org,id,filters,headlines,options,selection);if(seen.length===2)vi.setSystemTime(Date.now()+240000);return rows;};
+ const result=await warmSuccessfulSourceJobs(store,scope,['o:source:warm'],Date.now()+270000);expect(result).toEqual({attempted:2,completed:2});expect(seen).toEqual([{view:'traffic',compare:'previous',datasets:workspaceDatasets('traffic'),includePriorWeek:false},{view:'traffic',compare:'fourWeeks',datasets:workspaceDatasets('traffic'),includePriorWeek:false}]);
 });

@@ -20,7 +20,7 @@ export class Store {
   async run(sql:string,...values:unknown[]) {return this.db.prepare(sql).bind(...values).run();}
   async clients(org:string):Promise<Client[]> {return (await this.all('SELECT * FROM clients WHERE organizationId=? ORDER BY name',org)).map(r=>({...r,config:JSON.parse(r.config)}));}
   async connections(org:string,clientId?:string):Promise<Connection[]> {return (await this.all('SELECT * FROM connections WHERE organizationId=?'+(clientId?' AND clientId=?':''),...clientId?[org,clientId]:[org])).map(r=>({...r,enabled:!!r.enabled}));}
-  async observations(org:string,client:string,filters?:QueryFilters,headlinesOnly=false,options?:{deadline:number},selection?:{datasets:string[];dimensions?:boolean}):Promise<Observation[]> {
+  async observations(org:string,client:string,filters?:QueryFilters,headlinesOnly=false,options?:{deadline:number},selection?:{datasets:string[];dimensions?:boolean;includePriorWeek?:boolean}):Promise<Observation[]> {
     const checkBudget=()=>{if(options&&Date.now()>=options.deadline)throw Error('Observation cache warm budget elapsed');};
     const readPage=async<T>(sql:string,...values:unknown[])=>{checkBudget();const rows=await this.all<T>(sql,...values);checkBudget();return rows;};
     checkBudget();
@@ -37,13 +37,17 @@ export class Store {
     if(filters){const comparison=comparisonPeriod(filters),priorFrom=comparison.from,priorTo=comparison.to,trendFrom=shiftDate(filters.to,-29),overviewFrom=priorFrom<trendFrom?priorFrom:trendFrom;
       // Keep headline history and renewal benchmarks; load bulky detail exports
       // only for the selected, comparison and prior-week periods.
-      clause=` AND ((json_extract(o.payload,'$.dataset')='overview' AND o.date>=? AND o.date<=?) OR (json_extract(o.payload,'$.dataset')='subscriptions' AND o.date<=?) OR (json_extract(o.payload,'$.dataset')='markets' AND o.date>=? AND o.date<=?) OR json_extract(o.payload,'$.metric') IN ('active_ads','active_creatives') OR (o.date BETWEEN ? AND ?) OR (o.date BETWEEN ? AND ?) OR (o.date BETWEEN ? AND ?))`;
-      overviewWindow=[overviewFrom,filters.to];detailWindows.push([filters.from,filters.to],[priorFrom,priorTo],[shiftDate(filters.from,-7),shiftDate(filters.to,-7)]);
+      overviewWindow=[overviewFrom,filters.to];detailWindows.push([filters.from,filters.to],[priorFrom,priorTo]);
+      // Workspace views use current/comparison evidence. Review and AI callers
+      // retain supplemental weekday benchmarks through the default true option.
+      if(selection?.includePriorWeek!==false)detailWindows.push([shiftDate(filters.from,-7),shiftDate(filters.to,-7)]);
+      clause=` AND ((json_extract(o.payload,'$.dataset')='overview' AND o.date>=? AND o.date<=?) OR (json_extract(o.payload,'$.dataset')='subscriptions' AND o.date<=?) OR (json_extract(o.payload,'$.dataset')='markets' AND o.date>=? AND o.date<=?) OR json_extract(o.payload,'$.metric') IN ('active_ads','active_creatives') OR ${detailWindows.map(()=>'(o.date BETWEEN ? AND ?)').join(' OR ')})`;
       marketWindow=[shiftDate(filters.from,-1),filters.to];
       subscriptionTo=[filters.to,priorTo].sort().at(-1);
       values.push(overviewFrom,filters.to,subscriptionTo,shiftDate(filters.from,-1),filters.to,...detailWindows.flat());
     }
     if(headlinesOnly)clause+=" AND json_extract(o.payload,'$.dataset')='overview'";
+    const dateClause=clause,dateValues=[...values];
     const selectedDatasets=selection?[...new Set(selection.datasets)].sort():null,dimensionSelection:Record<string,string>={},dimensionAliases=new Map<string,string[]>();let selectionClause='',selectionValues:unknown[]=[];
     // For IN selections SQLite otherwise favors the row-key ordering index and
     // decodes every dataset in the snapshot/day. Seek the selected datasets first.
@@ -93,7 +97,7 @@ export class Store {
     // and fresh metadata are part of the key. Published pointers invalidate
     // across refreshes, including refreshes performed by another instance.
     const version=pointers.map(p=>[p.sourceId,p.snapshotId,p.date]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
-    const key=JSON.stringify(['chart-series-v3',org,client,filters?[filters.from,filters.to,filters.compare,filters.compareFrom??null,filters.compareTo??null,filters.mode]:null,headlinesOnly,clientRow?.timezone??null,cutoffClock??null,...selection?[{datasets:selectedDatasets,dimensions:!!selection.dimensions,filters:dimensionSelection}]:[],version]);
+    const key=JSON.stringify(['chart-series-v3',org,client,filters?[filters.from,filters.to,filters.compare,filters.compareFrom??null,filters.compareTo??null,filters.mode]:null,headlinesOnly,clientRow?.timezone??null,cutoffClock??null,...selection?[{datasets:selectedDatasets,dimensions:!!selection.dimensions,includePriorWeek:selection.includePriorWeek!==false,filters:dimensionSelection}]:[],version]);
     const load=()=>durableObservationPayload(this.db,org,client,key,async()=>{
     checkBudget();
     // Missing partial coverage must retain raw hourly rows so queryClient can
@@ -110,12 +114,13 @@ export class Store {
       for(const [dimension,aliases] of dimensionAliases){if(Object.hasOwn(row.dimensions,dimension)&&!aliases.includes(row.dimensions[dimension]))return false;}return true;
     };
     // A complete mixed-source day can be much larger than a small indexed
-    // selection. Use it when that source contributes requested dense detail;
+    // selection. Use it when that source/day contributes requested dense detail;
     // otherwise preserve the SQL seek that transfers only the chosen datasets.
     const denseDatasets=new Set(['funnels','traffic','products','creatives']);
     const projectionPointers=pointers.filter(pointer=>{
-      if(!selectedDatasets&&!headlinesOnly)return true;
-      const requested=(dataset:string)=>!headlinesOnly&&(!selectedDatasets||selectedDatasets.includes(dataset));
+      if(!filters&&!selectedDatasets&&!headlinesOnly)return true;
+      const detailRequested=!filters||detailWindows.some(window=>inWindow(pointer.date,window));
+      const requested=(dataset:string)=>detailRequested&&!headlinesOnly&&(!selectedDatasets||selectedDatasets.includes(dataset));
       const registered=profiles.get(pointer.sourceId);
       if(!registered)return [...denseDatasets].some(requested);
       const dense=registered.filter(profile=>denseDatasets.has(profile.dataset));return !dense.length||dense.some(profile=>requested(profile.dataset));
@@ -130,10 +135,21 @@ export class Store {
     }
     // Seek within each captured snapshot/date using the primary key. Sorting
     // the entire source set again for every page made large exports quadratic.
-    const readPointer=async(pointer:typeof pointers[number],cursor:string|null=null)=>{for(;;){const page=await readPage<{payload:string;rowKey:string}>(`SELECT o.payload,o.rowKey FROM observations o${selectionIndex} WHERE o.snapshotId=? AND o.date=?${clause}${cursor?' AND o.rowKey>?':''} ORDER BY o.rowKey LIMIT 2000`,pointer.snapshotId,pointer.date,...values,...cursor?[cursor]:[]);add(page);if(page.length<2000)return;cursor=page[page.length-1].rowKey;}};
-    const history:typeof pointers=[],groups:(typeof pointers)[]=[];
-    for(const pointer of legacyPointers){if(filters&&!detailWindows.some(window=>inWindow(pointer.date,window))||headlinesOnly)history.push(pointer);else groups.push([pointer]);}
-    for(let index=0;index<history.length;index+=16)groups.push(history.slice(index,index+16));
+    const readPointer=async(pointer:typeof pointers[number],cursor:string|null=null)=>{const scope=scopedRead(pointer);for(;;){const page=await readPage<{payload:string;rowKey:string}>(`SELECT o.payload,o.rowKey FROM observations o${scope.index} WHERE o.snapshotId=? AND o.date=?${scope.clause}${cursor?' AND o.rowKey>?':''} ORDER BY o.rowKey LIMIT 2000`,pointer.snapshotId,pointer.date,...scope.values,...cursor?[cursor]:[]);add(page);if(page.length<2000)return;cursor=page[page.length-1].rowKey;}};
+    const scopedRead=(pointer:typeof pointers[number])=>{
+      const registered=profiles.get(pointer.sourceId);
+      if(!filters||!registered||detailWindows.some(window=>inWindow(pointer.date,window)))return {clause,values,index:selectionIndex,datasets:null};
+      // Outside detail windows only headline/renewal/market history and global
+      // inventory metrics can qualify. Narrow the indexed dataset seek before
+      // decoding payloads, rather than scanning every historical funnel row.
+      const datasets=[...new Set(registered.filter(profile=>(profile.dataset==='overview'&&!!overviewWindow&&inWindow(pointer.date,overviewWindow))||(profile.dataset==='subscriptions'&&!!subscriptionTo&&pointer.date<=subscriptionTo)||(profile.dataset==='markets'&&!!marketWindow&&inWindow(pointer.date,marketWindow))||['active_ads','active_creatives'].includes(profile.metric)).map(profile=>profile.dataset))].filter(dataset=>(!selectedDatasets||selectedDatasets.includes(dataset))&&(!headlinesOnly||dataset==='overview')).sort();
+      let localClause=dateClause+(datasets.length?` AND json_extract(o.payload,'$.dataset') IN (${datasets.map(()=>'?').join(',')})`:' AND 0');const localValues:unknown[]=[...dateValues,...datasets];
+      for(const [dimension,aliases] of dimensionAliases){localClause+=` AND (json_extract(o.payload,'$.dimensions.${dimension}') IN (${aliases.map(()=>'?').join(',')}) OR json_type(o.payload,'$.dimensions.${dimension}') IS NULL)`;localValues.push(...aliases);}
+      return {clause:localClause,values:localValues,index:datasets.length?' INDEXED BY idx_observations_snapshot_date_dataset_rowkey':selectionIndex,datasets};
+    };
+    const history=new Map<string,typeof pointers>(),groups:(typeof pointers)[]=[];
+    for(const pointer of legacyPointers){if(filters&&!detailWindows.some(window=>inWindow(pointer.date,window))||headlinesOnly){const key=JSON.stringify(scopedRead(pointer).datasets),group=history.get(key);if(group)group.push(pointer);else history.set(key,[pointer]);}else groups.push([pointer]);}
+    for(const historyGroup of history.values())for(let index=0;index<historyGroup.length;index+=16)groups.push(historyGroup.slice(index,index+16));
     let nextGroup=0;
     const read=async()=>{for(;;){const group=groups[nextGroup++];if(!group)return;
       if(group.length===1){await readPointer(group[0]);continue;}
@@ -141,7 +157,8 @@ export class Store {
       // not repeat the grouped sort: resume that pointer with its primary-key
       // cursor and read subsequent pointers individually. Captured ids retain
       // snapshot consistency even if a source refresh publishes during I/O.
-      const page=await readPage<{payload:string;rowKey:string;pointerIndex:number}>(`SELECT o.payload,o.rowKey,CAST(p.key AS INTEGER) AS pointerIndex FROM json_each(?) p JOIN observations o${selectionIndex} ON o.snapshotId=json_extract(p.value,'$.snapshotId') AND o.date=json_extract(p.value,'$.date') WHERE 1=1${clause} ORDER BY CAST(p.key AS INTEGER),o.rowKey LIMIT 2000`,JSON.stringify(group),...values);
+      const scope=scopedRead(group[0]);
+      const page=await readPage<{payload:string;rowKey:string;pointerIndex:number}>(`SELECT o.payload,o.rowKey,CAST(p.key AS INTEGER) AS pointerIndex FROM json_each(?) p JOIN observations o${scope.index} ON o.snapshotId=json_extract(p.value,'$.snapshotId') AND o.date=json_extract(p.value,'$.date') WHERE 1=1${scope.clause} ORDER BY CAST(p.key AS INTEGER),o.rowKey LIMIT 2000`,JSON.stringify(group),...scope.values);
       add(page);if(page.length<2000)continue;
       const last=page[page.length-1];await readPointer(group[last.pointerIndex],last.rowKey);
       for(let index=last.pointerIndex+1;index<group.length;index++)await readPointer(group[index]);

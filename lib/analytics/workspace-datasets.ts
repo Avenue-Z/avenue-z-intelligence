@@ -8,3 +8,10 @@ export function workspaceDatasets(view:string):string[]{
  if(view==='reviews'||view==='settings')return [...core,view];
  return ['overview',view,'subscriptions','subscriptionEvents'];
 }
+/** Foreground and native warming share an exact load-affecting selection.
+ * Supplemental prior-week detail remains available to AI/review Store callers.
+ */
+export function workspaceObservationSelection(viewOrDatasets:string|string[]){
+ const datasets=(Array.isArray(viewOrDatasets)?viewOrDatasets:workspaceDatasets(viewOrDatasets)).filter(dataset=>dataset!=='reviews'&&dataset!=='settings');
+ return {datasets,includePriorWeek:false};
+}
