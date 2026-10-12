@@ -5,7 +5,7 @@ import {subscriptionComparison} from './subscriptions';
 import {chooseBenchmark} from './benchmark';
 import {Temporal} from '@js-temporal/polyfill';
 import {preferredObservations} from './source-precedence';
-import {sanitizePage} from '../sources/kind-patches';
+import {sanitizePage,sourceMarket} from '../sources/kind-patches';
 export function filtered(rows:Observation[],f:Partial<QueryFilters>) {return rows.filter(r=>(!f.from||r.date>=f.from)&&(!f.to||r.date<=f.to)&&['market','stream','source','device','page'].every(k=>!(f as any)[k]||r.dimensions[k]===(f as any)[k]));}
 export function sumMetric(rows:Observation[],metric:string) {const r=rows.filter(x=>x.metric===metric);if(metric.endsWith('_rate')&&r.length>1)return null;if(new Set(r.map(x=>x.population)).size>1||new Set(r.map(x=>JSON.stringify(Object.keys(x.dimensions??{}).sort()))).size>1)return null;const seen=new Set<string>();for(const x of r){const key=JSON.stringify([x.date,x.start,x.end,Object.entries(x.dimensions??{}).sort()]);if(seen.has(key))return null;seen.add(key);}return compatibleTotal(r);}
 function populationRatio(rows:Observation[],n:string,d:string){const a=[...new Set(rows.filter(r=>r.metric===n).map(r=>r.population))].sort(),b=[...new Set(rows.filter(r=>r.metric===d).map(r=>r.population))].sort();return !a.length||a.includes(undefined)||JSON.stringify(a)!==JSON.stringify(b)?null:ratio(sumMetric(rows,n),sumMetric(rows,d));}
@@ -25,7 +25,11 @@ function datasetAnalytics(client:Client,current:Observation[],previous:Observati
 }
 function byDataset(rows:Observation[]){const groups=new Map<string,Observation[]>();for(const row of rows){const group=groups.get(row.dataset);if(group)group.push(row);else groups.set(row.dataset,[row]);}return groups;}
 export function queryClient(client:Client,all:Observation[],connections:Connection[],f:QueryFilters,options:{prepareAllViews?:boolean}={}) {
-  all=preferredObservations(all.map(r=>r.dimensions.page?{...r,dimensions:{...r.dimensions,page:sanitizePage(r.dimensions.page)}}:r),{timezone:client.timezone,partial:f.mode==='partial'});
+  if(f.market){const market=sourceMarket(f.market);if(market!==f.market)f={...f,market};}
+  all=preferredObservations(all.map(r=>{if(!r.dimensions.page)return r;const page=sanitizePage(r.dimensions.page);return page===r.dimensions.page?r:{...r,dimensions:{...r.dimensions,page}};}),{timezone:client.timezone,partial:f.mode==='partial'});
+  // Legacy country aliases must be normalized after authority selection:
+  // overlapping same-grain observations remain visible to duplicate guards.
+  all=all.map(r=>{if(!r.dimensions.market)return r;const market=sourceMarket(r.dimensions.market);return market===r.dimensions.market?r:{...r,dimensions:{...r.dimensions,market}};});
   const days=Math.round((Date.parse(f.to)-Date.parse(f.from))/86400000)+1,offset=f.compare==='weekday'?7:f.compare==='fourWeeks'?28:days;
   const comparison={...f,from:shiftDate(f.from,-offset),to:shiftDate(f.to,-offset)};
   const warnings:string[]=[];let cutoff:string|null=null;

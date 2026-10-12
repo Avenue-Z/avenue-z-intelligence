@@ -1,3 +1,4 @@
+import {sourceMarket} from '../sources/kind-patches';
 import {getStore,requireClientAccess} from './access';
 import {workspacePresentation} from '../analytics/presentation';
 import {queryClient} from '../analytics/query';
@@ -6,7 +7,7 @@ import {initialReportingDate} from '../analytics/reporting-date';
 import type {QueryFilters} from '../analytics/contracts';
 import {serverSecret} from './secrets';
 export function workspaceSearchParams(input:Record<string,string|string[]|undefined>){const p=new URLSearchParams();for(const [key,value]of Object.entries(input))if(value!==undefined)p.set(key,Array.isArray(value)?value[0]:value);return p;}
-export function parseFilters(p:URLSearchParams):QueryFilters {const yesterday=shiftDate(todayIn('America/New_York'),-1);const date=(key:string)=>{const v=p.get(key)||yesterday;if(!/^\d{4}-\d{2}-\d{2}$/.test(v)||Number.isNaN(Date.parse(v)))throw new Error('Invalid date');return v;};const from=date('from'),to=date('to');if(from>to||Date.parse(to)-Date.parse(from)>61*86400000)throw new Error('Choose a range of up to 62 days');return {from,to,compare:['previous','weekday','fourWeeks'].includes(p.get('compare')??'')?p.get('compare') as QueryFilters['compare']:'previous',mode:p.get('mode')==='partial'?'partial':'closed',view:p.get('view')||'overview',market:p.get('market')||'',stream:p.get('stream')||'',source:p.get('source')||'',device:p.get('device')||'',page:p.get('page')||''};}
+export function parseFilters(p:URLSearchParams):QueryFilters {const yesterday=shiftDate(todayIn('America/New_York'),-1);const date=(key:string)=>{const v=p.get(key)||yesterday;if(!/^\d{4}-\d{2}-\d{2}$/.test(v)||Number.isNaN(Date.parse(v)))throw new Error('Invalid date');return v;};const from=date('from'),to=date('to');if(from>to||Date.parse(to)-Date.parse(from)>61*86400000)throw new Error('Choose a range of up to 62 days');return {from,to,compare:['previous','weekday','fourWeeks'].includes(p.get('compare')??'')?p.get('compare') as QueryFilters['compare']:'previous',mode:p.get('mode')==='partial'?'partial':'closed',view:p.get('view')||'overview',market:p.get('market')?sourceMarket(p.get('market')):'',stream:p.get('stream')||'',source:p.get('source')||'',device:p.get('device')||'',page:p.get('page')||''};}
 export async function loadWorkspace(p:URLSearchParams){
  const scope=await requireClientAccess(),s=getStore(),filters=parseFilters(p),clients=(await s.clients(scope.organizationId)).filter(c=>scope.permittedClientIds.includes(c.id));
  const connections=await Promise.all(clients.map(c=>s.connections(scope.organizationId,c.id)));let reportingDate:string|null=null;
