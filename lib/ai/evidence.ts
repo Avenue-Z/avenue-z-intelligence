@@ -3,12 +3,38 @@ import {detailRows,queryClient,sumMetric} from '../analytics/query';
 import {change,ratio} from '../analytics/metrics';
 import {dayWindow,shiftDate,todayIn} from '../analytics/windows';
 
-export function evidenceDetailRows(rows:Observation[],limit=80){
- const grouped=detailRows(rows).sort((a,b)=>(b.summary.sessions??b.summary.revenue??0)-(a.summary.sessions??a.summary.revenue??0));
- return {segmentCount:grouped.length,omitted:Math.max(0,grouped.length-limit),rows:grouped.slice(0,limit).map(row=>({key:row.key,dimensions:row.dimensions,metrics:row.metrics,summary:row.summary,
-  derived:{discountRate:ratio(row.metrics.discounts??null,row.metrics.gross??null),atcToOrderClose:ratio(row.summary.cvr,row.summary.atc)},
-  provenance:[...new Map(row.evidence.map(e=>[JSON.stringify([e.date,e.start,e.end,e.sourceId,e.definition,e.population,e.currency,e.quality]),{date:e.date,start:e.start??null,end:e.end??null,sourceId:e.sourceId,definition:e.definition,population:e.population,currency:e.currency,retrievedAt:e.retrievedAt,coverageThrough:e.coverageThrough,quality:e.quality}])).values()]}))};
+type ObservedInterval={start:string;end:string;intervalCount:number;intervalMilliseconds:number};
+export function compressedProvenance(rows:Observation[]){
+ const groups=new Map<string,{scope:{date:string;dataset:string;metric:string;sourceId:string;definition:string;population:string|null;currency:string|null;quality:Observation['quality'];retrievedAt:string;coverageThrough:string|null};rows:Observation[]}>();
+ for(const row of rows){
+  const scope={date:row.date,dataset:row.dataset,metric:row.metric,sourceId:row.sourceId,definition:row.definition,population:row.population??null,currency:row.currency,quality:row.quality,retrievedAt:row.retrievedAt,coverageThrough:row.coverageThrough};
+  const key=JSON.stringify(scope),group=groups.get(key);if(group)group.rows.push(row);else groups.set(key,{scope,rows:[row]});
+ }
+ return [...groups.values()].map(({scope,rows:values})=>{
+  const timed=new Map<string,{start:string;end:string}>(),incomplete=new Map<string,{start:string|null;end:string|null;observationCount:number}>();let intervalObservationCount=0,withoutIntervalCount=0;
+  for(const row of values){
+   if(row.start&&row.end&&Number.isFinite(Date.parse(row.start))&&Date.parse(row.end)>Date.parse(row.start)){intervalObservationCount++;timed.set(JSON.stringify([row.start,row.end]),{start:row.start,end:row.end});}
+   else if(!row.start&&!row.end)withoutIntervalCount++;
+   else {const key=JSON.stringify([row.start??null,row.end??null]),existing=incomplete.get(key);if(existing)existing.observationCount++;else incomplete.set(key,{start:row.start??null,end:row.end??null,observationCount:1});}
+  }
+  const observedIntervals:ObservedInterval[]=[];
+  for(const interval of [...timed.values()].sort((a,b)=>Date.parse(a.start)-Date.parse(b.start)||Date.parse(a.end)-Date.parse(b.end))){
+   const duration=Date.parse(interval.end)-Date.parse(interval.start),prior=observedIntervals.at(-1);
+   // Join only exactly adjacent intervals of the same grain. Gaps remain visible.
+   if(prior&&prior.end===interval.start&&prior.intervalMilliseconds===duration){prior.end=interval.end;prior.intervalCount++;}
+   else observedIntervals.push({...interval,intervalCount:1,intervalMilliseconds:duration});
+  }
+  return {...scope,observationCount:values.length,intervalObservationCount,withoutIntervalCount,duplicateIntervalObservationCount:intervalObservationCount-timed.size,observedIntervals,incompleteIntervals:[...incomplete.values()]};
+ });
 }
+export function evidenceDetailRows(rows:Observation[],limit=80){
+ const grouped=detailRows(rows).sort((a,b)=>(b.summary.sessions??b.summary.revenue??0)-(a.summary.sessions??a.summary.revenue??0)),selected=grouped.slice(0,limit);
+ const returnedObservationCount=selected.reduce((sum,row)=>sum+row.evidence.length,0);
+ return {segmentCount:grouped.length,returnedSegmentCount:selected.length,omitted:Math.max(0,grouped.length-limit),observationCount:rows.length,returnedObservationCount,omittedObservationCount:rows.length-returnedObservationCount,rows:selected.map(row=>({key:row.key,dimensions:row.dimensions,metrics:row.metrics,summary:row.summary,
+  derived:{discountRate:ratio(row.metrics.discounts??null,row.metrics.gross??null),atcToOrderClose:ratio(row.summary.cvr,row.summary.atc)},
+  provenance:compressedProvenance(row.evidence)}))};
+}
+
 const arithmetic=(current:ReturnType<typeof queryClient>['metrics'],previous:ReturnType<typeof queryClient>['metrics'])=>({revenueChange:change(current.revenue,previous.revenue),ordersChange:change(current.orders,previous.orders),sessionsChange:change(current.sessions,previous.sessions),cvrChangePoints:current.cvr===null||previous.cvr===null?null:current.cvr-previous.cvr,spendChange:change(current.spend,previous.spend)});
 
 /** Closed evidence remains a dated reference beside, never inside, current intraday metrics. */

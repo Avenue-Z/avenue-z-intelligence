@@ -25,7 +25,7 @@ export function preferredObservations(rows:Observation[],options?:PreferenceOpti
  }
  let selected=rows.filter(r=>!shopifySessions(r)||r.quality!=='complete'||unique.get(JSON.stringify([family(r),r.start,r.end,Object.entries(r.dimensions??{}).sort()]))===r);
  if(options){
-  const groups=new Map<string,Observation[]>();for(const r of selected)if(shopifySessions(r)){const key=family(r);groups.set(key,[...(groups.get(key)??[]),r]);}
+  const groups=new Map<string,Observation[]>();for(const r of selected)if(shopifySessions(r)){const key=family(r),group=groups.get(key);if(group)group.push(r);else groups.set(key,[r]);}
   const keep=new Set<Observation>();
   for(const group of groups.values()){
    const hourly=group.filter(r=>r.start&&r.end&&r.quality==='complete'),daily=group.filter(r=>!r.start&&!r.end);

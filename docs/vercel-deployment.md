@@ -1,6 +1,6 @@
 # Avenue Z production deployment
 
-The user selected preparing the independent backend now and deploying to Vercel later. The existing private Sites preview remains the active preview. The rejected ChatGPT hourly task is paused; it is not the application's scheduler. The production crons below activate only after a Vercel production deployment, not in the current preview or on a developer's computer.
+The independent backend was activated on October 12, 2026 in the Avenue Z Technology Vercel team. The existing owner-private Sites URL remains the dashboard during the frontend transition and reads the same company database. The rejected ChatGPT hourly task remains paused. Native Vercel cron routes run provider sync and daily-review checks without a browser, developer computer, or assistant session.
 
 ## Organization-owned services
 
@@ -14,7 +14,7 @@ Google OIDC uses a company-owned OAuth application. Its authorized redirect URI 
 
 Run `npm run db:migrate:vercel` against a **fresh database**, with its service credentials supplied securely. The script applies each migration transactionally, records checksums, skips unchanged applied migrations, and refuses changed history. It must run once before production traffic; do not run migrations on every cron tick.
 
-To preserve current preview data, first migrate the fresh destination, then copy **data only** for organizations, clients, members, connections, qualifications, observations, snapshots, current snapshots, notes, findings, reviews, and audit/AI history. Preserve identifiers, review revisions, source contracts, and current pointers. APP_ORGANIZATION_ID must match the imported organization ID (`avenue-z` for the current preview). Do not replay a whole D1 schema export into that fresh schema. Do not import D1's migration history into `_avenue_migrations`. Keep the destination scheduler disabled during import and validate row counts, per-brand aggregates, authorizations, and a representative review. Copy archived snapshot objects privately and preserve their object keys. Verify or requalify providers before enabling sources. This data transfer has not been run; the current preview records remain intact.
+To preserve current preview data, first migrate the fresh destination, then copy **data only** for organizations, clients, members, connections, qualifications, observations, snapshots, current snapshots, notes, findings, reviews, and audit/AI history. Preserve identifiers, review revisions, source contracts, and current pointers. APP_ORGANIZATION_ID must match the imported organization ID (`avenue-z` for the current preview). Do not replay a whole D1 schema export into that fresh schema. Do not import D1's migration history into `_avenue_migrations`. Keep the destination scheduler disabled during import and validate row counts, per-brand aggregates, authorizations, and a representative review. Copy archived snapshot objects privately and preserve their object keys. Verify or requalify providers before enabling sources. The data transfer completed on October 12: two clients, 139,123 observations, 29 review revisions, six findings, seven validated connections and 26 private snapshot archives were copied with their identifiers and current pointers preserved. The original D1 data remains intact. Kind Patches subsequently gained a separately reconciled hourly Shopify feed; current source counts and coverage are read from the database.
 
 ## Runtime and schedules
 
@@ -31,7 +31,7 @@ Report store dates are anchored to the configured reporting slot, including DST 
 
 ## Activation verification
 
-Before the later cutover, verify a production deployment with company service credentials:
+Verification uses the production deployment and company service credentials:
 
 1. Confirm anonymous, spoofed-header, and uninvited-user requests cannot read client data; verify admin/analyst client access.
 2. Invoke each cron with only its service credential, no user cookie. Confirm provider jobs persist and the app's current snapshots advance. An unsigned cron request must return 401.
@@ -39,4 +39,4 @@ Before the later cutover, verify a production deployment with company service cr
 4. Invoke a daily review, confirm the saved report and source citations, invoke again, and verify no duplicate scheduled report.
 5. Close all browsers and end the assistant session. Observe a later **native Vercel cron** in hosting logs, fresh provider coverage in the database, and the next configured brand review. Only this confirms autonomous production scheduling.
 
-The backend and both builds are testable now. Vercel production resources, credentials, data transfer, Google OAuth registration, and native cron activation are deliberately pending the later deployment.
+The company project, Turso database, private Blob store, server credentials and native cron routes are active. Native cron dispatch and cookie-free provider refresh have been observed in production. Google OAuth registration for the eventual Vercel frontend is still pending; the current private dashboard uses its existing authentication and shared database. Beam live provider credentials have not been supplied, so its imported reports remain dated reference evidence. Daily-review generation must be checked against a saved report and its persistent scheduled job, rather than inferred from a successful deployment.

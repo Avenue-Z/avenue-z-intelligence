@@ -38,10 +38,40 @@ export function buildAIContext(records:(Omit<ClientRecord,'viewMetrics'|'revenue
    selectedReview:selectedReview?{storeDate:selectedReview.storeDate,revision:selectedReview.revision}:null,
    sourceReviews:reviews.map(expose),priorSourceReviews:referenceReviews.map(expose),notes:r.note.body,
    findings:r.findings.map(f=>({id:f.id,title:f.title,detail:f.detail,status:f.status,owner:f.owner,severity:f.severity,...('latestCheck' in f?{latestCheck:f.latestCheck}:{})})),
-   datasetDetails,comparisonDatasetDetails,channelSpendComparison,details:selectedDetails.rows,detailsOmitted:selectedDetails.omitted,comparisonDetails:comparisonDetails.rows,comparisonDetailsOmitted:comparisonDetails.omitted,trend:r.series,priorClosedDetail:r.supplemental?.priorClosedDetail??null,closedPriorDay:r.supplemental?.closedPriorDay??null,dailyRenewals:r.supplemental?.dailyRenewals??[],spendChannelTrend:r.supplemental?.spendChannelTrend??[],channelMonthToDate:r.supplemental?.channelMonthToDate??[],closedRecurringWeeks:r.supplemental?.closedRecurringWeeks??null,
+   datasetDetails,comparisonDatasetDetails,channelSpendComparison,details:selectedDetails.rows,detailsOmitted:selectedDetails.omitted,detailCounts:{segments:selectedDetails.segmentCount,returned:selectedDetails.returnedSegmentCount,observations:selectedDetails.observationCount,returnedObservations:selectedDetails.returnedObservationCount,omittedObservations:selectedDetails.omittedObservationCount},comparisonDetails:comparisonDetails.rows,comparisonDetailsOmitted:comparisonDetails.omitted,comparisonDetailCounts:{segments:comparisonDetails.segmentCount,returned:comparisonDetails.returnedSegmentCount,observations:comparisonDetails.observationCount,returnedObservations:comparisonDetails.returnedObservationCount,omittedObservations:comparisonDetails.omittedObservationCount},trend:r.series,priorClosedDetail:r.supplemental?.priorClosedDetail??null,closedPriorDay:r.supplemental?.closedPriorDay??null,dailyRenewals:r.supplemental?.dailyRenewals??[],spendChannelTrend:r.supplemental?.spendChannelTrend??[],channelMonthToDate:r.supplemental?.channelMonthToDate??[],closedRecurringWeeks:r.supplemental?.closedRecurringWeeks??null,
    liveOperations:r.liveOperations??[],sourceQuality:[...new Set(r.evidence.map(x=>x.quality))],observedDates:[...new Set(r.evidence.map(x=>x.date))].sort()};
  });return {filters,clients,sources};
 }
+type EvidenceRow=ReturnType<typeof evidenceDetailRows>['rows'][number];
+type ProvenanceScope=EvidenceRow['provenance'][number];
+type CompactEvidenceRow=Omit<EvidenceRow,'provenance'>&{provenanceScopeIds:string[]};
+type CompactValue<T>=T extends EvidenceRow?{evidenceRowId:string}:T extends (infer V)[]?CompactValue<V>[]:T extends object?{[K in keyof T]:CompactValue<T[K]>}:T;
+
+/** Lossless model projection: repeated numeric rows and source scopes are referenced once. */
+export function compactAIContextForModel(input:ReturnType<typeof buildAIContext>){
+ const evidenceRows:Record<string,CompactEvidenceRow>={},provenanceScopes:Record<string,ProvenanceScope>={};
+ const rowIds=new Map<string,string>(),scopeIds=new Map<string,string>();let evidenceRowReferences=0,provenanceScopeReferences=0;
+ const registerScope=(scope:ProvenanceScope)=>{
+  provenanceScopeReferences++;const key=JSON.stringify(scope),existing=scopeIds.get(key);if(existing)return existing;
+  const id=`scope${scopeIds.size+1}`;scopeIds.set(key,id);provenanceScopes[id]=scope;return id;
+ };
+ const project=(value:unknown):unknown=>{
+  if(Array.isArray(value))return value.map(project);
+  if(value===null||typeof value!=='object')return value;
+  const object=value as Record<string,unknown>;
+  if(typeof object.key==='string'&&object.dimensions&&object.metrics&&object.summary&&Array.isArray(object.provenance)){
+   evidenceRowReferences++;const {provenance,...numericRow}=object as EvidenceRow;
+   const row={...numericRow,provenanceScopeIds:provenance.map(registerScope)},key=JSON.stringify(row),existing=rowIds.get(key);
+   if(existing)return {evidenceRowId:existing};
+   const id=`row${rowIds.size+1}`;rowIds.set(key,id);evidenceRows[id]=row;return {evidenceRowId:id};
+  }
+  return Object.fromEntries(Object.entries(object).map(([key,item])=>[key,project(item)]));
+ };
+ const context=project(input) as CompactValue<ReturnType<typeof buildAIContext>>;
+ return {format:'avenuez-evidence-registry-v1',instruction:'Resolve evidenceRowId in evidenceRows, then provenanceScopeIds in provenanceScopes. Each selected numeric row and its exact source scope are retained once; references can appear in multiple dated slices. Scope observation counts apply to each referencing numeric row; a scope may be shared by rows with different dimensions. Collection observation/omission counts remain authoritative for each dated slice. Observed interval ranges summarize supplied observations, not proof of complete source coverage. Preserve all original warnings, omitted counts and qualification fields. Citation IDs remain context.sources, not registry IDs.',context,evidenceRows,provenanceScopes,
+  compression:{uniqueEvidenceRows:rowIds.size,evidenceRowReferences,uniqueProvenanceScopes:scopeIds.size,provenanceScopeReferences,numericRowsOmitted:0}};
+}
+
 const answer=z.object({answer:z.string().min(1).max(25000),sourceIds:z.array(z.string()).max(30),followUps:z.array(z.string()).max(6),caveats:z.array(z.string()).max(12)});
 export type AIAnswer=z.infer<typeof answer>;
 export function validateAnswer(input:unknown,sources:AISource[]):AIAnswer {const a=answer.parse(input);if(a.sourceIds.some(id=>!sources.some(s=>s.id===id)))throw new Error('AI returned an unsupported citation; please retry');return a;}

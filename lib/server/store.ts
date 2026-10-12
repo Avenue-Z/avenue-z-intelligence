@@ -1,6 +1,8 @@
 import type {Client,Connection,Observation,SourceBatch,Review,Finding,QueryFilters} from '../analytics/contracts';
-import {shiftDate} from '../analytics/windows';
+import {shiftDate,dayWindow,matchedCutoff} from '../analytics/windows';
 import {preferredObservations} from '../analytics/source-precedence';
+import {FunnelRollupAccumulator} from '../analytics/funnel-rollup';
+import {Temporal} from '@js-temporal/polyfill';
 type Db={prepare:(sql:string)=>any;batch:(statements:any[])=>Promise<any[]>};
 export type ScheduledReviewLease={id:string;leaseToken:string};
 export class Store {
@@ -11,7 +13,9 @@ export class Store {
   async clients(org:string):Promise<Client[]> {return (await this.all('SELECT * FROM clients WHERE organizationId=? ORDER BY name',org)).map(r=>({...r,config:JSON.parse(r.config)}));}
   async connections(org:string,clientId?:string):Promise<Connection[]> {return (await this.all('SELECT * FROM connections WHERE organizationId=?'+(clientId?' AND clientId=?':''),...clientId?[org,clientId]:[org])).map(r=>({...r,enabled:!!r.enabled}));}
   async observations(org:string,client:string,filters?:QueryFilters,headlinesOnly=false):Promise<Observation[]> {
-    let clause='',values:unknown[]=[org,client];
+    const pointers=await this.all<{snapshotId:string;date:string}>("SELECT c.snapshotId,c.date FROM current_snapshots c JOIN snapshots s ON s.id=c.snapshotId WHERE c.organizationId=? AND c.clientId=? AND s.status='ready'",org,client);
+    if(!pointers.length)return [];
+    let clause='',values:unknown[]=[JSON.stringify(pointers)];
     if(filters){const days=Math.round((Date.parse(filters.to)-Date.parse(filters.from))/86400000)+1,offset=filters.compare==='weekday'?7:filters.compare==='fourWeeks'?28:days,priorFrom=shiftDate(filters.from,-offset),priorTo=shiftDate(filters.to,-offset),trendFrom=shiftDate(filters.to,-29),overviewFrom=priorFrom<trendFrom?priorFrom:trendFrom;
       // Keep headline history and renewal benchmarks; load bulky detail exports
       // only for the selected, comparison and prior-week periods.
@@ -19,7 +23,18 @@ export class Store {
       values.push(overviewFrom,filters.to,filters.from,filters.to,priorFrom,priorTo,shiftDate(filters.from,-7),shiftDate(filters.to,-7));
     }
     if(headlinesOnly)clause+=" AND json_extract(o.payload,'$.dataset')='overview'";
-    return preferredObservations((await this.all(`SELECT o.payload FROM observations o JOIN current_snapshots c ON c.snapshotId=o.snapshotId AND c.date=o.date JOIN snapshots s ON s.id=o.snapshotId WHERE c.organizationId=? AND c.clientId=? AND s.status='ready'${clause}`,...values)).map(r=>JSON.parse(r.payload)));
+    const clientRow=await this.first<{timezone:string}>('SELECT timezone FROM clients WHERE organizationId=? AND id=?',org,client);
+    let cutoffClock:string|undefined;
+    if(clientRow&&filters?.mode==='partial'){const sources=(await this.connections(org,client)).filter(c=>c.enabled&&(!c.provider||c.provider==='gateway'||c.provider==='kind-triple-whale'||c.provider==='kind-shopify-hourly')),coverage=sources.map(c=>c.coverageThrough),known=sources.length>0&&coverage.every((x):x is string=>!!x&&Date.parse(x)>=Date.parse(dayWindow(filters.to,clientRow.timezone).start));const cutoff=known?matchedCutoff(coverage as string[],clientRow.timezone):null;if(cutoff)cutoffClock=Temporal.Instant.from(cutoff).toZonedDateTimeISO(clientRow.timezone).toPlainTime().toString();}
+    // Missing partial coverage must retain raw hourly rows so queryClient can
+    // decline the comparison; it must never turn a full day into a partial day.
+    const accumulator=clientRow&&(!filters||filters.mode==='closed'||cutoffClock)?new FunnelRollupAccumulator({timezone:clientRow.timezone,cutoffClock}):null;
+    const rows:Observation[]=[];let nextPointer=0;
+    // Seek within each captured snapshot/date using the primary key. Sorting
+    // the entire source set again for every page made large exports quadratic.
+    const read=async()=>{for(;;){const pointer=pointers[nextPointer++];if(!pointer)return;let cursor:string|null=null;for(;;){const page:{payload:string;rowKey:string}[]=await this.all(`SELECT o.payload,o.rowKey FROM observations o WHERE o.snapshotId=? AND o.date=?${clause}${cursor?' AND o.rowKey>?':''} ORDER BY o.rowKey LIMIT 2000`,pointer.snapshotId,pointer.date,...values.slice(1),...cursor?[cursor]:[]);for(const r of page){const row=JSON.parse(r.payload);if(accumulator)accumulator.add(row);else rows.push(row);}if(page.length<2000)break;cursor=page[page.length-1].rowKey;}}};
+    await Promise.all(Array.from({length:Math.min(4,pointers.length)},()=>read()));
+    return preferredObservations(accumulator?accumulator.finish():rows);
   }
   async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string}) {
     const id=`${org}:${batch.clientId}:${source}:${key}`;
@@ -55,7 +70,7 @@ export class Store {
   }
   async saveQualification(org:string,client:string,source:string,connectionVersion:number,clientVersion:number,payload:unknown,actor:string){await this.run('INSERT INTO qualifications(organizationId,clientId,sourceId,connectionVersion,clientVersion,version,payload,actorId,createdAt) SELECT ?,?,?,?,?,COALESCE(MAX(version),0)+1,?,?,? FROM qualifications WHERE organizationId=? AND sourceId=?',org,client,source,connectionVersion,clientVersion,JSON.stringify(payload),actor,new Date().toISOString(),org,source);}
   async qualification(org:string,source:string){const r=await this.first('SELECT * FROM qualifications WHERE organizationId=? AND sourceId=? ORDER BY version DESC LIMIT 1',org,source);return r?{...r,payload:JSON.parse(r.payload)}:null;}
-  async reviews(org:string,client:string):Promise<Review[]>{return (await this.all('SELECT * FROM reviews WHERE organizationId=? AND clientId=? ORDER BY storeDate DESC,revision DESC LIMIT 365',org,client)).map(r=>({...r,current:!!r.current,payload:JSON.parse(r.payload)}));}
+  async reviews(org:string,client:string):Promise<Review[]>{return (await this.all("SELECT id,organizationId,clientId,storeDate,revision,fingerprint,createdAt,current,json_remove(payload,'$.evidence') AS payload FROM reviews WHERE organizationId=? AND clientId=? ORDER BY storeDate DESC,revision DESC LIMIT 365",org,client)).map(r=>({...r,current:!!r.current,payload:JSON.parse(r.payload)}));}
   async findings(org:string,client:string):Promise<Finding[]>{
     const findings:Finding[]=(await this.all('SELECT * FROM findings WHERE organizationId=? AND clientId=? ORDER BY updatedAt DESC',org,client)).map(r=>({...JSON.parse(r.payload),id:r.id,clientId:r.clientId,version:r.version,updatedAt:r.updatedAt}));
     const checks=await this.all("SELECT r.id,r.storeDate,r.createdAt,a.value AS action FROM reviews r,json_each(r.payload,'$.actions') a WHERE r.organizationId=? AND r.clientId=? AND r.current=1 AND json_extract(r.payload,'$.type')='ai' AND json_extract(a.value,'$.existingFindingId') IS NOT NULL ORDER BY r.storeDate DESC,r.createdAt DESC",org,client);

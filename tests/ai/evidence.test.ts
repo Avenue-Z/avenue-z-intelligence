@@ -1,5 +1,5 @@
 import {it,expect} from 'vitest';
-import {supplementalReviewEvidence} from '../../lib/ai/evidence';
+import {evidenceDetailRows,supplementalReviewEvidence} from '../../lib/ai/evidence';
 import clients from '../../data/initial-clients.json';
 import type {Observation} from '../../lib/analytics/contracts';
 const client=clients[0] as any;
@@ -30,3 +30,17 @@ it('preserves weekday and previous closed-day periods independently',()=>{
 });
 
 it('labels channel totals as incomplete observed-day totals when MTD dates are missing',()=>{const e=supplementalReviewEvidence(client,[row('2026-10-07','media','spend',50,{channel:'meta'})],[],filters);const mtd=e.channelMonthToDate.find(d=>d.dataset==='media')!;expect(mtd.from).toBe('2026-10-01');expect(mtd.to).toBe('2026-10-07');expect(mtd.fullElapsedDayCoverage).toBe(false);expect(mtd.missingDates).toContain('2026-10-01');expect(mtd.rows[0].metrics.spend).toBe(50);});
+
+it('compresses hourly provenance without changing numeric totals, scopes, gaps or observation tallies',()=>{
+ const hourly=Array.from({length:24},(_,hour)=>({...row('2026-10-07','media','spend',hour+1,{channel:'meta'}),sourceId:'hourly-media',definition:'store_hour_paid_spend',population:'paid_media',start:`2026-10-07T${String(hour).padStart(2,'0')}:00:00Z`,end:hour===23?'2026-10-08T00:00:00Z':`2026-10-07T${String(hour+1).padStart(2,'0')}:00:00Z`}));
+ const compact=evidenceDetailRows(hourly),r=compact.rows[0],p=r.provenance[0];
+ expect(r.metrics.spend).toBe(300);expect(r.summary.spend).toBe(300);expect(compact).toMatchObject({observationCount:24,returnedSegmentCount:1,returnedObservationCount:24,omittedObservationCount:0});
+ expect(r.provenance).toHaveLength(1);expect(p).toMatchObject({date:'2026-10-07',dataset:'media',metric:'spend',sourceId:'hourly-media',definition:'store_hour_paid_spend',population:'paid_media',currency:client.currency,quality:'complete',retrievedAt:'2026-10-08T12:00:00Z',coverageThrough:'2026-10-09T04:00:00Z',observationCount:24,intervalObservationCount:24,withoutIntervalCount:0,observedIntervals:[{start:'2026-10-07T00:00:00Z',end:'2026-10-08T00:00:00Z',intervalCount:24,intervalMilliseconds:3600000}]});
+ const legacy=hourly.map(e=>({date:e.date,start:e.start,end:e.end,sourceId:e.sourceId,definition:e.definition,population:e.population,currency:e.currency,retrievedAt:e.retrievedAt,coverageThrough:e.coverageThrough,quality:e.quality}));expect(JSON.stringify(r.provenance).length).toBeLessThan(JSON.stringify(legacy).length*.2);
+ const gap=evidenceDetailRows(hourly.filter((_,i)=>i!==12)).rows[0].provenance[0];expect(gap.observedIntervals).toHaveLength(2);expect(gap.observationCount).toBe(23);expect(gap.observedIntervals[0].end).toBe('2026-10-07T12:00:00Z');expect(gap.observedIntervals[1].start).toBe('2026-10-07T13:00:00Z');
+});
+it('keeps partial quality and unknown coverage distinct from complete hourly evidence',()=>{
+ const timed={...row('2026-10-07','media','spend',5,{channel:'meta'}),start:'2026-10-07T00:00:00Z',end:'2026-10-07T01:00:00Z'};
+ const details=evidenceDetailRows([timed,{...timed,start:'2026-10-07T01:00:00Z',end:'2026-10-07T02:00:00Z',quality:'partial',coverageThrough:null}],80);
+ expect(details.rows[0].provenance).toHaveLength(2);expect(details.rows[0].provenance.find(p=>p.quality==='partial')).toMatchObject({coverageThrough:null,observationCount:1});
+});
