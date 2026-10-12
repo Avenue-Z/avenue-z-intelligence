@@ -4,6 +4,8 @@ import {shiftDate,todayIn,dayWindow,matchedCutoff} from './windows';
 import {subscriptionComparison} from './subscriptions';
 import {chooseBenchmark} from './benchmark';
 import {Temporal} from '@js-temporal/polyfill';
+import {preferredObservations} from './source-precedence';
+import {sanitizePage} from '../sources/kind-patches';
 export function filtered(rows:Observation[],f:Partial<QueryFilters>) {return rows.filter(r=>(!f.from||r.date>=f.from)&&(!f.to||r.date<=f.to)&&['market','stream','source','device','page'].every(k=>!(f as any)[k]||r.dimensions[k]===(f as any)[k]));}
 export function sumMetric(rows:Observation[],metric:string) {const r=rows.filter(x=>x.metric===metric);if(metric.endsWith('_rate')&&r.length>1)return null;if(new Set(r.map(x=>x.population)).size>1||new Set(r.map(x=>JSON.stringify(Object.keys(x.dimensions??{}).sort()))).size>1)return null;const seen=new Set<string>();for(const x of r){const key=JSON.stringify([x.date,x.start,x.end,Object.entries(x.dimensions??{}).sort()]);if(seen.has(key))return null;seen.add(key);}return compatibleTotal(r);}
 function populationRatio(rows:Observation[],n:string,d:string){const a=[...new Set(rows.filter(r=>r.metric===n).map(r=>r.population))].sort(),b=[...new Set(rows.filter(r=>r.metric===d).map(r=>r.population))].sort();return !a.length||a.includes(undefined)||JSON.stringify(a)!==JSON.stringify(b)?null:ratio(sumMetric(rows,n),sumMetric(rows,d));}
@@ -13,6 +15,7 @@ export function detailRows(rows:Observation[]) {
   return [...groups].map(([key,values])=>{const metrics:Record<string,number|null>={};for(const id of new Set(values.map(x=>x.metric)))metrics[id]=sumMetric(values,id);return {key,dimensions:values[0].dimensions,metrics,summary:summarize(values),evidence:values};});
 }
 export function queryClient(client:Client,all:Observation[],connections:Connection[],f:QueryFilters) {
+  all=preferredObservations(all.map(r=>r.dimensions.page?{...r,dimensions:{...r.dimensions,page:sanitizePage(r.dimensions.page)}}:r),{timezone:client.timezone,partial:f.mode==='partial'});
   const days=Math.round((Date.parse(f.to)-Date.parse(f.from))/86400000)+1,offset=f.compare==='weekday'?7:f.compare==='fourWeeks'?28:days;
   const comparison={...f,from:shiftDate(f.from,-offset),to:shiftDate(f.to,-offset)};
   const warnings:string[]=[];let cutoff:string|null=null;
@@ -24,8 +27,8 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
   let current=filtered(capable,f),previous=filtered(capable,comparison),peers=filtered(capable,{...f,market:''});
   let currentEnd=Date.parse(dayWindow(f.to,client.timezone).end),previousEnd=Date.parse(dayWindow(comparison.to,client.timezone).end);
   if(f.mode==='partial') {
-    if(connections.some(c=>c.enabled&&c.provider?.startsWith('kind-')&&c.provider!=='kind-triple-whale'))warnings.push('Same-hour comparisons use Triple Whale commerce and media. Shopify detail and AppLovin UTC reports use closed days; current operations are separate snapshots.');
-    const sources=connections.filter(c=>c.enabled&&(!c.provider||c.provider==='gateway'||c.provider==='kind-triple-whale')),coverage=sources.map(c=>c.coverageThrough);
+    if(connections.some(c=>c.enabled&&c.provider?.startsWith('kind-')&&c.provider!=='kind-triple-whale'))warnings.push('Same-hour comparisons use qualified hourly commerce, media and human-session feeds. Shopify sales/product totals and AppLovin UTC reports use closed days; current operations are separate snapshots.');
+    const sources=connections.filter(c=>c.enabled&&(!c.provider||c.provider==='gateway'||c.provider==='kind-triple-whale'||c.provider==='kind-shopify-hourly')),coverage=sources.map(c=>c.coverageThrough);
     const known=sources.length>0&&coverage.every((x):x is string=>!!x&&Date.parse(x)>=Date.parse(dayWindow(f.to,client.timezone).start));
     cutoff=known?matchedCutoff(coverage as string[],client.timezone):null;
     if(!cutoff) {current=[];previous=[];peers=[];warnings.push('An intraday comparison needs confirmed, current hourly coverage from every contributing source.');}

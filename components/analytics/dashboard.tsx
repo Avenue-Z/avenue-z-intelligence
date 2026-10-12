@@ -12,9 +12,8 @@ import {SourcePanel,TeamSettings} from './settings';
 import {TrendChart} from './chart';
 import {ExecutiveOverview} from './executive-overview';
 import {AIChat,type ChatContext} from './ai-chat';
-export const money=(v:number|null,currency='USD')=>v===null?'—':new Intl.NumberFormat('en-US',{style:'currency',currency,maximumFractionDigits:0}).format(v);
-export const number=(v:number|null)=>v===null?'—':new Intl.NumberFormat('en-US',{maximumFractionDigits:0}).format(v);
-export const percent=(v:number|null)=>v===null?'—':`${(v*100).toFixed(2)}%`;
+import {finiteMetric,money,number,percent} from '../../lib/analytics/display';
+export {money,number,percent} from '../../lib/analytics/display';
 export function Dashboard({initial,clientId,userName}:{initial:Workspace;clientId?:string;userName:string}) {
  const [data,setData]=useState(initial),[section,setSection]=useState('portfolio'),[busy,setBusy]=useState(false),[error,setError]=useState(''),[search,setSearch]=useState(''),[chartId,setChartId]=useState('');
  const [reviewContext,setReviewContext]=useState<ChatContext>({}),[chatOpen,setChatOpen]=useState(false),[chatContext,setChatContext]=useState<ChatContext>({});
@@ -53,7 +52,7 @@ export function Dashboard({initial,clientId,userName}:{initial:Workspace;clientI
  </>:section==='findings'?<><AlertQueue records={data.clients} filters={data.filters} mutate={mutate}/><Findings records={data.clients} mutate={mutate} formOnly/></>:section==='reviews'?<>{data.clients.map(c=><div key={c.client.id}><h2 className="section-client-heading">{c.client.name}</h2><Reviews record={c} mutate={mutate} date={data.filters.to}/></div>)}</>:section==='sources'?<>{data.clients.map(c=><div key={c.client.id}><h2 className="section-client-heading">{c.client.name}</h2><SourcePanel record={c} mutate={mutate} admin={data.scope.role==='admin'}/></div>)}</>:section==='ai'?<AIChat embedded filters={data.filters} context={{}}/>:<TeamSettings data={data} mutate={mutate}/>}
  {section!=='ai'&&<button className="ai-launcher" onClick={()=>{setChatContext(data.filters.view==='reviews'&&reviewContext.clientId===selected?.client.id?reviewContext:{});setChatOpen(true);}}><Sparkles size={16}/>Ask AI about this view</button>}{chatOpen&&<AIChat filters={data.filters} context={{clientId:selected?.client.id,...chatContext,...(selected&&data.filters.view==='reviews'&&reviewContext.clientId===selected.client.id?reviewContext:{})}} clientName={data.clients.find(c=>c.client.id===(chatContext.clientId||selected?.client.id))?.client.name} onClose={()=>setChatOpen(false)}/>}<footer className="workspace-footer"><span>AVENUE Z / INTELLIGENCE</span><span>Shared evidence. Clear ownership. Store-local comparisons.</span></footer></main></div></div>;
 }
-function Metric({value,delta,neutral=false}:{value:string;delta:number|null;neutral?:boolean}){return <div className="metric-cell"><strong>{value}</strong><small className={delta===null||neutral?'':delta>=0?'positive':'negative'}>{delta===null?'No comparison':`${delta>=0?'+':''}${(delta*100).toFixed(1)}% vs baseline`}</small></div>;}
+function Metric({value,delta,neutral=false}:{value:string;delta:number|null;neutral?:boolean}){return <div className="metric-cell"><strong>{value}</strong><small className={!finiteMetric(delta)||neutral?'':delta>=0?'positive':'negative'}>{!finiteMetric(delta)?'No comparison':`${delta>=0?'+':''}${(delta*100).toFixed(1)}% vs baseline`}</small></div>;}
 export function ClientIcon({client}:{client:{name:string;color:string}}){return <span className="client-icon" style={{background:client.color}}>{client.name.split(' ').map(x=>x[0]).join('').slice(0,2)}</span>;}
 export function Stat({label,value,note}:{label:string;value:string;note:string}){return <div className="stat-card"><span className="stat-label">{label}</span><strong>{value}</strong><span className="stat-note">{note}</span></div>;}
 export function Empty({title,text,chart=false}:{title:string;text:string;chart?:boolean}){return <div className="empty-state">{chart?<ChartNoAxesCombined size={24}/>:<Database size={22}/>}<h3>{title}</h3><p>{text}</p></div>;}

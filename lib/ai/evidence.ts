@@ -1,0 +1,50 @@
+import type {Client,Connection,Observation,QueryFilters} from '../analytics/contracts';
+import {detailRows,queryClient,sumMetric} from '../analytics/query';
+import {change,ratio} from '../analytics/metrics';
+import {dayWindow,shiftDate,todayIn} from '../analytics/windows';
+
+export function evidenceDetailRows(rows:Observation[],limit=80){
+ const grouped=detailRows(rows).sort((a,b)=>(b.summary.sessions??b.summary.revenue??0)-(a.summary.sessions??a.summary.revenue??0));
+ return {segmentCount:grouped.length,omitted:Math.max(0,grouped.length-limit),rows:grouped.slice(0,limit).map(row=>({key:row.key,dimensions:row.dimensions,metrics:row.metrics,summary:row.summary,
+  derived:{discountRate:ratio(row.metrics.discounts??null,row.metrics.gross??null),atcToOrderClose:ratio(row.summary.cvr,row.summary.atc)},
+  provenance:[...new Map(row.evidence.map(e=>[JSON.stringify([e.date,e.start,e.end,e.sourceId,e.definition,e.population,e.currency,e.quality]),{date:e.date,start:e.start??null,end:e.end??null,sourceId:e.sourceId,definition:e.definition,population:e.population,currency:e.currency,retrievedAt:e.retrievedAt,coverageThrough:e.coverageThrough,quality:e.quality}])).values()]}))};
+}
+const arithmetic=(current:ReturnType<typeof queryClient>['metrics'],previous:ReturnType<typeof queryClient>['metrics'])=>({revenueChange:change(current.revenue,previous.revenue),ordersChange:change(current.orders,previous.orders),sessionsChange:change(current.sessions,previous.sessions),cvrChangePoints:current.cvr===null||previous.cvr===null?null:current.cvr-previous.cvr,spendChange:change(current.spend,previous.spend)});
+
+/** Closed evidence remains a dated reference beside, never inside, current intraday metrics. */
+export function supplementalReviewEvidence(client:Client,rows:Observation[],connections:Connection[],filters:QueryFilters){
+ const sources:{id:string;label:string;url:string}[]=[];
+ const source=(kind:string,date:string)=>{const id=`${kind}:${client.id}:${date}`;if(!sources.some(s=>s.id===id))sources.push({id,label:`${client.name} · ${date} · closed store-day evidence`,url:`/clients/${encodeURIComponent(client.id)}?${new URLSearchParams({...filters,from:date,to:date,mode:'closed',view:'overview'})}`});return id;};
+ const before=filters.mode==='partial'?filters.to:shiftDate(filters.to,1),closed=rows.filter(r=>r.date<before&&r.date<todayIn(client.timezone));
+ const queryDay=(date:string,compare:QueryFilters['compare']='previous')=>queryClient(client,rows,connections,{...filters,from:date,to:date,mode:'closed',compare});
+ const newestByDataset=Object.fromEntries([...new Set(closed.filter(r=>r.dataset!=='overview'&&!['active_ads','active_creatives','active_customers'].includes(r.metric)).map(r=>r.dataset))].map(dataset=>{const date=closed.filter(r=>r.dataset===dataset).map(r=>r.date).sort().at(-1)!;
+  const selected=queryDay(date).evidence.filter(r=>r.dataset===dataset),comparison=queryDay(date).comparisonEvidence.filter(r=>r.dataset===dataset);
+  return [dataset,{storeDate:date,comparisonDate:shiftDate(date,-1),sourceId:source('closed-detail',date),scopeLabel:`Closed-day reference · ${date} · ${client.timezone}${filters.mode==='partial'?'; not the current partial day':''}`,window:dayWindow(date,client.timezone),warnings:queryDay(date).warnings,...evidenceDetailRows(selected),comparison:evidenceDetailRows(comparison)}];}));
+ const priorDate=shiftDate(filters.to,-1),prior=queryDay(priorDate),previous=queryDay(shiftDate(priorDate,-1)),weekday=queryDay(shiftDate(priorDate,-7));
+ const exposeDay=(date:string,a:ReturnType<typeof queryClient>)=>({storeDate:date,sourceId:source('closed-comparison',date),window:dayWindow(date,client.timezone),metrics:a.metrics,spendVerdict:a.verdict,observedDates:[...new Set(a.evidence.map(r=>r.date))],sourceQuality:[...new Set(a.evidence.map(r=>r.quality))],warnings:a.warnings,evidenceCount:a.selectedCount});
+ const dailyRenewals=[];
+ for(let date=shiftDate(filters.to,-7);date<filters.to;date=shiftDate(date,1)){
+  const current=queryDay(date).evidence.filter(r=>r.dataset==='subscriptions');if(!current.length)continue;
+  const priorRows=queryDay(shiftDate(date,-1)).evidence.filter(r=>r.dataset==='subscriptions');
+  const summarize=(values:Observation[])=>{const revenue=sumMetric(values,'recurring_revenue'),orders=sumMetric(values,'recurring_orders');return {revenue,orders,aov:ratio(revenue,orders)};};
+  const a=summarize(current),b=summarize(priorRows);dailyRenewals.push({storeDate:date,sourceId:source('closed-renewals',date),...a,comparison:{storeDate:shiftDate(date,-1),...b},decomposition:{revenueChange:change(a.revenue,b.revenue),ordersChange:change(a.orders,b.orders),aovChange:change(a.aov,b.aov)},...evidenceDetailRows(current),qualification:'Dated renewal order cohort. Changes in orders and AOV are descriptive, not proof of churn; refunds/cancellations may mature after the order date.'});
+ }
+ const spendChannelTrend=[];
+ for(let date=shiftDate(filters.to,-7);date<filters.to;date=shiftDate(date,1)){
+  const media=queryDay(date).evidence.filter(r=>r.dataset==='media'&&r.metric==='spend');if(!media.length)continue;
+  const channels=[...new Set(media.map(r=>r.dimensions.channel).filter(Boolean))].map(channel=>{const values=media.filter(r=>r.dimensions.channel===channel);return {channel,spend:sumMetric(values,'spend'),qualifiedClosed:values.every(r=>r.quality==='complete'&&r.coverageThrough&&Date.parse(r.coverageThrough)>=Date.parse(dayWindow(date,client.timezone).end)),...evidenceDetailRows(values)};});
+  spendChannelTrend.push({storeDate:date,sourceId:source('closed-spend',date),channels,qualification:'Store-day channel spend only. UTC platform_spend and current inventory are separate; channel totals do not establish MER or matched revenue scope.'});
+ }
+ const mtdFrom=filters.to.slice(0,8)+'01',mtdTo=filters.mode==='partial'?shiftDate(filters.to,-1):filters.to;
+ const expectedDates:string[]=[];for(let date=mtdFrom;date<=mtdTo;date=shiftDate(date,1))expectedDates.push(date);
+ const channelMonthToDate=['revenue','media'].map(dataset=>{
+  const selected=closed.filter(r=>r.dataset===dataset&&r.date>=mtdFrom&&r.date<=mtdTo&&(dataset!=='media'||r.metric==='spend'));
+  const scoped=queryClient(client,selected,connections,{...filters,from:mtdFrom,to:mtdTo<mtdFrom?mtdFrom:mtdTo,mode:'closed'}).evidence;
+  const metric=dataset==='media'?'spend':'revenue';
+  const observedDates=[...new Set(scoped.filter(r=>r.metric===metric).map(r=>r.date))].sort(),missingDates=expectedDates.filter(d=>!observedDates.includes(d));
+  const sourceId=`closed-channel-mtd:${client.id}:${mtdFrom}:${mtdTo}`;
+  if(scoped.length&&!sources.some(s=>s.id===sourceId))sources.push({id:sourceId,label:`${client.name} · closed-day channel totals ${mtdFrom}–${mtdTo}`,url:`/clients/${encodeURIComponent(client.id)}?${new URLSearchParams({...filters,from:mtdFrom,to:mtdTo,mode:'closed',view:dataset})}`});
+  return {dataset,sourceId,from:mtdFrom,to:mtdTo,observedDates,missingDates,fullElapsedDayCoverage:expectedDates.length>0&&!missingDates.length&&scoped.length>0&&scoped.every(r=>r.quality==='complete'&&r.coverageThrough&&Date.parse(r.coverageThrough)>=Date.parse(dayWindow(mtdTo,client.timezone).end)),scopeLabel:`Closed-day channel totals ${mtdFrom}–${mtdTo}; current partial store day excluded. Without fullElapsedDayCoverage, label as observed-day totals, not complete MTD.`,...evidenceDetailRows(scoped)};
+ });
+ return {sources,priorClosedDetail:{instruction:'Use these as explicitly dated closed-day references. Never blend them into selected-day KPI totals or describe their rates as current intraday rates.',datasets:newestByDataset},closedPriorDay:{current:exposeDay(priorDate,prior),previousDay:exposeDay(shiftDate(priorDate,-1),previous),sameWeekday:exposeDay(shiftDate(priorDate,-7),weekday),arithmetic:{previousDay:arithmetic(prior.metrics,previous.metrics),sameWeekday:arithmetic(prior.metrics,weekday.metrics)},instruction:'Closed prior store day compared with its previous closed day and same weekday. Separate from partial-day same-hour comparisons.'},dailyRenewals,spendChannelTrend,channelMonthToDate};
+}

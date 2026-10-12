@@ -2,7 +2,7 @@ import {Temporal} from '@js-temporal/polyfill';
 import type {Client,Connection,Observation,SourceBatch} from '../analytics/contracts';
 import {dayWindow,shiftDate,todayIn} from '../analytics/windows';
 import {validateBatch} from './qualification';
-import {sourceDefinition,kindConfiguration,sourceBatch,observation,numeric,boundedRows,checkDate,sourceMarket,sanitizePage,reconcileSessions,normalizeHourlyCommerce,localHourInterval,commerce,providerJson,type KindConfig,type KindWindow,type Raw} from './kind-patches';
+import {sourceDefinition,kindConfiguration,sourceBatch,observation,numeric,boundedRows,checkDate,sourceMarket,sanitizePage,reconcileSessions,normalizeHourlyCommerce,normalizeHourlySessions,hourlySessionCutoff,sessionMetrics,publicSessionPages,sourceDates,localHourInterval,commerce,providerJson,type KindConfig,type KindWindow,type Raw} from './kind-patches';
 async function triple(c:KindConfig,query:string,w:KindWindow,fetcher:typeof fetch,deadline:number){return boundedRows(await providerJson(fetcher,'https://api.triplewhale.com/api/v2/orcabase/api/sql',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':c.TRIPLE_WHALE_SQL_KEY},body:JSON.stringify({shopId:c.SHOP_DOMAIN,query,currency:'USD',period:{startDate:w.from,endDate:w.to}})},deadline));}
 async function shop(c:KindConfig,query:string,fetcher:typeof fetch,deadline:number){const j=await providerJson(fetcher,`https://${c.SHOP_DOMAIN}/admin/api/2026-07/graphql.json`,{method:'POST',headers:{'Content-Type':'application/json','X-Shopify-Access-Token':c.SHOPIFY_ADMIN_TOKEN},body:JSON.stringify({query})},deadline);if(j.errors?.length)throw new Error('Shopify GraphQL request rejected');return j.data;}
 async function shopifyql(c:KindConfig,query:string,fetcher:typeof fetch,deadline:number){const data=await shop(c,`query { shopifyqlQuery(query: ${JSON.stringify(query)}) { tableData { columns { name dataType } rows } parseErrors } }`,fetcher,deadline);if(data?.shopifyqlQuery?.parseErrors?.length)throw new Error('ShopifyQL query rejected; source schema needs review');const table=data?.shopifyqlQuery?.tableData;if(!table||!Array.isArray(table.columns))throw new Error('ShopifyQL table missing');return boundedRows(table.rows);}
@@ -28,6 +28,17 @@ export async function fetchKindSource(connection:Connection,client:Client,w:Kind
  }
  if(connection.provider.startsWith('kind-shopify-')){
   const identity=await shop(c,'query { shop { ianaTimezone currencyCode myshopifyDomain } }',fetcher,deadline);if(identity?.shop?.ianaTimezone!==client.timezone||identity?.shop?.currencyCode!==client.currency||identity?.shop?.myshopifyDomain!==c.SHOP_DOMAIN)throw new Error('Shopify store identity mismatch');
+  if(connection.provider==='kind-shopify-hourly'){
+   const window=effectiveKindWindow(connection,client,w,now),cutoff=hourlySessionCutoff(client.timezone,now),show=Object.keys(sessionMetrics).join(','),hourly:Raw[]=[],daily:Raw[]=[],pages:Raw[]=[],pageDaily:Raw[]=[];
+   for(const date of sourceDates(window)){
+    const suffix=`SINCE ${date} UNTIL ${date} ORDER BY day ASC LIMIT 50000`,eligible=date===cutoff.date?` AND hour_of_day < ${cutoff.hour}`:'',human=`human_or_bot_session = 'human'${eligible}`,publicPages=`${publicSessionPages}${eligible}`;
+    hourly.push(...await shopifyql(c,`FROM sessions SHOW ${show} WHERE ${human} GROUP BY day,hour_of_day ${suffix}`,fetcher,deadline));
+    daily.push(...await shopifyql(c,`FROM sessions SHOW ${show} WHERE ${human} GROUP BY day ${suffix}`,fetcher,deadline));
+    pages.push(...await shopifyql(c,`FROM sessions SHOW ${show} WHERE ${publicPages} GROUP BY day,hour_of_day,landing_page_path,session_country ${suffix}`,fetcher,deadline));
+    pageDaily.push(...await shopifyql(c,`FROM sessions SHOW ${show} WHERE ${publicPages} GROUP BY day ${suffix}`,fetcher,deadline));
+   }
+   return normalizeHourlySessions({hourly,daily,pages,pageDaily},client,window,now);
+  }
   const fields={net_sales:'revenue',gross_sales:'gross',discounts:'discounts',returns:'refunds',orders:'orders'};
   if(connection.provider==='kind-shopify-sales'){
    const raw=await shopifyql(c,`FROM sales SHOW net_sales,gross_sales,discounts,returns,orders GROUP BY day,sales_channel SINCE ${closed.from} UNTIL ${closed.to} ORDER BY day ASC LIMIT 50000`,fetcher,deadline);
@@ -64,7 +75,11 @@ export async function fetchKindSource(connection:Connection,client:Client,w:Kind
 
 export async function* fetchKindBatches(connection:Connection,client:Client,w:KindWindow,secret:string,fetcher:typeof fetch=fetch,deadline=Date.now()+90000){
  const asOf=new Date(),actualWindow=effectiveKindWindow(connection,client,w,asOf);
- if(connection.provider==='kind-shopify-funnels'){
+ if(connection.provider==='kind-shopify-hourly'){
+  for(let day=actualWindow.from;day<=actualWindow.to;day=shiftDate(day,1)){
+   for(let attempt=0;attempt<3;attempt++)try{yield {batch:await fetchKindSource(connection,client,{from:day,to:day},secret,fetcher,deadline,asOf),window:{from:day,to:day}};break;}catch(e){if(attempt===2||!(e as Error).message.includes('reconcile')||Date.now()+5000>=deadline)throw e;}
+  }
+ }else if(connection.provider==='kind-shopify-funnels'){
   const closedTo=w.to<todayIn(client.timezone,asOf)?w.to:shiftDate(todayIn(client.timezone,asOf),-1),from=w.from>shiftDate(closedTo,-8)?w.from:shiftDate(closedTo,-8);
   for(let day=from;day<=closedTo;day=shiftDate(day,1))yield {batch:await fetchKindSource(connection,client,{from:day,to:day},secret,fetcher,deadline,asOf),window:{from:day,to:day}};
  }else{
@@ -74,6 +89,7 @@ export async function* fetchKindBatches(connection:Connection,client:Client,w:Ki
 
 export function effectiveKindWindow(connection:Connection,client:Client,w:KindWindow,now=new Date()){
  const today=todayIn(client.timezone,now),closedTo=w.to<today?w.to:shiftDate(today,-1);
+ if(connection.provider==='kind-shopify-hourly'){const to=w.to<today?w.to:today;return {from:w.from>shiftDate(to,-8)?w.from:shiftDate(to,-8),to};}
  if(connection.provider==='kind-shopify-sales')return {from:w.from,to:closedTo};
  if(connection.provider==='kind-shopify-products')return {from:w.from>shiftDate(closedTo,-29)?w.from:shiftDate(closedTo,-29),to:closedTo};
  if(connection.provider==='kind-applovin'){const utc=todayIn('UTC',now);return {from:w.from>shiftDate(utc,-44)?w.from:shiftDate(utc,-44),to:w.to<utc?w.to:shiftDate(utc,-1)};}
