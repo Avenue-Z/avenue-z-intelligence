@@ -6,6 +6,7 @@ import {Temporal} from '@js-temporal/polyfill';
 import {QueryCache} from './query-cache';
 import {observationCodec} from './observation-codec';
 import {durableObservationPayload} from './durable-observation-cache';
+import {snapshotDayManifests,snapshotDayManifest,readSnapshotDayProjection,readSmallSnapshotDayProjections,discardSnapshotDayProjection,writeSnapshotDayProjection,snapshotDayPayload} from './snapshot-day-projections';
 type Db={prepare:(sql:string)=>any;batch:(statements:any[])=>Promise<any[]>;allowCrossRequestCoalescing?:boolean};
 // Vercel reuses a warm adapter; Sites owns a fresh adapter per Store. This
 // optional memory cache stays isolated while the durable cache is shared.
@@ -43,14 +44,14 @@ export class Store {
       values.push(overviewFrom,filters.to,subscriptionTo,shiftDate(filters.from,-1),filters.to,...detailWindows.flat());
     }
     if(headlinesOnly)clause+=" AND json_extract(o.payload,'$.dataset')='overview'";
-    const selectedDatasets=selection?[...new Set(selection.datasets)].sort():null,dimensionSelection:Record<string,string>={};let selectionClause='',selectionValues:unknown[]=[];
+    const selectedDatasets=selection?[...new Set(selection.datasets)].sort():null,dimensionSelection:Record<string,string>={},dimensionAliases=new Map<string,string[]>();let selectionClause='',selectionValues:unknown[]=[];
     // For IN selections SQLite otherwise favors the row-key ordering index and
     // decodes every dataset in the snapshot/day. Seek the selected datasets first.
     const selectionIndex=selectedDatasets?.length?' INDEXED BY idx_observations_snapshot_date_dataset_rowkey':'';
     if(selectedDatasets){selectionClause+=selectedDatasets.length?` AND json_extract(o.payload,'$.dataset') IN (${selectedDatasets.map(()=>'?').join(',')})`:' AND 0';selectionValues.push(...selectedDatasets);
       if(selection?.dimensions&&filters)for(const dimension of ['market','stream','source','device','page'] as const){const value=filters[dimension];if(!value)continue;dimensionSelection[dimension]=value;const aliases=[value];
         if(dimension==='market'&&/^[A-Z]{2}$/.test(value)){const name=new Intl.DisplayNames(['en'],{type:'region',fallback:'code'}).of(value==='UK'?'GB':value);if(name&&name!==value)aliases.push(name);if(value==='UK')aliases.push('GB');}
-        selectionClause+=` AND (json_extract(o.payload,'$.dimensions.${dimension}') IN (${aliases.map(()=>'?').join(',')}) OR json_type(o.payload,'$.dimensions.${dimension}') IS NULL)`;selectionValues.push(...aliases);
+        dimensionAliases.set(dimension,aliases);selectionClause+=` AND (json_extract(o.payload,'$.dimensions.${dimension}') IN (${aliases.map(()=>'?').join(',')}) OR json_type(o.payload,'$.dimensions.${dimension}') IS NULL)`;selectionValues.push(...aliases);
       }
       clause+=selectionClause;values.push(...selectionValues);
     }
@@ -99,12 +100,39 @@ export class Store {
     // decline the comparison; it must never turn a full day into a partial day.
     const accumulator=clientRow&&(!filters||filters.mode==='closed'||cutoffClock)?new FunnelRollupAccumulator({timezone:clientRow.timezone,cutoffClock}):null;
     const rows:Observation[]=[];
-    const add=(page:{payload:string}[])=>{for(const r of page){const row=JSON.parse(r.payload);if(accumulator)accumulator.add(row);else rows.push(row);}};
+    const addRow=(row:Observation)=>{if(accumulator)accumulator.add(row);else rows.push(row);};
+    const add=(page:{payload:string}[])=>{for(const r of page)addRow(JSON.parse(r.payload));};
+    // Mirror the SQL predicate on complete day projections. Missing dimensions
+    // remain in the evidence for queryClient's unsupported-filter checks.
+    const accepts=(row:Observation,date:string)=>{
+      if(filters&&!((row.dataset==='overview'&&!!overviewWindow&&inWindow(date,overviewWindow))||(row.dataset==='subscriptions'&&!!subscriptionTo&&date<=subscriptionTo)||(row.dataset==='markets'&&!!marketWindow&&inWindow(date,marketWindow))||['active_ads','active_creatives'].includes(row.metric)||detailWindows.some(window=>inWindow(date,window))))return false;
+      if(headlinesOnly&&row.dataset!=='overview'||selectedDatasets&&!selectedDatasets.includes(row.dataset))return false;
+      for(const [dimension,aliases] of dimensionAliases){if(Object.hasOwn(row.dimensions,dimension)&&!aliases.includes(row.dimensions[dimension]))return false;}return true;
+    };
+    // A complete mixed-source day can be much larger than a small indexed
+    // selection. Use it when that source contributes requested dense detail;
+    // otherwise preserve the SQL seek that transfers only the chosen datasets.
+    const denseDatasets=new Set(['funnels','traffic','products','creatives']);
+    const projectionPointers=pointers.filter(pointer=>{
+      if(!selectedDatasets&&!headlinesOnly)return true;
+      const requested=(dataset:string)=>!headlinesOnly&&(!selectedDatasets||selectedDatasets.includes(dataset));
+      const registered=profiles.get(pointer.sourceId);
+      if(!registered)return [...denseDatasets].some(requested);
+      const dense=registered.filter(profile=>denseDatasets.has(profile.dataset));return !dense.length||dense.some(profile=>requested(profile.dataset));
+    });
+    const manifests=await snapshotDayManifests(this.db,org,client,projectionPointers,options?.deadline),legacyPointers:typeof pointers=[];
+    // Decode one source/day at a time. Chunk I/O is bounded and parallel, while
+    // a visitor avoids allocating a second full 30K-row observation array.
+    const consume=async(pointer:typeof pointers[number],payload:string|null|undefined)=>{const manifest=snapshotDayManifest(manifests,pointer);let used=false;if(payload)try{observationCodec.visit(payload,row=>{if(accepts(row,pointer.date))addRow(row);},pointer);used=true;}catch(error){if(!(error instanceof Error)||error.message!=='Invalid observation projection')throw error;if(manifest)await discardSnapshotDayProjection(this.db,org,client,manifest);}if(!used)legacyPointers.push(pointer);};
+    for(let index=0;index<pointers.length;){checkBudget();const pointer=pointers[index],manifest=snapshotDayManifest(manifests,pointer);
+      if(manifest?.chunkCount===1){const group:typeof pointers=[],small=[];while(index<pointers.length&&group.length<4){const next=pointers[index],entry=snapshotDayManifest(manifests,next);if(entry?.chunkCount!==1)break;group.push(next);small.push(entry);index++;}const payloads=await readSmallSnapshotDayProjections(this.db,org,client,small,options?.deadline);for(const next of group)await consume(next,payloads.get(JSON.stringify([next.snapshotId,next.date])));}
+      else{index++;await consume(pointer,manifest?await readSnapshotDayProjection(this.db,org,client,manifest,options?.deadline):null);}
+    }
     // Seek within each captured snapshot/date using the primary key. Sorting
     // the entire source set again for every page made large exports quadratic.
     const readPointer=async(pointer:typeof pointers[number],cursor:string|null=null)=>{for(;;){const page=await readPage<{payload:string;rowKey:string}>(`SELECT o.payload,o.rowKey FROM observations o${selectionIndex} WHERE o.snapshotId=? AND o.date=?${clause}${cursor?' AND o.rowKey>?':''} ORDER BY o.rowKey LIMIT 2000`,pointer.snapshotId,pointer.date,...values,...cursor?[cursor]:[]);add(page);if(page.length<2000)return;cursor=page[page.length-1].rowKey;}};
     const history:typeof pointers=[],groups:(typeof pointers)[]=[];
-    for(const pointer of pointers){if(filters&&!detailWindows.some(window=>inWindow(pointer.date,window))||headlinesOnly)history.push(pointer);else groups.push([pointer]);}
+    for(const pointer of legacyPointers){if(filters&&!detailWindows.some(window=>inWindow(pointer.date,window))||headlinesOnly)history.push(pointer);else groups.push([pointer]);}
     for(let index=0;index<history.length;index+=16)groups.push(history.slice(index,index+16));
     let nextGroup=0;
     const read=async()=>{for(;;){const group=groups[nextGroup++];if(!group)return;
@@ -131,7 +159,7 @@ export class Store {
   async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string}) {
     const id=`${org}:${batch.clientId}:${source}:${key}`;
     const ready=await this.first('SELECT id FROM snapshots WHERE id=? AND status=?',id,'ready');
-    await this.run('INSERT INTO snapshots(id,organizationId,clientId,sourceId,retrievedAt,coverageThrough,complete,status,objectKey) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',id,org,batch.clientId,source,now,batch.coverageThrough,Number(batch.complete),'writing',`snapshots/${id}.json`);
+    const created=await this.run('INSERT INTO snapshots(id,organizationId,clientId,sourceId,retrievedAt,coverageThrough,complete,status,objectKey) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',id,org,batch.clientId,source,now,batch.coverageThrough,Number(batch.complete),'writing',`snapshots/${id}.json`);
     const rows=batch.rows.map(r=>({...r,channels:batch.channels,sourceId:source,retrievedAt:now,coverageThrough:batch.coverageThrough,quality:batch.complete?(r.quality??'complete'):(r.quality==='historical'?'historical':'partial')}));
     if(!ready)for(let n=0;n<rows.length;n+=2000){const inserts=[];for(let start=n;start<Math.min(n+2000,rows.length);start+=500){const values=rows.slice(start,start+500).map(r=>({date:r.date,rowKey:JSON.stringify([r.dataset,r.metric,r.start,r.end,Object.entries(r.dimensions).sort()]),payload:JSON.stringify(r)}));inserts.push(this.db.prepare("INSERT INTO observations(snapshotId,date,rowKey,payload) SELECT ?,json_extract(value,'$.date'),json_extract(value,'$.rowKey'),json_extract(value,'$.payload') FROM json_each(?) WHERE 1 ON CONFLICT DO NOTHING").bind(id,JSON.stringify(values)));}await this.db.batch(inserts);}
     const dates=window?(()=>{const d:string[]=[];for(let s=window.from;s<=window.to;s=shiftDate(s,1)){d.push(s);if(d.length>62)throw new Error('Window exceeds 62 days');}return d;})():[...new Set(rows.map(r=>r.date))];
@@ -148,7 +176,16 @@ export class Store {
       // delayed older data from replacing the retained immutable snapshot.
       pointers.push(this.db.prepare("INSERT INTO current_snapshots(organizationId,clientId,sourceId,date,snapshotId,publishedAt,dataHash) VALUES(?,?,?,?,?,?,?) ON CONFLICT(organizationId,clientId,sourceId,date) DO UPDATE SET snapshotId=CASE WHEN excluded.dataHash IS NOT NULL AND current_snapshots.dataHash=excluded.dataHash AND EXISTS (SELECT 1 FROM snapshots old WHERE old.id=current_snapshots.snapshotId AND julianday(old.coverageThrough)>=julianday(?)) THEN current_snapshots.snapshotId ELSE excluded.snapshotId END,publishedAt=excluded.publishedAt,dataHash=excluded.dataHash WHERE excluded.publishedAt>=current_snapshots.publishedAt").bind(org,batch.clientId,source,date,id,now,dataHash,coveredThrough));
     }
-    await this.db.batch([...pointers,this.db.prepare('UPDATE snapshots SET status=? WHERE id=?').bind('ready',id)]);return id;
+    await this.db.batch([...pointers,this.db.prepare('UPDATE snapshots SET status=? WHERE id=?').bind('ready',id)]);
+    // Derived materialization happens after authoritative publication. A replay
+    // must retain the raw snapshot's original retrieval/coverage metadata; only
+    // the newly created immutable snapshot can use this in-memory batch. Closed
+    // unchanged dates may still point at an older snapshot and need no duplicate.
+    if(created.meta.changes)try{
+      const published=await this.all<{date:string}>('SELECT date FROM current_snapshots WHERE organizationId=? AND clientId=? AND sourceId=? AND snapshotId=?',org,batch.clientId,source,id);
+      for(const {date} of published){const day={snapshotId:id,date,sourceId:source};await writeSnapshotDayProjection(this.db,org,batch.clientId,day,snapshotDayPayload(grouped.get(date)??[],day));}
+    }catch{/* Optional projections must never fail a completed source job. */}
+    return id;
   }
   async note(org:string,client:string) {return await this.first('SELECT * FROM notes WHERE organizationId=? AND clientId=?',org,client)??{body:'',version:0};}
   async saveNote(org:string,client:string,body:string,actor:string,expected:number) {

@@ -78,7 +78,8 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
   const details=views[dataset]?.details??[],actions=views[dataset]?.actions??[],opportunities=views[dataset]?.opportunities??[];
   const operationalIds=['active_customers','active_ads','active_creatives'];
   const liveOperations=operationalIds.flatMap(metric=>{const rows=all.filter(r=>r.metric===metric&&r.quality==='complete').sort((a,b)=>b.date.localeCompare(a.date)||b.retrievedAt.localeCompare(a.retrievedAt));return rows[0]?[rows[0]]:[];});
-  const availableDimensions=Object.fromEntries(['market','stream','source','device','page'].map(k=>[k,[...new Set(all.flatMap(r=>r.dimensions[k]?[r.dimensions[k]]:[]))].sort()]));
+  const dimensionRows=all.filter(row=>!operationalIds.includes(row.metric));
+  const availableDimensions=Object.fromEntries(['market','stream','source','device','page'].map(k=>[k,[...new Set(dimensionRows.flatMap(r=>r.dimensions[k]?[r.dimensions[k]]:[]))].sort()]));
   const dailyDatasetNames=['overview','funnels','traffic','revenue','markets','products','subscriptions','subscriptionEvents','media'],dailyDatasets=options.preparedDatasets?dailyDatasetNames.filter(name=>options.preparedDatasets!.includes(name)):dailyDatasetNames;
   const prepareSeries=options.prepareAllViews||options.preparedDatasets!==undefined;
   function qualifiedDailySeries(rows:Observation[],from:string,to:string,lastEnd:number){

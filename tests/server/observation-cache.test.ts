@@ -5,7 +5,8 @@ import {Store} from '../../lib/server/store';
 import type {Observation,QueryFilters,SourceBatch} from '../../lib/analytics/contracts';
 
 function database(){
- const sqlite=new DatabaseSync(':memory:');for(const file of readdirSync('drizzle').filter(f=>f.endsWith('.sql')))sqlite.exec(readFileSync(`drizzle/${file}`,'utf8'));
+ // Exercise range-cache misses and the legacy raw paging fallback explicitly.
+ const sqlite=new DatabaseSync(':memory:');for(const file of readdirSync('drizzle').filter(f=>f.endsWith('.sql')&&!f.startsWith('0008_')))sqlite.exec(readFileSync(`drizzle/${file}`,'utf8'));
  const queries:string[]=[];
  const prepare=(sql:string)=>{let values:unknown[]=[];const statement={bind(...input:unknown[]){values=input;return statement;},async all(){queries.push(sql);return {results:sqlite.prepare(sql).all(...values as any[])};},async first(){queries.push(sql);return sqlite.prepare(sql).get(...values as any[])??null;},async run(){const result=sqlite.prepare(sql).run(...values as any[]);return {meta:{changes:Number(result.changes)}};}};return statement;};
  return {db:{prepare,async batch(statements:ReturnType<typeof prepare>[]){const results=[];for(const statement of statements)results.push(await statement.run());return results;}},queries,sqlite};

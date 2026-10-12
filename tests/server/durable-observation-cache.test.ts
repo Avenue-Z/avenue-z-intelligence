@@ -4,7 +4,8 @@ import {expect,it} from 'vitest';
 import {Store} from '../../lib/server/store';
 import type {QueryFilters,SourceBatch} from '../../lib/analytics/contracts';
 function database(){
- const sqlite=new DatabaseSync(':memory:');for(const file of readdirSync('drizzle').filter(f=>f.endsWith('.sql')))sqlite.exec(readFileSync(`drizzle/${file}`,'utf8'));
+ // Keep the per-day migration absent to verify durable range-cache SQL fallback.
+ const sqlite=new DatabaseSync(':memory:');for(const file of readdirSync('drizzle').filter(f=>f.endsWith('.sql')&&!f.startsWith('0008_')))sqlite.exec(readFileSync(`drizzle/${file}`,'utf8'));
  const queries:string[]=[],batches:{sql:string;values:unknown[]}[][]=[];
  const connect=()=>{const prepare=(sql:string)=>{let values:unknown[]=[];const statement={sql,get values(){return values;},bind(...input:unknown[]){values=input;return statement;},async all(){queries.push(sql);return {results:sqlite.prepare(sql).all(...values as any[])};},async first(){queries.push(sql);return sqlite.prepare(sql).get(...values as any[])??null;},async run(){const result=sqlite.prepare(sql).run(...values as any[]);return {meta:{changes:Number(result.changes)}};}};return statement;};return {prepare,async batch(statements:ReturnType<typeof prepare>[]){batches.push(statements.map(statement=>({sql:statement.sql,values:statement.values})));sqlite.exec('BEGIN');try{const results=[];for(const statement of statements)results.push(await statement.run());sqlite.exec('COMMIT');return results;}catch(error){sqlite.exec('ROLLBACK');throw error;}}};};
  return {sqlite,connect,queries,batches};
