@@ -134,7 +134,10 @@ export async function preparedWorkspaceFrame(input:PreparedWorkspaceInput,load:(
  checkBudget(input);
  const connections=await input.store.connections(input.organizationId,input.client.id);
  const canonical=()=>{
-  const work=withAnalyticsMemory(()=>{checkBudget(input);return load(connections);});
+  // Small financial/market frames must not queue behind a monthly traffic
+  // warmer. Only dimensional detail needs the large-allocation memory lease.
+  const compute=()=>{checkBudget(input);return load(connections);};
+  const work=input.selection.datasets.some(dataset=>['funnels','traffic','products','creatives','experiments'].includes(dataset))?withAnalyticsMemory(compute):Promise.resolve().then(compute);
   if(input.deadline===undefined)return work;
   let timer:ReturnType<typeof setTimeout>;
   // An expired queued warmer must return promptly and never begin source work

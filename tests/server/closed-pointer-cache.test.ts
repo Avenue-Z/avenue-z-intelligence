@@ -8,6 +8,16 @@ const filters:QueryFilters={from:'2026-10-11',to:'2026-10-11',compare:'previous'
 const row=(date:string,value:number,dataset='overview',metric='revenue'):Observation=>({date,dataset,metric,value,dimensions:{},definition:'web',population:'web',currency:'USD',sourceId:'',retrievedAt:'',coverageThrough:null,quality:'complete'});
 const batch=(revenue=100,today=20,coverage='2026-10-12T12:00:00Z'):SourceBatch=>({clientId:'a',timezone:'UTC',currency:'USD',channels:['meta'],dimensions:[],grain:'daily',complete:true,coverageThrough:coverage,rows:[row(filters.to,revenue),row('2026-10-12',today,'subscriptions','recurring_revenue')]});
 async function setup(){const d=database();await d.store.run("INSERT INTO clients(id,organizationId,name,slug,timezone,currency,color,config,version) VALUES('a','o','A','a','UTC','USD','blue','{}',1)");await d.store.saveQualification('o','a','source',1,1,{profiles:[{dataset:'overview',metric:'revenue'},{dataset:'subscriptions',metric:'recurring_revenue'}]},'u');return d;}
+it('retains closed money across float summation noise while publishing real money and count corrections',async()=>{
+ const {store,sqlite}=await setup();const original=batch(100.123456),count={...row(filters.to,0,'subscriptions','recurring_refund_orders'),currency:null};original.rows.push(count);
+ await store.persistBatch('o','source',original,'money-original','2026-10-12T12:00:00Z');
+ const noisy={...original,rows:original.rows.map(value=>value.metric==='revenue'?{...value,value:100.123456000001}:value)};
+ await store.persistBatch('o','source',noisy,'money-noise','2026-10-12T13:00:00Z');expect(sqlite.prepare("SELECT snapshotId FROM current_snapshots WHERE date='2026-10-11'").get()?.snapshotId).toBe('o:a:source:money-original');
+ const corrected={...noisy,rows:noisy.rows.map(value=>value.metric==='recurring_refund_orders'?{...value,value:1}:value)};
+ await store.persistBatch('o','source',corrected,'refund-correction','2026-10-12T14:00:00Z');expect((await store.observations('o','a',filters)).find(value=>value.metric==='recurring_refund_orders')?.value).toBe(1);
+ const realMoney={...corrected,rows:corrected.rows.map(value=>value.metric==='revenue'?{...value,value:100.123466}:value)};
+ await store.persistBatch('o','source',realMoney,'money-correction','2026-10-12T15:00:00Z');expect((await store.observations('o','a',filters)).find(value=>value.metric==='revenue')?.value).toBe(100.123466);
+});
 it('retains the original closed-day snapshot and warm cache when a mixed batch only changes today',async()=>{
  const {store,queries}=await setup();await store.persistBatch('o','source',batch(),'first','2026-10-12T12:00:00Z');const first=await store.observations('o','a',filters),pointer=await store.first("SELECT snapshotId FROM current_snapshots WHERE sourceId='source' AND date='2026-10-11'"),reads=queries.filter(sql=>sql.startsWith('SELECT o.payload')).length;
  await store.persistBatch('o','source',batch(100,40,'2026-10-12T13:00:00Z'),'second','2026-10-12T13:00:00Z');expect(await store.first("SELECT snapshotId FROM current_snapshots WHERE sourceId='source' AND date='2026-10-11'")).toEqual(pointer);expect(await store.observations('o','a',filters)).toEqual(first);expect(queries.filter(sql=>sql.startsWith('SELECT o.payload'))).toHaveLength(reads);expect(first.map(value=>value.date)).toEqual(['2026-10-11']);

@@ -189,7 +189,10 @@ export class Store {
     const dayHashes=new Map<string,{dataHash:string|null;coveredThrough:string|null}>();let today:string|null=null;try{if(batch.timezone&&Number.isFinite(Date.parse(now)))today=todayIn(batch.timezone,new Date(now));}catch{/* Older unqualified archives retain conservative pointer publication. */}
     for(const date of dates){let dataHash:string|null=null,coveredThrough:string|null=null;
       if(today&&date<today&&batch.coverageThrough){coveredThrough=dayWindow(date,batch.timezone).end;if(Date.parse(batch.coverageThrough)>=Date.parse(coveredThrough)){
-        const facts=(grouped.get(date)??[]).map(row=>{const {retrievedAt:_retrieval,coverageThrough:_coverage,...fact}=row;return JSON.stringify(canonical(fact));}).sort();
+        // Provider sum order can change a monetary double by ~1e-12 without
+        // changing the money. Normalize only its fingerprint to six decimals;
+        // retain original facts/archives and exact count/rate corrections.
+        const facts=(grouped.get(date)??[]).map(row=>{const {retrievedAt:_retrieval,coverageThrough:_coverage,...fact}=row;const monetaryValue=fact.currency&&typeof fact.value==='number'&&Number.isFinite(fact.value)?Number(fact.value.toFixed(6)):fact.value;return JSON.stringify(canonical({...fact,value:monetaryValue}));}).sort();
         const content=JSON.stringify(canonical({date,timezone:batch.timezone,currency:batch.currency,complete:batch.complete,grain:batch.grain,channels:[...(batch.channels??[])].sort(),dimensions:[...(batch.dimensions??[])].sort(),facts}));
         dataHash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(content))),byte=>byte.toString(16).padStart(2,'0')).join('');
       }}

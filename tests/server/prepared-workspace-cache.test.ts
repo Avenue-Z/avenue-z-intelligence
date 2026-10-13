@@ -29,6 +29,13 @@ function addPointer(sqlite:DatabaseSync,sourceId:string,date:string,key:string){
  sqlite.prepare('INSERT INTO current_snapshots(organizationId,clientId,sourceId,date,snapshotId) VALUES(?,?,?,?,?) ON CONFLICT(organizationId,clientId,sourceId,date) DO UPDATE SET snapshotId=excluded.snapshotId').run('o','a',sourceId,date,key);
 }
 function canonicalLoad(input:PreparedWorkspaceInput){return vi.fn(async(connections:Connection[])=>workspacePresentation(queryClient(input.client,await input.store.observations(input.organizationId,input.client.id,input.filters,false,undefined,input.selection),connections,input.filters,{preparedDatasets:input.preparedDatasets}),input.filters));}
+it('serves financial scopes while the dimensional traffic memory lease is occupied',async()=>{
+ const {input,load}=fixture();let release!:()=>void;
+ state.gate.mockImplementationOnce(async work=>{await new Promise<void>(resolve=>{release=resolve;});return work();});
+ const traffic=preparedWorkspaceFrame(input,load);await vi.waitFor(()=>expect(state.gate).toHaveBeenCalledTimes(1));
+ const financial={...input,filters:{...input.filters,view:'revenue'},preparedDatasets:['overview','revenue'],selection:{datasets:['overview','revenue'],includePriorWeek:false,includeOperations:false}},financialLoad=canonicalLoad(financial);
+ try{const frame=await preparedWorkspaceFrame(financial,financialLoad);expect(frame.preparedDatasets).toEqual(['overview','revenue']);expect(frame.metrics.revenue).toBeNull();expect(financialLoad).toHaveBeenCalledTimes(1);expect(load).not.toHaveBeenCalled();expect(state.gate).toHaveBeenCalledTimes(1);}finally{release();await traffic;}
+});
 it('retains a closed historical frame across unrelated provider and out-of-window date refreshes',async()=>{
  const {sqlite,input,load}=fixture();await input.store.saveQualification('o','a','source',1,1,{profiles:[{dataset:'overview',metric:'revenue'},{dataset:'traffic',metric:'sessions'}]},'admin');
  await input.store.saveQualification('o','a','products',1,1,{profiles:[{dataset:'products',metric:'net_sales'}]},'admin');addPointer(sqlite,'products','2026-10-11','products-first');addPointer(sqlite,'source','2026-10-13','today-first');addPointer(sqlite,'source','2026-01-01','old-first');
