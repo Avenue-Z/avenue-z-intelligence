@@ -13,11 +13,18 @@ const read=(rows:unknown[],next_cursor:string|null=null):typeof fetch=>async url
 const execute=(fetcher:typeof fetch,w=window,now=asOf)=>fetchKindSource(source,client,w,secret,fetcher,Date.now()+10000,now);
 const total=(rows:{date:string;value:number|null}[],date:string)=>rows.filter(row=>row.date===date).reduce((sum,row)=>sum+(row.value??0),0);
 describe('Recharge cancellation-date feed',()=>{
+ it('captures a large historical cancellation cohort beyond the routine polling cap without persisting subscription identities',async()=>{
+  let pages=0;
+  const fetcher:typeof fetch=async url=>{if(String(url).endsWith('/store'))return Response.json(store);const page=pages++;return Response.json({subscriptions:Array.from({length:250},(_,index)=>record(page*250+index+1,'2026-10-02T10:00:00Z','2026-10-02T10:00:00Z')),next_cursor:pages<201?`page${pages}`:null});};
+  const batch=await fetchKindSource(source,client,{from:'2026-09-13',to:'2026-10-12'},secret,fetcher,Date.now()+120000,new Date('2026-10-13T12:00:00Z'));
+  expect(pages).toBe(201);expect(total(batch.rows,'2026-10-02')).toBe(50250);expect(batch.rows).toHaveLength(30*24);expect(batch.rows.every(row=>row.quality==='complete')).toBe(true);
+  expect(JSON.stringify(batch)).not.toContain('customer_id');expect(JSON.stringify(batch)).not.toContain('cancellation_reason_comments');expect(()=>validateRegisteredBatch(batch,requireQualifiedSource(kindQualification(batch,source.provider),client))).not.toThrow();
+ });
  it('allows bounded longer historical cursor reads while keeping routine polling and the source deadline capped',async()=>{
   const timeout=vi.spyOn(AbortSignal,'timeout');
   try{
-   await fetchKindSource(source,client,{from:'2026-10-01',to:'2026-10-04'},secret,read([]),Date.now()+120000,asOf);
-   expect(timeout.mock.calls.map(call=>call[0])).toEqual([25000,60000]);timeout.mockClear();
+   await fetchKindSource(source,client,{from:'2026-10-01',to:'2026-10-04'},secret,read([]),Date.now()+240000,asOf);
+   expect(timeout.mock.calls.map(call=>call[0])).toEqual([25000,180000]);timeout.mockClear();
    await fetchKindSource(source,client,window,secret,read([]),Date.now()+120000,asOf);
    expect(timeout.mock.calls.map(call=>call[0])).toEqual([25000,25000]);timeout.mockClear();
    await fetchKindSource(source,client,{from:'2026-10-01',to:'2026-10-04'},secret,read([]),Date.now()+5000,asOf);

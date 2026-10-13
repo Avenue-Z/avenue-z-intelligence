@@ -1,6 +1,7 @@
 import {expect,it} from 'vitest';
 import * as navigation from '../../lib/analytics/workspace-cache';
 import {queryClient} from '../../lib/analytics/query';
+import {workspaceDatasets} from '../../lib/analytics/workspace-datasets';
 import {workspacePresentation} from '../../lib/analytics/presentation';
 import type {Workspace} from '../../lib/server/workspace';
 import type {Client,Observation,QueryFilters} from '../../lib/analytics/contracts';
@@ -9,7 +10,7 @@ const client:Client={id:'kind-patches',name:'Kind Patches',slug:'kind-patches',t
 const filters:QueryFilters={from:'2026-10-07',to:'2026-10-07',compare:'previous',market:'',stream:'',source:'',device:'',page:'',mode:'closed',view:'overview'};
 function workspace(changes:Partial<QueryFilters>={},organizationId='agency',actorId='analyst'):Workspace{
  const f={...filters,...changes},rows:Observation[]=[['overview','revenue',100],['revenue','revenue',50],['revenue','orders',5],['funnels','sessions',1000],['funnels','converting_sessions',20]].map(([dataset,metric,value])=>({date:f.to,dataset:dataset as string,metric:metric as string,value:value as number,dimensions:{},definition:metric as string,population:'web',currency:metric==='revenue'?'USD':null,sourceId:'source',retrievedAt:'2026-10-08T00:00:00Z',coverageThrough:'2026-10-08T00:00:00Z',quality:'complete'}));
- return {scope:{organizationId,actorId,role:'analyst',permittedClientIds:[client.id]},filters:f,clients:[{...workspacePresentation(queryClient(client,rows,[],f,{prepareAllViews:true}),f),findings:[],reviews:[],note:{body:'',version:0},scheduleState:{active:false,waitingForSources:true,lastJob:undefined}}],jobs:[],reportingDateNote:null,loadedAt:'2026-10-08T12:00:00Z'};
+ return {scope:{organizationId,actorId,role:'analyst',permittedClientIds:[client.id]},filters:f,clients:[{...workspacePresentation(queryClient(client,rows,[],f,{preparedDatasets:[...new Set(['overview','traffic','revenue','markets','products','subscriptions','media','creatives','reviews','settings'].flatMap(workspaceDatasets))]}),f),findings:[],reviews:[],note:{body:'',version:0},scheduleState:{active:false,waitingForSources:true,lastJob:undefined}}],jobs:[],reportingDateNote:null,loadedAt:'2026-10-08T12:00:00Z'};
 }
 
 it('switches to an unvisited tab immediately with its metrics and immutable original selection',()=>{
@@ -58,11 +59,30 @@ it('checks prepared data only for the focused client and rejects missing compoun
  expect(navigation.selectWorkspaceView(incomplete,'traffic','kind-patches')).toBeNull();expect(navigation.selectWorkspaceView(incomplete,'subscriptions','kind-patches')).toBeNull();expect(navigation.selectWorkspaceView({...incomplete,filters:{...incomplete.filters,view:'traffic'}},'traffic','kind-patches')).toBeNull();
 });
 it('retains independently prepared tabs for one selection without refreshing their original age',()=>{
- const initial=workspace({view:'revenue'});(initial as any).focusedClientId='kind-patches';initial.clients[0].preparedDatasets=['overview','revenue'];initial.clients[0].views={};
- const cache=new navigation.WorkspaceCache(initial),next=workspace({view:'traffic'});(next as any).focusedClientId='kind-patches';next.loadedAt='2026-10-08T12:00:30Z';next.clients[0].preparedDatasets=['overview','funnels','traffic'];next.clients[0].views={funnels:next.clients[0].views.funnels};cache.remember(next);
+ const initial=workspace({view:'revenue'});(initial as any).focusedClientId='kind-patches';initial.clients[0].preparedDatasets=workspaceDatasets('revenue');initial.clients[0].views={};
+ const cache=new navigation.WorkspaceCache(initial),next=workspace({view:'traffic'});(next as any).focusedClientId='kind-patches';next.loadedAt='2026-10-08T12:00:30Z';next.clients[0].preparedDatasets=workspaceDatasets('traffic');next.clients[0].views={funnels:next.clients[0].views.funnels};cache.remember(next);
  expect(cache.read({...filters,view:'revenue'},Date.parse('2026-10-08T12:01:05Z'),'kind-patches')?.stale).toBe(true);expect(cache.read({...filters,view:'traffic'},Date.parse('2026-10-08T12:01:05Z'),'kind-patches')?.stale).toBe(false);expect(cache.read({...filters,view:'products'},undefined,'kind-patches')).toBeNull();
 });
 it('refuses a focused overview when its landing-page and spend datasets were not prepared',()=>{
- const initial=workspace({view:'revenue'});initial.focusedClientId='kind-patches';initial.clients[0].preparedDatasets=['overview','revenue'];initial.clients[0].views={overview:initial.clients[0].views.overview};
+ const initial=workspace({view:'revenue'});initial.focusedClientId='kind-patches';initial.clients[0].preparedDatasets=workspaceDatasets('revenue');initial.clients[0].views={overview:initial.clients[0].views.overview};
  expect(navigation.selectWorkspaceView(initial,'overview')).toBeNull();initial.focusedClientId=undefined;const overview=navigation.selectWorkspaceView(initial,'overview')!;expect(overview.clients[0].viewMetrics.revenue).toBe(100);expect(overview.clients[0].details).toEqual([]);expect(navigation.selectWorkspaceView(overview,'revenue')?.clients[0].viewMetrics.revenue).toBe(50);
+});
+it('does not project subscriptions or revenue from a frame missing their diagnostic datasets',()=>{
+ const initial=workspace({view:'traffic'});initial.focusedClientId=client.id;
+ initial.clients[0].preparedDatasets=['overview','funnels','traffic','subscriptions','subscriptionEvents','revenue'];
+ expect(navigation.selectWorkspaceView(initial,'subscriptions',client.id)).toBeNull();
+ expect(navigation.selectWorkspaceView(initial,'revenue',client.id)).toBeNull();
+ initial.clients[0].preparedDatasets.push('orderStreams','renewalDiagnostics');
+ expect(navigation.selectWorkspaceView(initial,'subscriptions',client.id)).not.toBeNull();
+ expect(navigation.selectWorkspaceView(initial,'revenue',client.id)).toBeNull();
+ initial.clients[0].preparedDatasets.push('orderHygiene');
+ expect(navigation.selectWorkspaceView(initial,'revenue',client.id)).not.toBeNull();
+});
+it('reuses a diagnostically complete frame only for its exact custom comparison and focus',()=>{
+ const initial=workspace({view:'revenue',compare:'custom',compareFrom:'2026-09-01',compareTo:'2026-09-01'});initial.focusedClientId=client.id;
+ initial.clients[0].preparedDatasets=['overview','revenue','subscriptions','subscriptionEvents','orderStreams','orderHygiene'];
+ const cache=new navigation.WorkspaceCache(initial);
+ expect(cache.read(initial.filters,Date.parse('2026-10-08T12:00:05Z'),client.id)?.workspace.clients[0].viewMetrics.revenue).toBe(50);
+ expect(cache.read({...initial.filters,compareFrom:'2026-09-02',compareTo:'2026-09-02'},undefined,client.id)).toBeNull();
+ expect(cache.read(initial.filters,undefined,'beam')).toBeNull();
 });

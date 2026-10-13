@@ -1,5 +1,5 @@
 import {runtimePlatform} from '@avenue/runtime';
-import type {AccessScope} from '../analytics/contracts';
+import type {AccessScope,Observation} from '../analytics/contracts';
 import {getStore} from './access';
 import {authorize} from './policy';
 import {serverSecret} from './secrets';
@@ -9,8 +9,9 @@ const signatureHeader='x-workspace-signature';
 export const publicCompanyAIErrors=['Hourly AI request limit reached. Please try again later.','AI analysis timed out. Please retry with a narrower question.','OpenAI is not configured'];
 export const publicCompanyWorkspaceSizeError='This selection has too much detail. Choose a shorter period or a specific landing page.';
 class PublicCompanyError extends Error {}
-type Purpose='workspace'|'chat'|'review';
-type Envelope={purpose?:'chat'|'review';version:1;issuedAt:number;expiresAt:number;actorId:string;organizationId:string;query:string};
+type Purpose='workspace'|'chat'|'review'|'evidence'|'export';
+type Envelope={purpose?:Exclude<Purpose,'workspace'>;version:1;issuedAt:number;expiresAt:number;actorId:string;organizationId:string;query:string};
+const aiPurpose=(purpose:Purpose)=>purpose==='chat'||purpose==='review';
 const encoder=new TextEncoder();
 function bridgeSecret(){const secret=serverSecret('COMPANY_WORKSPACE_SECRET');if(!secret||secret.length<32)throw Error('Company workspace configuration unavailable');return secret;}
 async function hmacKey(secret:string){return crypto.subtle.importKey('raw',encoder.encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign','verify']);}
@@ -35,13 +36,15 @@ async function companyJSON(scope:AccessScope,p:URLSearchParams,purpose:Purpose):
  if(!base)throw Error('Company workspace configuration unavailable');
  const endpoint=companyEndpoint(base,purpose),key=bridgeSecret(),now=Date.now();
  const body=JSON.stringify({...purpose==='workspace'?{}:{purpose},version:1,issuedAt:now,expiresAt:now+lifetime,actorId:scope.actorId,organizationId:scope.organizationId,query:p.toString()} satisfies Envelope);
- if(encoder.encode(body).length>(purpose==='workspace'?requestLimit:65536))throw Error('Company workspace request too large');
+ if(encoder.encode(body).length>(aiPurpose(purpose)?65536:requestLimit))throw Error('Company workspace request too large');
  const headers:Record<string,string>={'content-type':'application/json',[signatureHeader]:await signature(body,key)},protection=serverSecret('COMPANY_WORKSPACE_PROTECTION_SECRET');
  if(protection)headers['x-vercel-protection-bypass']=protection;
- const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),purpose==='workspace'?85000:150000);
+ const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),aiPurpose(purpose)?150000:85000);
  try{
-  const response=await fetch(endpoint,{method:'POST',headers,body,redirect:'error',cache:'no-store',signal:controller.signal});
-  if(!response.ok){console.warn('Company bridge rejected request',{operation:purpose,http:response.status,json:response.headers.get('content-type')?.includes('application/json')??false});if(purpose!=='workspace'||response.status===413){let failure:unknown;try{failure=JSON.parse(await boundedText(response,requestLimit));}catch{/* Reject malformed provider/protection responses without exposing their content. */}if(failure&&typeof failure==='object'&&'error' in failure&&typeof failure.error==='string'&&(purpose!=='workspace'&&publicCompanyAIErrors.includes(failure.error)||purpose==='workspace'&&response.status===413&&failure.error===publicCompanyWorkspaceSizeError))throw new PublicCompanyError(failure.error);}throw Error('Company workspace unavailable. Please retry.');}
+  // workerd accepts follow/manual only. Manual plus the !ok check below
+  // rejects every redirect without forwarding the signature or protection key.
+  const response=await fetch(endpoint,{method:'POST',headers,body,redirect:'manual',cache:'no-store',signal:controller.signal});
+  if(!response.ok){console.warn('Company bridge rejected request',{operation:purpose,http:response.status,json:response.headers.get('content-type')?.includes('application/json')??false});if(aiPurpose(purpose)||response.status===413){let failure:unknown;try{failure=JSON.parse(await boundedText(response,requestLimit));}catch{/* Reject malformed provider/protection responses without exposing their content. */}if(failure&&typeof failure==='object'&&'error' in failure&&typeof failure.error==='string'&&(aiPurpose(purpose)&&publicCompanyAIErrors.includes(failure.error)||!aiPurpose(purpose)&&response.status===413&&failure.error===publicCompanyWorkspaceSizeError))throw new PublicCompanyError(failure.error);}throw Error('Company workspace unavailable. Please retry.');}
   return JSON.parse(await boundedText(response,responseLimit));
  }catch(error){console.warn('Company bridge failed',{operation:purpose,kind:error instanceof Error?error.name:'Unknown',reason:error instanceof Error&&error.message.startsWith('Company workspace')?error.message:'Transport or response failure'});if(error instanceof PublicCompanyError||error instanceof Error&&error.message.startsWith('Company workspace'))throw error;throw Error('Company workspace unavailable. Please retry.');}finally{clearTimeout(timer);}
 }
@@ -62,12 +65,24 @@ export async function bridgedManualReview(scope:AccessScope,clientId:string,date
  if(!result||typeof result!=='object'||!('id' in result)||typeof result.id!=='string')throw Error('Company workspace review unavailable');
  return {id:result.id};
 }
+export async function bridgedClientEvidence(scope:AccessScope,clientId:string,p:URLSearchParams):Promise<{rows:Observation[]}|null>{
+ authorize(scope,clientId);const params=new URLSearchParams(p);params.set('clientId',clientId);
+ const result=await companyJSON(scope,params,'evidence');if(result===undefined)return null;
+ if(!result||typeof result!=='object'||!('rows' in result)||!Array.isArray(result.rows))throw Error('Company workspace evidence unavailable');
+ return {rows:result.rows};
+}
+export async function bridgedClientExport(scope:AccessScope,clientId:string,p:URLSearchParams):Promise<{csv:string}|null>{
+ authorize(scope,clientId);const params=new URLSearchParams(p);params.set('clientId',clientId);
+ const result=await companyJSON(scope,params,'export');if(result===undefined)return null;
+ if(!result||typeof result!=='object'||!('csv' in result)||typeof result.csv!=='string')throw Error('Company workspace export unavailable');
+ return {csv:result.csv};
+}
 /** Verify the exact bytes before resolving the signed actor in current records. */
 export async function companyWorkspaceAccess(request:Request,purpose:Purpose='workspace'):Promise<{scope:AccessScope;params:URLSearchParams}>{
  if(runtimePlatform!=='vercel')throw Error('Company workspace access denied');
  const secret=bridgeSecret(),mac=request.headers.get(signatureHeader)||'';
  if(!/^[a-f0-9]{64}$/.test(mac))throw Error('Company workspace access denied');
- const body=await boundedText(request,purpose==='workspace'?requestLimit:65536),bytes=new Uint8Array(mac.match(/../g)!.map(byte=>parseInt(byte,16)));
+ const body=await boundedText(request,aiPurpose(purpose)?65536:requestLimit),bytes=new Uint8Array(mac.match(/../g)!.map(byte=>parseInt(byte,16)));
  // Web Crypto performs MAC verification without a JavaScript string comparison.
  if(!await crypto.subtle.verify('HMAC',await hmacKey(secret),bytes,encoder.encode(body)))throw Error('Company workspace access denied');
  let envelope:Envelope;try{envelope=JSON.parse(body);}catch{throw Error('Company workspace access denied');}

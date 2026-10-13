@@ -7,6 +7,7 @@ const state=vi.hoisted(()=>({env:{} as Record<string,unknown>,platform:'vercel',
 vi.mock('@avenue/runtime',()=>({env:state.env,get runtimePlatform(){return state.platform;}}));
 vi.mock('../../app/chatgpt-auth',()=>({getChatGPTUser:state.identity}));
 import {scopeForUser,initializePrivateOwner,getStore} from '../../lib/server/access';
+import {Store} from '../../lib/server/store';
 import {allowGoogleIdentity} from '../../lib/server/standalone-auth';
 beforeEach(async()=>{state.platform='vercel';const client=createClient({url:'file::memory:'});for(const f of readdirSync('drizzle').filter(f=>f.endsWith('.sql')))await client.executeMultiple(readFileSync(`drizzle/${f}`,'utf8'));Object.assign(state.env,{DB:sqliteBindings(client),APP_ORGANIZATION_ID:'company',APP_BOOTSTRAP_ADMIN_EMAIL:'owner@example.com'});state.identity.mockResolvedValue({userId:'google:one',email:'owner@example.com'});});
 it('resolves memberships only inside the deployed application organization',async()=>{
@@ -20,6 +21,17 @@ it('cannot let the first random signed-in user claim the standalone workspace',a
 it('initializes an explicit company admin and seeds clients once',async()=>{
  expect(await allowGoogleIdentity({email:'owner@example.com',email_verified:true,sub:'one'})).toBe(true);
  await initializePrivateOwner();await initializePrivateOwner();expect(await scopeForUser()).toMatchObject({organizationId:'company',role:'admin'});expect(await getStore().clients('company')).toHaveLength(2);
+});
+it('lets an initialized member read the workspace without requiring bootstrap writes',async()=>{
+ const s=getStore();await s.run('INSERT INTO organizations VALUES(?,?,1)','company','Company');await s.run('INSERT INTO members VALUES(?,?,?,?,?)','company','owner@example.com','google:one','admin','["*"]');
+ const writes=vi.spyOn(Store.prototype,'run').mockRejectedValue(Object.assign(new Error('Writes are blocked'),{code:'BLOCKED'}));
+ try{await expect(initializePrivateOwner()).resolves.toBeUndefined();expect(writes).not.toHaveBeenCalled();expect(await scopeForUser()).toMatchObject({organizationId:'company',role:'admin'});}finally{writes.mockRestore();}
+});
+it('keeps registered identity aliases readable without bootstrap writes and still enforces revocation',async()=>{
+ const s=getStore();await s.run('INSERT INTO organizations VALUES(?,?,1)','company','Company');await s.run('INSERT INTO members VALUES(?,?,?,?,?)','company','owner@example.com','sites:owner','admin','["*"]');await s.run('INSERT INTO member_identities VALUES(?,?,?)','company','owner@example.com','google:one');
+ const writes=vi.spyOn(Store.prototype,'run').mockRejectedValue(Object.assign(new Error('Writes are blocked'),{code:'BLOCKED'}));
+ try{await expect(initializePrivateOwner()).resolves.toBeUndefined();expect(writes).not.toHaveBeenCalled();expect(await scopeForUser()).toMatchObject({role:'admin'});}finally{writes.mockRestore();}
+ await s.run('DELETE FROM members WHERE organizationId=?','company');expect(await scopeForUser()).toBeNull();
 });
 it('preserves native Sites access when a member also signs in with Google',async()=>{
  const s=getStore(),c=clients[0];

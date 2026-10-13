@@ -1,5 +1,12 @@
-import {requireClientAccess,getStore} from '../../../../../lib/server/access';
+import {requireClientAccess} from '../../../../../lib/server/access';
 import {parseFilters} from '../../../../../lib/server/workspace';
-import {queryClient} from '../../../../../lib/analytics/query';
-import {csv} from '../../../../../lib/server/export';
-export async function GET(request:Request,{params}:{params:Promise<{clientId:string}>}){try{const {clientId}=await params,scope=await requireClientAccess(clientId),f=parseFilters(new URL(request.url).searchParams);const s=getStore(),client=(await s.clients(scope.organizationId)).find(c=>c.id===clientId);if(!client)throw new Error('Client unavailable');const rows=queryClient(client,await s.observations(scope.organizationId,clientId,f),await s.connections(scope.organizationId,clientId),f).evidence.filter(r=>f.view==='overview'||r.dataset===f.view);return new Response(csv(rows.map(r=>({date:r.date,dataset:r.dataset,metric:r.metric,value:r.value,definition:r.definition,population:r.population,currency:r.currency,...Object.fromEntries(Object.entries(r.dimensions).map(([k,v])=>['dimension_'+k,v])),source:r.sourceId,retrievedAt:r.retrievedAt,coverageThrough:r.coverageThrough,quality:r.quality}))),{headers:{'Content-Type':'text/csv;charset=utf-8','Content-Disposition':'attachment; filename="analytics.csv"','Cache-Control':'no-store'}});}catch{return Response.json({error:'Export unavailable or client access denied'},{status:403});}}
+import {bridgedClientExport} from '../../../../../lib/server/company-workspace-bridge';
+import {clientEvidenceJSON,clientEvidenceFailure} from '../../../../../lib/server/client-evidence';
+export async function GET(request:Request,{params}:{params:Promise<{clientId:string}>}){
+ try{
+  const {clientId}=await params,scope=await requireClientAccess(clientId),query=new URL(request.url).searchParams;
+  parseFilters(query);
+  const result=await bridgedClientExport(scope,clientId,query)??JSON.parse(await clientEvidenceJSON(scope,clientId,query,'export')) as {csv:string};
+  return new Response(result.csv,{headers:{'Content-Type':'text/csv;charset=utf-8','Content-Disposition':'attachment; filename="analytics.csv"','Cache-Control':'no-store'}});
+ }catch(error){return clientEvidenceFailure(error,'export');}
+}

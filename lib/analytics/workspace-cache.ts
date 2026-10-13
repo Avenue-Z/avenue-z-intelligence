@@ -1,8 +1,9 @@
 import type {AccessScope,QueryFilters} from './contracts';
 import type {Workspace} from '../server/workspace';
+import {workspaceDatasets} from './workspace-datasets';
 
 const dataset=(view:string)=>view==='overview'?'funnels':view;
-const required=(view:string,focused:boolean)=>view==='overview'?(focused?['overview','funnels','revenue','media']:['overview']):view==='traffic'?['funnels','traffic']:view==='subscriptions'?['subscriptions','subscriptionEvents']:[dataset(view)];
+const required=(view:string,focused:boolean)=>view==='overview'&&!focused?['overview']:workspaceDatasets(view);
 
 /** Reuse only aggregates prepared for this response's exact data selection. */
 export function selectWorkspaceView(workspace:Workspace,view:string,focusedClientId=workspace.focusedClientId):Workspace|null{
