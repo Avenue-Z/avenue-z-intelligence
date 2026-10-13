@@ -43,3 +43,20 @@ it('keeps subscription chart events separate and supplies daily cohort rates fro
  expect(chart?.scope.sourceId).toBe('selection:kind-patches');
  expect(Buffer.byteLength(JSON.stringify(projection))).toBeLessThanOrEqual(80000);
 });
+it('binds the media daily chart to the overview revenue and configured-spend population',()=>{
+ const f={...filters,from:'2026-10-07',to:'2026-10-07',view:'media',mode:'closed'} as const,client=clients[0] as Client;
+ const rows=['2026-10-05','2026-10-06','2026-10-07'].flatMap(date=>[{date,dataset:'overview',metric:'revenue',value:100,population:'web_sales',definition:client.config.revenueDefinition,dimensions:{}},{date,dataset:'overview',metric:'spend',value:20,population:'paid_media',definition:'configured_spend',dimensions:{}},{date,dataset:'overview',metric:'new_orders',value:2,population:'web_sales',definition:'new_orders',dimensions:{}},{date,dataset:'media',metric:'spend',value:999,population:'platform_spend',definition:'platform_attribution',dimensions:{channel:'meta'}}].map(row=>({...row,currency:'USD',quality:'complete',sourceId:'chart-source',retrievedAt:'2026-10-08T10:00:00Z',coverageThrough:'2026-10-08T04:00:00Z',channels:client.config.spendChannels})));
+ const record=queryClient(client,rows as Observation[],[],f,{preparedDatasets:['overview','media']}),input=buildAIContext([{...record,note:{body:'',version:0},findings:[],reviews:[]}],f),view=buildChatModelContext(input,'What do the seven-day revenue, ad spend and MER charts show?').context.clients[0].selectedView;
+ expect(view.dataset).toBe('media');expect(view.current.metrics.spend).toBe(999);
+ expect(view.dailyChart?.dataset).toBe('overview');expect(view.dailyChart?.current.at(-1)?.summary).toMatchObject({revenue:100,spend:20,mer:5});
+ expect(view.dailyChart?.defaultRange).toMatchObject({from:'2026-10-01',to:'2026-10-07'});
+ expect(view.dailyChart?.current).toHaveLength(30);expect(view.dailyChart?.comparison).toHaveLength(30);
+ input.clients[0].monthToDate={instruction:'Unrequested month reference '.repeat(6000)};
+ input.clients[0].priorClosedDetail={instruction:'Unrequested closed reference',datasets:{}};
+ const general=buildChatModelContext(input,'How are we doing?');
+ expect(general.context.clients[0].selectedView.dailyChart?.current).toHaveLength(30);expect(general.context.clients[0].selectedView.dailyChart?.comparison).toHaveLength(30);
+ expect(general.context.clients[0].warnings).toEqual(input.clients[0].warnings);expect(general.context.clients[0].spendVerdict).toEqual(input.clients[0].spendVerdict);
+ expect(general.chatPreview.omittedFields.some(field=>field.path.endsWith('.monthToDate'))).toBe(true);
+ expect(general.context.clients[0].priorClosedDetail).toBeUndefined();
+ expect(Buffer.byteLength(JSON.stringify(general))).toBeLessThanOrEqual(80000);
+});

@@ -1,5 +1,6 @@
 import type {buildAIContext} from './context';
 import {boundedAIContextForModel} from './model-input';
+import {needsCreativeDetail} from './chat-scope';
 
 type AIContext=ReturnType<typeof buildAIContext>;
 type NumericRow=AIContext['clients'][number]['details'][number];
@@ -13,7 +14,8 @@ const ignoredWords=new Set(['pages','page','https','http','www','com','landing',
 const isNumericRow=(value:unknown):value is NumericRow=>!!value&&typeof value==='object'&&'key' in value&&'dimensions' in value&&'metrics' in value&&'summary' in value&&'provenance' in value;
 function matchingScore(value:unknown,question:string):number{
  const query=normalized(question),queryWords=new Set(query.split(' '));
- const values=typeof value==='string'?[value]:isNumericRow(value)?Object.values(value.dimensions):Array.isArray(value)?value.filter(item=>typeof item==='string') as string[]:[];
+ const campaign=value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:null;
+ const values=typeof value==='string'?[value]:isNumericRow(value)?Object.values(value.dimensions):Array.isArray(value)?value.filter(item=>typeof item==='string') as string[]:campaign?['campaign','campaignId'].flatMap(key=>typeof campaign[key]==='string'?[campaign[key] as string]:[]):[];
  if(isNumericRow(value)){const market=value.dimensions.market;if(market&&/^[A-Z]{2}$/.test(market)){const name=countries.of(market==='UK'?'GB':market);if(name)values.push(name);}if(value.dimensions.traffic_channel)values.push(value.dimensions.traffic_channel.split(' · ')[0]);}
  let score=0;
  for(const item of values){const text=normalized(item);if(!text)continue;const words=text.split(' ').filter(word=>!ignoredWords.has(word)&&word.length>=2);
@@ -31,7 +33,8 @@ function focusedDatasets(client:AIContext['clients'][number],filters:AIContext['
  if(/\b(?:traffic|session|sessions|funnel|funnels|conversion|cvr|checkout|landing|page|pages|utm|tiktok|facebook|snapchat)\b/.test(q))add(['traffic','funnels']);
  if(/\b(?:country|countries|market|markets|region|regions|localization|localisation)\b/.test(q))add(['markets','traffic']);
  if(/\b(?:subscription|subscriptions|renewal|renewals|recurring|churn|cancel|cancelled|cancellation|cancellations|refund|refunds|recharge|loop)\b/.test(q))add(['subscriptions','subscriptionEvents']);
- if(/\b(?:media|spend|mer|roas|acquisition|efficiency|ads|ad|creative|creatives|campaign|campaigns|meta|google|applovin)\b/.test(q))add(['overview','media','creatives']);
+ if(/\b(?:media|spend|mer|roas|acquisition|efficiency|ads|ad|creative|creatives|campaign|campaigns|meta|google|applovin|cpc|cpm|ctr|clicks?|impressions?)\b/.test(q))add(['overview','media']);
+ if(needsCreativeDetail(question))add(['creatives']);
  if(/\b(?:product|products|offer|offers|pricing|price|bundle|bundles|discount|discounts)\b/.test(q))add(['products','discounts']);
  if(/\b(?:revenue|sales|orders|order|aov|growth)\b/.test(q))add(['overview','revenue']);
  if(/\b(?:experiment|experiments|variant|variants|test|tests)\b/.test(q))add(['experiments']);
@@ -52,15 +55,16 @@ function chatPreview(input:AIContext,question:string,rowLimit:number,textLimit:n
    return value;
   }
   if(Array.isArray(value)){
-   const numeric=value.length>0&&value.every(isNumericRow),table=path.endsWith('.rows')&&value.length>0&&value.every(row=>Array.isArray(row));
+   const numeric=value.length>0&&value.every(isNumericRow),table=path.endsWith('.rows')&&value.length>0&&value.every(row=>Array.isArray(row)),campaigns=path.endsWith('.strategyDiagnoses.campaignCosts.rows');
    const narrative=/\.(?:paragraphs|bullets|tables|findings)$/.test(path),dated=/\.(?:trend|spendChannelTrend|dailyRenewals)$/.test(path);
-   const limit=numeric||table?rowLimit:narrative?Math.max(2,rowLimit):dated?Math.max(3,rowLimit*2):value.length;
-   const selected=dated?value.slice(-limit):(numeric||table?prioritize<unknown>(value):value).slice(0,limit);
-   if(selected.length<value.length||numeric||table){const preexisting=path.endsWith('.comparisonDetails')?parent?.comparisonDetailsOmitted:path.endsWith('.details')?parent?.detailsOmitted:parent?.omitted;collections.push({path,availableRows:value.length,includedRows:selected.length,omittedRows:value.length-selected.length,preexistingOmittedRows:typeof preexisting==='number'?preexisting:0});}
+   const limit=numeric||table||campaigns?rowLimit:narrative?Math.max(2,rowLimit):dated?Math.max(3,rowLimit*2):value.length;
+   const selected=dated?value.slice(-limit):(numeric||table||campaigns?prioritize<unknown>(value):value).slice(0,limit);
+   if(selected.length<value.length||numeric||table||campaigns){const preexisting=path.endsWith('.comparisonDetails')?parent?.comparisonDetailsOmitted:path.endsWith('.details')?parent?.detailsOmitted:parent?.omitted;collections.push({path,availableRows:value.length,includedRows:selected.length,omittedRows:value.length-selected.length,preexistingOmittedRows:typeof preexisting==='number'?preexisting:0});}
    return selected.map((item,index)=>project(item,`${path}[${index}]`));
   }
   if(!value||typeof value!=='object')return value;
   const object=value as Record<string,unknown>,chartMap=/\.selectedView\.(?:history\[\d+\]|hourlyChart\.(?:current|comparison)\[\d+\]|dailyChart\.(?:current|comparison|calendarCancellations\.(?:current|comparison))\[\d+\])\.(?:metrics|summary)$/.test(path),copy=Object.fromEntries(Object.entries(object).filter(([,item])=>!chartMap||item!==null&&item!==undefined).map(([key,item])=>[key,project(item,path?`${path}.${key}`:key,object)]));
+  if(path.endsWith('.strategyDiagnoses.campaignCosts')&&Array.isArray(object.rows)&&typeof object.campaignCount==='number')copy.omitted=object.campaignCount-(copy.rows as unknown[]).length;
   if(Array.isArray(object.rows)&&object.rows.length&&object.rows.every(isNumericRow)){
    const rows=copy.rows as NumericRow[],observations=rows.reduce((sum,row)=>sum+row.provenance.reduce((count,scope)=>count+scope.observationCount,0),0),stored=rows.reduce((sum,row)=>sum+row.provenance.reduce((count,scope)=>count+scope.storedObservationCount,0),0);
    if(typeof object.segmentCount==='number'){copy.returnedSegmentCount=rows.length;copy.omitted=object.segmentCount-rows.length;}
@@ -78,9 +82,19 @@ function chatPreview(input:AIContext,question:string,rowLimit:number,textLimit:n
  };
  const clients=input.clients.map((client,index)=>{
   const focus=focusedDatasets(client,input.filters,question),prefix=`clients[${index}]`,copy={...client} as unknown as Record<string,unknown>;
+  const q=normalized(question),removeReference=(field:string)=>{delete copy[field];omit(`${prefix}.${field}`,'Unrequested dated or workflow reference; selected totals, all chart dates, source qualification and comparison remain supplied');};
+  const namedReference=Object.values(client.priorClosedDetail?.datasets??{}).some(cut=>cut.rows.some(row=>matchingScore(row,question)>0)||cut.comparison.rows.some(row=>matchingScore(row,question)>0));
+  if(!client.selectedReview&&client.selectedView.dailyChart){
+   if(!/\b(?:month|monthly|mtd)\b/.test(q))for(const field of ['monthToDate','channelMonthToDate'])removeReference(field);
+   if(!namedReference&&!/\b(?:closed|yesterday|prior day|previous day|last week|weekday|historical|reference)\b/.test(q))for(const field of ['priorClosedDetail','closedPriorDay','weekday','previousDay'])removeReference(field);
+   if(!/\b(?:channels?|meta|google|snapchat|applovin)\b/.test(q))removeReference('spendChannelTrend');
+   if(!focus.has('creatives')&&!/\b(?:campaigns?|creatives?|cpc|cpm|ctr|clicks?|impressions?|pages?|landing|mix|cancellations?|cancel|subscriptions?|refunds?|recurring)\b/.test(q))removeReference('strategyDiagnoses');
+   if(!/\b(?:active|operational|customers?)\b/.test(q))removeReference('liveOperations');
+   if(!/\b(?:findings?|reports?|reviews?|recommendations?|action items|watch list)\b/.test(q))removeReference('findings');
+  }
   const datasets=(values:typeof client.datasetDetails,path:string)=>Object.fromEntries(Object.entries(values).filter(([dataset])=>{if(focus.has(dataset))return true;omit(`${prefix}.${path}.${dataset}`,'Outside the selected view and question focus; not checked in this chat preview');return false;}));
   copy.datasetDetails=datasets(client.datasetDetails,'datasetDetails');copy.comparisonDatasetDetails=datasets(client.comparisonDatasetDetails,'comparisonDatasetDetails');
-  if(client.priorClosedDetail)copy.priorClosedDetail={...client.priorClosedDetail,datasets:Object.fromEntries(Object.entries(client.priorClosedDetail.datasets).filter(([dataset])=>{if(focus.has(dataset))return true;omit(`${prefix}.priorClosedDetail.datasets.${dataset}`,'Unrequested dated reference dataset');return false;}))};
+  if(client.priorClosedDetail&&Object.hasOwn(copy,'priorClosedDetail'))copy.priorClosedDetail={...client.priorClosedDetail,datasets:Object.fromEntries(Object.entries(client.priorClosedDetail.datasets).filter(([dataset])=>{if(focus.has(dataset))return true;omit(`${prefix}.priorClosedDetail.datasets.${dataset}`,'Unrequested dated reference dataset');return false;}))};
   if(!focus.has('subscriptions'))for(const field of ['subscriptions','dailyRenewals','closedRecurringWeeks']){delete copy[field];omit(`${prefix}.${field}`,'Recurring-specific detail retained in the full evidence; omitted from this unrelated chat question');}
   if(!focus.has('media'))for(const field of ['channelSpendComparison','spendChannelTrend','channelMonthToDate']){delete copy[field];omit(`${prefix}.${field}`,'Unrequested detailed channel reference; headline spend and matched verdict remain supplied');}
   if(client.visualBreakdowns)copy.visualBreakdowns={...client.visualBreakdowns};
@@ -90,7 +104,7 @@ function chatPreview(input:AIContext,question:string,rowLimit:number,textLimit:n
   // retain the relevant rows, original counts and every retained source scope.
   for(const field of ['details','detailsOmitted','detailCounts','comparisonDetails','comparisonDetailsOmitted','comparisonDetailCounts']){delete copy[field];omit(`${prefix}.${field}`,'Duplicate mixed-dataset detail omitted; use dated datasetDetails and their explicit counts');}
   if(client.selectedReview){copy.priorSourceReviews=[];if(client.priorSourceReviews.length)omit(`${prefix}.priorSourceReviews`,'A selected fixed report is authoritative; unrelated prior reports omitted');}
-  else if(client.selectedObservationCount>0&&!/\b(?:reports?|reviews?|recommendations?|action items|watch list)\b/.test(normalized(question))){
+  else if((client.selectedObservationCount>0||client.selectedView.dailyChart)&&!/\b(?:reports?|reviews?|recommendations?|action items|watch list)\b/.test(normalized(question))){
    for(const field of ['sourceReviews','priorSourceReviews'] as const){copy[field]=[];if(client[field].length)omit(`${prefix}.${field}`,'Dated report prose is outside this live dashboard question; current selected figures, full visible chart points and dated numeric evidence remain supplied');}
   }
   return copy;

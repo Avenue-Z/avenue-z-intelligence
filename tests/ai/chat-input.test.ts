@@ -20,6 +20,15 @@ function fixture(large=false){
 function resolvedRows(projection:any){return Object.values(projection.evidenceRows) as any[];}
 
 describe('fast scoped chat model input',()=>{
+ it('prioritizes a named campaign and reports bounded diagnostic rows without changing coverage or totals',()=>{
+  const context=fixture(),client=context.clients[0],costs=client.strategyDiagnoses.campaignCosts;context.filters={...filters,view:'media'};
+  costs.campaignCount=40;costs.rows=Array.from({length:40},(_,index)=>({campaignId:String(index),campaign:index===39?'Dawn special':`Campaign ${index}`,current:{...costs.total.current},comparison:{...costs.total.comparison},changes:{spend:null,clicks:null,impressions:null,cpc:null,cpm:null,ctr:null},explanation:'A matching qualified comparison is unavailable. '.repeat(120)}));
+  const projection=buildChatModelContext(context,'Explain the Dawn special campaign CPC chart'),projected=projection.context.clients[0].strategyDiagnoses.campaignCosts;
+  expect(projected.rows[0].campaign).toBe('Dawn special');expect(projected.rows.length).toBeLessThan(40);expect(projected.omitted).toBe(40-projected.rows.length);
+  expect(projected.total).toEqual(costs.total);expect(projected.currentCoverage).toEqual(costs.currentCoverage);expect(projection.context.clients[0].warnings).toEqual(client.warnings);
+  expect(Buffer.byteLength(JSON.stringify(projection))).toBeLessThanOrEqual(80000);
+  expect(costs.rows).toHaveLength(40);
+ });
  it('keeps request-specific chat evidence within 80KB without changing the full evidence snapshot',()=>{
   const context=fixture(true),before=JSON.stringify(context),projection=buildChatModelContext(context,'Why did traffic change?');
   expect(new TextEncoder().encode(JSON.stringify(projection)).byteLength).toBeLessThanOrEqual(80000);
@@ -48,6 +57,7 @@ describe('fast scoped chat model input',()=>{
   const context=fixture(true);context.filters={...filters,view:'media'};const c=context.clients[0],cut=c.datasetDetails.traffic;
   c.datasetDetails={media:c.datasetDetails.media};c.comparisonDatasetDetails={media:c.comparisonDatasetDetails.media};
   c.priorClosedDetail={instruction:'Closed reference only; not current partial day',datasets:{traffic:{...cut,storeDate:'2026-10-06',comparisonDate:'2026-10-05',sourceId:'closed-reference',scopeLabel:'Closed reference only',window:{start:'2026-10-06T00:00:00Z',end:'2026-10-07T00:00:00Z',timezone:'UTC',durationHours:24},warnings:['Closed reference; not current'],comparison:cut}}} as any;
+  const live=queryClient(client,[],[],context.filters,{preparedDatasets:['media']});c.selectedView=buildAIContext([{...live,note:{body:'',version:0},findings:[],reviews:[]}],context.filters).clients[0].selectedView;c.selectedReview=null;
   const projection=buildChatModelContext(context,'What happened on Dream Mag v5?');
   expect(resolvedRows(projection).some(row=>row.dimensions.page==='/pages/dream-mag-v5')).toBe(true);
   expect(projection.context.clients[0].priorClosedDetail?.datasets.traffic?.storeDate).toBe('2026-10-06');

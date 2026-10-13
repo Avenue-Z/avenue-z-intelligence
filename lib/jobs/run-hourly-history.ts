@@ -10,6 +10,7 @@ import {assertSourceActivation,validateRegisteredBatch,type RegisteredContract} 
 import {historicalHourlyProviders,planHistoricalHourlyJobs} from './hourly-history';
 import {DailyScheduler} from './scheduler';
 import {pruneArchivedMaterializations} from './archive-materialization-retention';
+import {ShopifyRateLimitError} from '../sources/shopify-graphql';
 
 const STORAGE_SAFETY_BYTES=22000000000;
 type HistoryBudget={maxJobs:number;deadline:number};
@@ -37,14 +38,14 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
   try{const contract=assertSourceActivation(source,await store.qualification(scope.organizationId,source.id),client);if(contract.hourlyGrain&&contract.profiles.every(profile=>profile.hourly))eligible.set(source.id,{source,client,contract});}catch{/* Invalid activations are never claimed. */}
  }
  if(!eligible.size)return out;
- const active=new Set<string>();let claimed=0,claimTail=Promise.resolve(),persistTail=Promise.resolve();
+ const active=new Set<string>();let claimed=0,claimTail=Promise.resolve(),persistTail=Promise.resolve(),shopifyCooldownUntil=0;
  const claim=async()=>{
   const previous=claimTail;let release!:()=>void;claimTail=new Promise<void>(resolve=>{release=resolve;});await previous;
   try{
    if(claimed>=budget.maxJobs||Date.now()+30000>budget.deadline||out.skipped)return null;
    const storage=await storageBytes(store);out.storageBytes=storage;
    if(storage>=STORAGE_SAFETY_BYTES){out.skipped='storage-capacity';return null;}
-   const available=[...eligible.values()].filter(value=>!active.has(value.source.provider)&&Date.now()+requiredBudget(value.source.provider)<=budget.deadline);
+   const available=[...eligible.values()].filter(value=>!active.has(value.source.provider)&&(!value.source.provider.startsWith('kind-shopify-')||Date.now()>=shopifyCooldownUntil)&&Date.now()+requiredBudget(value.source.provider)<=budget.deadline);
    if(!available.length)return null;
    const now=new Date().toISOString(),sourceIds=available.map(value=>value.source.id);
    // AppLovin's oldest allowed dates can expire during a long initial backfill.
@@ -73,7 +74,16 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
     await env.BUCKET.put(key,JSON.stringify(batch),{httpMetadata:{contentType:'application/json'}});
     await publish(()=>store.persistBatch(scope.organizationId,source.id,batch,hash,new Date().toISOString(),window));
     await store.finish(job.id);out.completed.push(job.id);
-   }catch(error){const message=error instanceof Error?error.message:'Historical capture failed';if(/HTTP (401|403)|not configured|qualification|Unregistered|Registered|window is invalid/.test(message))await store.finish(job.id,message);else await store.retry(job.id,job.attempts,message,new Date().toISOString());out.failed.push({id:job.id,error:message});}
+   }catch(error){
+    const message=error instanceof Error?error.message:'Historical capture failed';
+    if(error instanceof ShopifyRateLimitError&&source.provider.startsWith('kind-shopify-')){
+     const delay=Math.min(3600000,Math.max(60000,Number.isFinite(error.retryAfterMs)?error.retryAfterMs:60000));shopifyCooldownUntil=Math.max(shopifyCooldownUntil,Date.now()+delay);
+     // Budget pressure defers valid dates, rather than spending their bounded
+     // failure attempts or immediately claiming more work from the same bucket.
+     await store.run("UPDATE jobs SET status='pending',attempts=MAX(0,attempts-1),dueAt=?,error=?,leaseUntil=NULL WHERE id=? AND organizationId=? AND status='running'",new Date(shopifyCooldownUntil).toISOString(),message,job.id,scope.organizationId);
+    }else if(/HTTP (401|403)|not configured|qualification|Unregistered|Registered|window is invalid/.test(message))await store.finish(job.id,message);
+    else await store.retry(job.id,job.attempts,message,new Date().toISOString());out.failed.push({id:job.id,error:message});
+   }
    finally{active.delete(source.provider);}
   }
  };

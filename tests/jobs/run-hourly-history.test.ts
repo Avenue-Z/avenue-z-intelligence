@@ -5,12 +5,13 @@ import {Store} from '../../lib/server/store';
 import initial from '../../data/initial-clients.json';
 import type {AccessScope,SourceBatch} from '../../lib/analytics/contracts';
 
-const state=vi.hoisted(()=>({store:null as Store|null,sqlite:null as DatabaseSync|null,archives:[] as string[],active:new Set<string>(),peak:0,captures:[] as {provider:string;date:string}[],failure:'',partial:false,parallel:false,release:null as (()=>void)|null,waiting:null as Promise<void>|null,maintenance:[] as {maxSnapshots:number;maxRows:number;deadline:number}[]}));
+const state=vi.hoisted(()=>({store:null as Store|null,sqlite:null as DatabaseSync|null,archives:[] as string[],active:new Set<string>(),peak:0,captures:[] as {provider:string;date:string}[],failure:'',partial:false,parallel:false,release:null as (()=>void)|null,waiting:null as Promise<void>|null,maintenance:[] as {maxSnapshots:number;maxRows:number;deadline:number}[],throttled:false}));
 vi.mock('@avenue/runtime',()=>({env:{BUCKET:{put:async(key:string)=>{if(state.failure==='archive')throw Error('Archive unavailable');state.archives.push(key);}}},runtimePlatform:'sites'}));
 vi.mock('../../lib/server/access',()=>({getStore:()=>state.store}));
 vi.mock('../../lib/server/secrets',()=>({serverSecret:(name:string)=>name==='APP_ORGANIZATION_ID'?'o':'private-test-value'}));
 vi.mock('../../lib/jobs/archive-materialization-retention',()=>({pruneArchivedMaterializations:async(_store:unknown,_scope:unknown,options:{maxSnapshots:number;maxRows:number;deadline:number})=>{state.maintenance.push(options);return {verifiedSnapshots:1,prunedSnapshots:1,rowsDeleted:12,charactersDeleted:6000,projectionChunksDeleted:1,skipped:0};}}));
 vi.mock('../../lib/sources/kind-fetch',()=>({fetchKindSource:async(source:{provider:string},client:{id:string;timezone:string;currency:string},window:{from:string;to:string})=>{
+ if(state.throttled&&source.provider.startsWith('kind-shopify-')){state.captures.push({provider:source.provider,date:window.to});const {ShopifyRateLimitError}=await import('../../lib/sources/shopify-graphql');throw new ShopifyRateLimitError(60000);}
  if(state.active.has(source.provider))throw Error('Duplicate active provider');state.active.add(source.provider);state.peak=Math.max(state.peak,state.active.size);state.captures.push({provider:source.provider,date:window.to});
  if(state.parallel){if(state.active.size===2)state.release?.();else await state.waiting;}
  state.active.delete(source.provider);
@@ -20,7 +21,7 @@ import {runHourlyHistoryBatch,hourlyHistoryTick} from '../../lib/jobs/run-hourly
 
 const scope:AccessScope={organizationId:'o',actorId:'scheduler',role:'service',permittedClientIds:['kind-patches']},client={...initial[0],version:1};
 beforeEach(async()=>{
- vi.useFakeTimers();vi.setSystemTime('2026-10-13T18:00:00Z');state.archives=[];state.active=new Set();state.peak=0;state.captures=[];state.failure='';state.partial=false;state.parallel=false;state.maintenance=[];state.waiting=new Promise(resolve=>{state.release=resolve;});
+ vi.useFakeTimers();vi.setSystemTime('2026-10-13T18:00:00Z');state.archives=[];state.active=new Set();state.peak=0;state.captures=[];state.failure='';state.partial=false;state.parallel=false;state.maintenance=[];state.throttled=false;state.waiting=new Promise(resolve=>{state.release=resolve;});
  const sqlite=state.sqlite=new DatabaseSync(':memory:');for(const file of readdirSync('drizzle').filter(file=>file.endsWith('.sql')))sqlite.exec(readFileSync(`drizzle/${file}`,'utf8'));
  const prepare=(sql:string)=>{let values:unknown[]=[];const statement={bind(...input:unknown[]){values=input;return statement;},async all(){return {results:sqlite.prepare(sql).all(...values as any[])};},async first(){return sqlite.prepare(sql).get(...values as any[])??null;},async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...values as any[]).changes)}};}};return statement;};
  const store=state.store=new Store({prepare,batch:async statements=>Promise.all(statements.map(statement=>statement.run()))});
@@ -65,4 +66,11 @@ it('captures AppLovin dates nearest its retention boundary before newer comparis
 it('runs a bounded archive-maintenance phase at 18 GB before continuing historical captures',async()=>{
  const store=state.store!,original=store.first.bind(store);vi.spyOn(store,'first').mockImplementation(async(sql,...args)=>sql==='PRAGMA page_count'?{page_count:Math.ceil(18000000000/4096)}:sql==='PRAGMA freelist_count'?{freelist_count:0}:original(sql,...args));
  const result=await hourlyHistoryTick();expect(state.maintenance).toEqual([{maxSnapshots:8,maxRows:250000,deadline:Date.now()+180000}]);expect(result).toHaveProperty('maintenance.rowsDeleted',12);expect(await store.all('SELECT * FROM runner_leases')).toEqual([]);
+});
+it('defers the shared Shopify budget without burning attempts or claiming its other pending dates while unrelated feeds continue',async()=>{
+ await source('sales');await source('products','kind-shopify-products');await source('meta','kind-meta-performance');state.throttled=true;
+ const store=state.store!;for(const id of ['sales','products'])for(const date of ['2026-10-11','2026-10-10'])await store.enqueue('o',client.id,id,`hourly-history:${date}`,new Date().toISOString());
+ const before=await store.all('SELECT * FROM connections'),result=await runHourlyHistoryBatch(store,scope,{maxJobs:7,deadline:Date.now()+700000});
+ expect(result.completed).toEqual(['o:meta:hourly-history:2026-10-12']);expect(result.failed.length).toBeGreaterThanOrEqual(1);expect(result.failed.length).toBeLessThanOrEqual(2);
+ const shopify=await store.all<{status:string;attempts:number}>('SELECT status,attempts FROM jobs WHERE sourceId IN (?,?) ORDER BY sourceId','sales','products');expect(shopify).toHaveLength(6);expect(shopify.every(job=>job.status==='pending'&&job.attempts===0)).toBe(true);expect(state.captures.filter(value=>value.provider.startsWith('kind-shopify-')).length).toBeLessThanOrEqual(2);expect(await store.all('SELECT * FROM connections')).toEqual(before);
 });
