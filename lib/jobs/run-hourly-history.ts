@@ -7,7 +7,7 @@ import {serverSecret} from '../server/secrets';
 import type {Store} from '../server/store';
 import {fetchKindSource} from '../sources/kind-fetch';
 import {assertSourceActivation,validateRegisteredBatch,type RegisteredContract} from '../sources/registered-contract';
-import {historicalHourlyProviders,planHistoricalHourlyJobs} from './hourly-history';
+import {historicalHourlyProviders,planHistoricalHourlyJobs,supportsHourlyHistory} from './hourly-history';
 import {DailyScheduler} from './scheduler';
 import {pruneArchivedMaterializations} from './archive-materialization-retention';
 import {ShopifyRateLimitError} from '../sources/shopify-graphql';
@@ -18,7 +18,9 @@ type HistoryBudget={maxJobs:number;deadline:number};
 type HistoryResult={completed:string[];failed:{id:string;error:string}[];skipped?:string;storageBytes?:number;maintenance?:Awaited<ReturnType<typeof pruneArchivedMaterializations>>};
 type EligibleSource={source:Connection;client:Client;contract:RegisteredContract};
 type HistoryJob={id:string;sourceId:string;clientId:string;attempts:number};
-function requiredBudget(provider:string){return ['kind-meta-performance','kind-shopify-traffic'].includes(provider)?300000:provider==='kind-shopify-products'?90000:30000;}
+function requiredBudget(provider:string){return provider==='kind-recharge-cancellations'?180000:['kind-meta-performance','kind-shopify-traffic'].includes(provider)?300000:provider==='kind-shopify-products'?90000:30000;}
+
+async function currentSourcesDue(store:Store,scope:AccessScope){return !!await store.first("SELECT j.id FROM jobs j JOIN connections c ON c.id=j.sourceId AND c.organizationId=j.organizationId AND c.clientId=j.clientId WHERE j.organizationId=? AND j.clientId='kind-patches' AND c.enabled=1 AND j.id NOT LIKE '%:hourly-history:____-__-__' AND j.status IN ('pending','running') AND j.dueAt<=? LIMIT 1",scope.organizationId,new Date().toISOString());}
 
 async function storageBytes(store:Store){
  const [pages,size,free]=await Promise.all([store.first<{page_count:number}>('PRAGMA page_count'),store.first<{page_size:number}>('PRAGMA page_size'),store.first<{freelist_count:number}>('PRAGMA freelist_count')]);
@@ -32,11 +34,12 @@ async function storageBytes(store:Store){
 export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget:HistoryBudget):Promise<HistoryResult>{
  const out:HistoryResult={completed:[],failed:[]};
  if(!['admin','service'].includes(scope.role)||!scope.permittedClientIds.includes('kind-patches'))return out;
+ if(await currentSourcesDue(store,scope))return {...out,skipped:'current-source-work'};
  const clients=await store.clients(scope.organizationId),eligible=new Map<string,EligibleSource>();
  for(const source of await store.connections(scope.organizationId,'kind-patches')){
   const client=clients.find(value=>value.id===source.clientId);
   if(!client||!source.enabled||!historicalHourlyProviders.has(source.provider)||!scope.permittedClientIds.includes(source.clientId))continue;
-  try{const contract=assertSourceActivation(source,await store.qualification(scope.organizationId,source.id),client);if(contract.hourlyGrain&&contract.profiles.every(profile=>profile.hourly))eligible.set(source.id,{source,client,contract});}catch{/* Invalid activations are never claimed. */}
+  try{const contract=assertSourceActivation(source,await store.qualification(scope.organizationId,source.id),client);if(supportsHourlyHistory(source.provider,contract))eligible.set(source.id,{source,client,contract});}catch{/* Invalid activations are never claimed. */}
  }
  if(!eligible.size)return out;
  const active=new Set<string>();let claimed=0,claimTail=Promise.resolve(),persistTail=Promise.resolve(),shopifyCooldownUntil=0;
@@ -44,6 +47,7 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
   const previous=claimTail;let release!:()=>void;claimTail=new Promise<void>(resolve=>{release=resolve;});await previous;
   try{
    if(claimed>=budget.maxJobs||Date.now()+30000>budget.deadline||out.skipped)return null;
+   if(await currentSourcesDue(store,scope)){out.skipped='current-source-work';return null;}
    const storage=await storageBytes(store);out.storageBytes=storage;
    if(storage>=STORAGE_SAFETY_BYTES){out.skipped='storage-capacity';return null;}
    const available=[...eligible.values()].filter(value=>!active.has(value.source.provider)&&(!value.source.provider.startsWith('kind-shopify-')||Date.now()>=shopifyCooldownUntil)&&Date.now()+requiredBudget(value.source.provider)<=budget.deadline);
@@ -102,6 +106,7 @@ export async function hourlyHistoryTick():Promise<HistoryResult>{
  const scope:AccessScope={organizationId,actorId:'application-history-scheduler',role:'service',permittedClientIds:['kind-patches']},scheduler=new DailyScheduler(store),id=`${organizationId}:hourly-history`,token=await scheduler.acquire(id,new Date().toISOString(),900000);
  if(!token)return {skipped:'already-running',completed:[],failed:[]};
  try{
+  if(await currentSourcesDue(store,scope))return {skipped:'current-source-work',completed:[],failed:[]};
   const started=Date.now();let maintenance:HistoryResult['maintenance'];
   if(await storageBytes(store)>=18000000000){
    const maintenanceStarted=Date.now();

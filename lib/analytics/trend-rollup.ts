@@ -23,14 +23,14 @@ export class TrendRollupAccumulator {
  private contracts=new Map<string,Map<string,Group>>();
  private rows:FunnelRollupObservation[]=[];
  constructor(filters:QueryFilters){this.active=dimensions.filter(dimension=>!!filters[dimension]);}
- add(input:Observation){
+ add(input:Observation,sourceGrain?:ReturnType<typeof grain>){
   const selected:Observation['dimensions']={};
   for(const dimension of this.active){const value=input.dimensions[dimension];if(value!==undefined)selected[dimension]=dimension==='market'?sourceMarket(value):dimension==='page'?sanitizePage(value):value;}
   const row:FunnelRollupObservation={...input,dimensions:selected,...input.channels?{channels:[...input.channels]}:{},contextOnly:true};
   // Ratio components retain their own evidence; adding reported ratios would
   // discard the denominator population and manufacture a pooled rate.
   if(!denseDatasets.has(row.dataset)||row.numerator!==undefined||row.denominator!==undefined){this.rows.push(row);return;}
-  const category=grain(input),scope=JSON.stringify([row.sourceId,row.date,row.dataset,row.metric,row.definition,row.population,row.currency,row.quality,[...row.channels??[]].sort(),selected]),key=JSON.stringify([scope,category]);
+  const category=sourceGrain??grain(input),scope=JSON.stringify([row.sourceId,row.date,row.dataset,row.metric,row.definition,row.population,row.currency,row.quality,[...row.channels??[]].sort(),selected]),key=JSON.stringify([scope,category]);
   let group=this.groups.get(key);
   if(!group){
    if(!finite(row.value)||countMetrics.has(row.metric)&&(!Number.isSafeInteger(row.value)||row.value<0))row.value=null;

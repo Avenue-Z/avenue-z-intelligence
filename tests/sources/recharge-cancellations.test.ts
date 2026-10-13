@@ -80,3 +80,7 @@ describe('Recharge cancellation-date feed',()=>{
   await expect(execute(async()=>Response.json({store:{...store.store,platform_domain:'other.myshopify.com'}}))).rejects.toThrow('identity');
  });
 });
+
+it('uses the bounded historical pagination allowance for a single older day needed by the native history worker',async()=>{
+ let pages=0;const fetcher:typeof fetch=async url=>{if(String(url).endsWith('/store'))return Response.json(store);if(new URL(String(url)).searchParams.has('created_at_min'))return Response.json({subscriptions:[],next_cursor:null});const page=pages++;return Response.json({subscriptions:Array.from({length:250},(_,index)=>record(page*250+index+1,'2026-10-02T10:00:00Z','2026-10-02T10:00:00Z')),next_cursor:pages<201?`page${pages}`:null});};const batch=await fetchKindSource(source,client,{from:'2026-10-02',to:'2026-10-02'},secret,fetcher,Date.now()+120000,new Date('2026-10-13T12:00:00Z'));expect(pages).toBe(201);expect(total(batch.rows,'2026-10-02')).toBe(50250);expect(batch.rows).toHaveLength(24*3);
+});

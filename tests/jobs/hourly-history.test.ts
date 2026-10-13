@@ -93,3 +93,17 @@ it('keeps a pending repair when the first captured fact does not match its quali
  await pointer(store,sourceId,date,{...profile,definition:'unregistered',start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'});
  await planHistoricalHourlyJobs(store,scope,now);expect(await store.first('SELECT status FROM jobs WHERE id=?',`o:${sourceId}:hourly-history:${date}`)).toEqual({status:'pending'});
 });
+async function rechargeSetup(expanded=true){
+ const result=await setup('kind-recharge-cancellations'),{store,sourceId,contract}=result;
+ const profiles=[{dataset:'subscriptionEvents',metric:'subscription_cancellations',definition:'recharge_current_cancelled_subscription_records_cancelled_at_utc_to_store_date_excludes_reactivated',population:'recharge_cancelled_subscription_records',currency:null,dimensions:[],hourly:true},...expanded?[{dataset:'subscriptionEvents',metric:'new_subscriptions',definition:'recharge_all_status_subscription_records_created_at_utc_to_store_date',population:'recharge_new_subscription_records',currency:null,dimensions:[],hourly:true},{dataset:'subscriptionEvents',metric:'same_day_subscription_cancellations',definition:'recharge_current_cancelled_created_same_store_day_cancelled_at_utc_excludes_reactivated',population:'recharge_new_subscription_records',currency:null,dimensions:[],hourly:true}]:[]];
+ await store.saveQualification('o','kind-patches',sourceId,1,1,{...contract,profiles},'scheduler');return {...result,profiles};
+}
+it('queues Recharge cohort history when an old calendar-only snapshot exists for a closed day',async()=>{
+ const {store,sourceId,profiles}=await rechargeSetup();await pointer(store,sourceId,'2026-10-12',{...profiles[0],start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'});const result=await planHistoricalHourlyJobs(store,scope,now);expect(result.eligibleSources).toBe(1);expect(result.queued).toBe(61);expect(await store.first("SELECT status FROM jobs WHERE id LIKE '%:hourly-history:2026-10-12'")).toEqual({status:'pending'});
+});
+it('retains Recharge history only when both creation and same-day cancellation profiles are present and qualified',async()=>{
+ const {store,sourceId,profiles}=await rechargeSetup(),date='2026-10-12';await pointer(store,sourceId,date,{...profiles[0],start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'});const snapshotId=`snapshot:o:${sourceId}:${date}`;for(const profile of profiles.slice(1))await store.run('INSERT INTO observations(snapshotId,date,rowKey,payload) VALUES(?,?,?,?)',snapshotId,date,profile.metric,JSON.stringify({...profile,start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'}));expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(60);expect(await store.first("SELECT id FROM jobs WHERE id LIKE '%:hourly-history:2026-10-12'")).toBeNull();
+});
+it('does not activate Recharge history before the creation cohort profile expansion is qualified',async()=>{
+ const {store}=await rechargeSetup(false);expect(await planHistoricalHourlyJobs(store,scope,now)).toEqual({eligibleSources:0,missingDays:0,queued:0});expect(await store.all('SELECT id FROM jobs')).toEqual([]);
+});

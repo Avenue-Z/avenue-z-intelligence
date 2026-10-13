@@ -16,7 +16,7 @@ export async function fetchRechargeCancellations(client:Client,config:KindConfig
  const dates=sourceDates(window);if(!dates.length)throw new Error('Recharge cancellation window is empty');
  const today=todayIn(client.timezone,asOf);if(window.to>today)throw new Error('Recharge cancellation window extends into the future');
  const start=Temporal.Instant.from(dayWindow(window.from,client.timezone).start),minimum=start.subtract({seconds:2}),through=window.to<today?dayWindow(window.to,client.timezone).end:hourlySessionCutoff(client.timezone,asOf).through,cutoff=Temporal.Instant.from(through),headers={'X-Recharge-Access-Token':config.RECHARGE_ADMIN_TOKEN,'X-Recharge-Version':'2021-11'};
- const historical=window.to<today&&dates.length>3,recordLimit=historical?250000:50000,pageLimit=recordLimit/250;
+ const historical=window.to<today,recordLimit=historical?250000:50000,pageLimit=recordLimit/250;
  const base={status:'cancelled',limit:'250',updated_at_min:minimum.toString().replace(/Z$/,'')},seenCursors=new Set<string>(),events=new Map<string,string>(),counts=new Map<string,number>();let cursor='',complete=false,eligible=0,seenRows=0;
  for(let page=0;page<pageLimit;page++){
   // Larger historical cursor scans sometimes need longer than the normal
