@@ -2,6 +2,8 @@ import type {AccessScope,QueryFilters} from './contracts';
 import type {Workspace} from '../server/workspace';
 import {workspaceDatasets} from './workspace-datasets';
 import {confirmedIntradayCutoff} from './intraday-coverage';
+import {unsupportedClientFilterReset} from './client-filter-policy';
+import {summarize} from './query';
 
 const dataset=(view:string)=>view==='overview'?'funnels':view;
 const required=(view:string,focused:boolean)=>view==='overview'&&!focused?['overview']:workspaceDatasets(view);
@@ -18,12 +20,13 @@ export function selectWorkspaceView(workspace:Workspace,view:string,focusedClien
   const prepared=record.preparedDatasets??[previousDataset,...Object.keys(record.views??{})];
   if(!required(view,!!focusedClientId).every(name=>prepared.includes(name)))return null;
   if(view===workspace.filters.view){clients.push(record);continue;}
-  if(view==='overview'&&!prepared.includes('funnels')){const views={...record.views,...prepared.includes(previousDataset)?{[previousDataset]:{details:record.details,actions:record.actions,viewMetrics:record.datasetMetrics}}:{}};clients.push({...record,details:[],actions:[],views,datasetMetrics:record.metrics,viewMetrics:record.metrics});continue;}
-  if(previousDataset===nextDataset){if(view!=='overview'&&!record.datasetMetrics)return null;clients.push({...record,viewMetrics:view==='overview'?record.metrics:record.datasetMetrics});continue;}
+  const viewPriorMetrics=view==='overview'?record.prior:record.comparisonViews?.[nextDataset]?.viewMetrics??summarize([]);
+  if(view==='overview'&&!prepared.includes('funnels')){const views={...record.views,...prepared.includes(previousDataset)?{[previousDataset]:{details:record.details,actions:record.actions,viewMetrics:record.datasetMetrics}}:{}};clients.push({...record,details:[],actions:[],views,datasetMetrics:record.metrics,viewMetrics:record.metrics,viewPriorMetrics});continue;}
+  if(previousDataset===nextDataset){if(view!=='overview'&&!record.datasetMetrics)return null;clients.push({...record,viewMetrics:view==='overview'?record.metrics:record.datasetMetrics,viewPriorMetrics});continue;}
   const next=record.views?.[nextDataset];if(!next)return null;
   const views={...record.views,...prepared.includes(previousDataset)?{[previousDataset]:{details:record.details,actions:record.actions,viewMetrics:record.datasetMetrics}}:{}};
   delete views[nextDataset];
-  clients.push({...record,...next,views,datasetMetrics:next.viewMetrics,viewMetrics:view==='overview'?record.metrics:next.viewMetrics});
+  clients.push({...record,...next,views,datasetMetrics:next.viewMetrics,viewMetrics:view==='overview'?record.metrics:next.viewMetrics,viewPriorMetrics});
  }
  return {...workspace,filters:{...workspace.filters,view},clients};
 }
@@ -60,4 +63,66 @@ export class WorkspaceCache{
   return null;
  }
  invalidate(){this.entries.clear();}
+}
+
+
+const preloadViews=['overview','revenue','traffic','markets','products','subscriptions','media','reviews','settings'] as const;
+const selectionKey=(params:URLSearchParams)=>workspaceRequestKey(new URLSearchParams([...params].filter(([key])=>key!=='view'&&key!=='section')));
+function sourceFingerprint(workspace:Workspace,clientId:string){
+ const record=workspace.clients.find(item=>item.client.id===clientId);
+ return JSON.stringify([scopeKey(workspace.scope),record?.client,record?.connections.map(source=>[source.id,source.version,source.enabled,source.lastSuccess,source.coverageThrough]).sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]);
+}
+type WorkspaceLoad=(params:URLSearchParams,signal:AbortSignal)=>Promise<Workspace>;
+type PendingWorkspace={controller:AbortController;promise:Promise<Workspace>;foreground:boolean;retryOnNewWave:boolean};
+/** Prepare saved tab data after the screen renders. Foreground navigation joins
+ * an identical request; obsolete filter/source waves never populate the cache.
+ * Only two background reads run at once and no provider is queried here. */
+export class WorkspacePreloader{
+ private selection='';private wave='';private scope='';private generation=0;private hardGeneration=0;private active=0;
+ private pending=new Map<string,PendingWorkspace>();private queue=new Map<string,URLSearchParams>();private attempted=new Set<string>();
+ constructor(private cache:WorkspaceCache,private load:WorkspaceLoad){}
+ select(params:URLSearchParams){const key=selectionKey(params);if(key!==this.selection){this.cancel();this.selection=key;}}
+ cancel(retryForeground=false){
+  this.generation++;if(!retryForeground)this.hardGeneration++;
+  for(const pending of this.pending.values()){pending.retryOnNewWave=retryForeground&&pending.foreground;pending.controller.abort();}
+  this.pending.clear();
+  this.queue.clear();this.attempted.clear();this.active=0;this.wave='';
+ }
+ request(params:URLSearchParams,foreground=true):Promise<Workspace>{
+  const key=workspaceRequestKey(params),existing=this.pending.get(key);if(existing){if(foreground)existing.foreground=true;return existing.promise;}
+  this.queue.delete(key);const controller=new AbortController(),generation=this.generation,hardGeneration=this.hardGeneration,scope=this.scope;
+  const requested=new URLSearchParams(params),pending:PendingWorkspace={controller,foreground,promise:undefined!,retryOnNewWave:false};
+  const promise=Promise.resolve().then(()=>this.load(requested,controller.signal)).then(workspace=>{
+   if(controller.signal.aborted||generation!==this.generation)throw new DOMException('Obsolete workspace request','AbortError');
+   this.cache.remember(workspace);return workspace;
+  }).catch(error=>{
+   // Detach an older-hour read immediately. A navigation that already joined
+   // it can finish through the current wave, but must never receive old data.
+   if(pending.retryOnNewWave&&hardGeneration===this.hardGeneration&&scope===this.scope&&selectionKey(requested)===this.selection)return this.request(requested,true);
+   throw error;
+  }).finally(()=>{if(this.pending.get(key)?.controller===controller)this.pending.delete(key);});
+  pending.promise=promise;this.pending.set(key,pending);return promise;
+ }
+ preload(workspace:Workspace,params:URLSearchParams,clientId:string,views:readonly string[]=preloadViews){
+  const scope=scopeKey(workspace.scope);if(this.scope&&this.scope!==scope){this.cancel();this.cache.invalidate();}this.scope=scope;
+  if(!workspace.scope.permittedClientIds.includes(clientId)||!workspace.clients.some(record=>record.client.id===clientId))return;
+  params=new URLSearchParams(params);params.set('clientId',clientId);this.select(params);
+  const sources=sourceFingerprint(workspace,clientId),wave=this.selection+sources;
+  if(this.wave&&this.wave!==wave){this.cancel(true);this.cache.invalidate();this.cache.remember(workspace);}this.wave=wave;
+  for(const view of views){
+   const filters={...workspace.filters,view,...unsupportedClientFilterReset(workspace.filters,view)},next=new URLSearchParams(params);next.set('view',view);
+   for(const [key,value]of Object.entries(unsupportedClientFilterReset(workspace.filters,view)))next.set(key,value);
+   const key=workspaceRequestKey(next);if(this.attempted.has(key)||this.pending.has(key))continue;
+   const cached=this.cache.read(filters,Date.now(),clientId);
+   if(cached&&!cached.stale&&sourceFingerprint(cached.workspace,clientId)===sources)continue;
+   this.attempted.add(key);this.queue.set(key,next);
+  }
+  this.pump();
+ }
+ private pump(){
+  while(this.active<2&&this.queue.size){
+   const [key,params]=this.queue.entries().next().value!;this.queue.delete(key);this.active++;const generation=this.generation;
+   void this.request(params,false).catch(()=>{/* A failed optional preload leaves normal navigation/retry available. */}).finally(()=>{if(generation===this.generation){this.active--;this.pump();}});
+  }
+ }
 }

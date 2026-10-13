@@ -21,3 +21,16 @@ it('local comparison selection updates the dashboard comparison filter',()=>{
  select.props.onChange({target:{value:'previous'}});
  expect(update).toHaveBeenCalledWith({compare:'previous'});
 });
+
+it('shows market headline and per-market changes from the matching comparison cohort',()=>{
+ const selected={...filters,from:'2026-10-12',to:'2026-10-12',mode:'closed' as const,market:'',compare:'previous' as const},marketRows=(date:string,market:string,revenue:number,orders:number,refunds:number,discounts:number)=>Object.entries({revenue,orders,refunds,discounts}).map(([metric,value])=>({...rows[0],date,metric,value,dimensions:{market}}));
+ const current=[...marketRows(selected.to,'US',300,10,20,15),...marketRows(selected.to,'CA',200,10,10,5)],prior=marketRows('2026-10-11','US',200,10,10,5);
+ const analytics=workspacePresentation(queryClient(client,[...current,...prior],[],selected,{preparedDatasets:['markets']}),selected),record={...analytics,findings:[],reviews:[],note:{body:'',version:0}};
+ const html=renderToStaticMarkup(createElement(MarketWorkspace,{record,filters:selected,update:()=>{}}));
+ expect(html).toContain('<strong>$500</strong>');expect(html).toContain('vs yesterday · $200');expect(html).toContain('+150.0%');
+ const us=html.match(/<tr><td><button[^>]*>US[\s\S]*?<\/tr>/)?.[0]??'',ca=html.match(/<tr><td><button[^>]*>CA[\s\S]*?<\/tr>/)?.[0]??'';
+ expect(us).toContain('+50.0%');expect(us).toContain('vs yesterday · $20');expect(us).toContain('vs yesterday · 10');
+ expect(us.match(/<td>\$20([\s\S]*?)<\/td>/)?.[1]).toContain('data-tone="unfavorable"');
+ expect(ca).toContain('— vs yesterday');expect(ca).not.toContain('vs yesterday · $0');
+ expect(html).not.toContain('Revenue / matching orders');
+});

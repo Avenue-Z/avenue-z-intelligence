@@ -63,7 +63,7 @@ describe('detail presentation',()=>{
   it('shows the separate human traffic cut with source and UTM dimensions',()=>{
     const dimensions={market:'FR',device:'mobile',source:'social',utm_source:'meta',utm_campaign:'Prospecting',page:'/pages/glp'};
     const html=workspace('traffic',[observation('sessions',1000,dimensions,'traffic'),observation('converting_sessions',20,dimensions,'traffic')]);
-    expect(html).toContain('Human public-page sessions');
+    expect(html).toContain('SESSIONS');
     expect(html).toContain('UTM campaign');
     expect(html).toContain('Landing pages &amp; funnels');
     expect(html).toContain('/pages/glp');

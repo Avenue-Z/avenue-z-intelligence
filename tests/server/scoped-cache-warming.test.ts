@@ -18,7 +18,11 @@ beforeEach(()=>{state.platform='sites';vi.useFakeTimers();vi.setSystemTime('2026
 it('warms the exact scoped Traffic and Overview keys used by foreground reads',async()=>{
  const {store,queries}=await fixture();const result=await warmSuccessfulSourceJobs(store,scope,['o:source:warm'],Date.now()+270000);expect(result).toEqual({attempted:30,completed:30});const before=queries.filter(sql=>sql.startsWith('SELECT o.payload')).length;
  for(const view of ['traffic','overview'])for(const compare of ['previous','fourWeeks','weekday','thirtyDays'] as const)for(const mode of ['closed','partial'] as const){const date=mode==='closed'?base.to:'2026-10-12';await store.observations('o',client.id,{...base,view,compare,mode,from:date,to:date},false,undefined,workspaceObservationSelection(view));}
- expect(queries.filter(sql=>sql.startsWith('SELECT o.payload'))).toHaveLength(before);expect((await store.all('SELECT status FROM observation_cache_entries')).length).toBeLessThanOrEqual(24);
+ // The bounded 24-entry cache also retains daily chart context. One warmed
+ // scope may be evicted; retained keys and the browser's repeat pass must hit.
+ const firstPass=queries.filter(sql=>sql.startsWith('SELECT o.payload')).length;expect(firstPass-before).toBeLessThanOrEqual(1);
+ for(const view of ['traffic','overview'])for(const compare of ['previous','fourWeeks','weekday','thirtyDays'] as const)for(const mode of ['closed','partial'] as const){const date=mode==='closed'?base.to:'2026-10-12';await store.observations('o',client.id,{...base,view,compare,mode,from:date,to:date},false,undefined,workspaceObservationSelection(view));}
+ expect(queries.filter(sql=>sql.startsWith('SELECT o.payload'))).toHaveLength(firstPass);expect((await store.all('SELECT status FROM observation_cache_entries')).length).toBeLessThanOrEqual(24);
 });
 it('independently warms every live tab before historical Traffic and secondary scopes',async()=>{
  state.platform='vercel';vi.stubGlobal('fetch',()=>{throw Error('Provider or browser work is forbidden');});const {store}=await fixture(),observations=store.observations.bind(store),seen:{view:string;from:string;to:string;compare:string}[]=[];
@@ -42,4 +46,19 @@ it('bounds native prepared warming to its deadline without changing already comp
 it('prioritizes live Revenue then Overview and stops within the existing budget',async()=>{
  const {store}=await fixture(),seen:{view:string;compare:string;datasets:string[]|undefined;includePriorWeek:boolean|undefined}[]=[],observations=store.observations.bind(store);store.observations=async(org,id,filters,headlines,options,selection)=>{seen.push({view:filters!.view,compare:filters!.compare,datasets:selection?.datasets,includePriorWeek:selection?.includePriorWeek});const rows=await observations(org,id,filters,headlines,options,selection);if(seen.length===2)vi.setSystemTime(Date.now()+240000);return rows;};
  const result=await warmSuccessfulSourceJobs(store,scope,['o:source:warm'],Date.now()+270000);expect(result).toEqual({attempted:2,completed:2});expect(seen).toEqual([{view:'revenue',compare:'previous',datasets:workspaceDatasets('revenue'),includePriorWeek:false},{view:'overview',compare:'previous',datasets:workspaceDatasets('overview'),includePriorWeek:false}]);
+});
+it('warms each captured live store day after midnight and shares its exact foreground key',async()=>{
+ state.platform='vercel';vi.setSystemTime('2026-10-12T23:15:00Z');
+ const {store}=await fixture();await store.run('UPDATE clients SET timezone=? WHERE id=?','Europe/Stockholm',client.id);
+ for(const [provider,coverage] of [['kind-shopify-sales','2026-10-12T23:00:00Z'],['kind-shopify-traffic','2026-10-12T21:00:00Z'],['kind-triple-whale','2026-10-12T21:00:00Z'],['kind-shopify-hourly','2026-10-12T21:00:00Z']])await store.run('INSERT INTO connections(id,organizationId,clientId,name,provider,endpoint,secretRef,pollMinutes,enabled,coverageThrough) VALUES(?,?,?,?,?,?,?,?,?,?)',provider,'o',client.id,provider,provider,'https://unused.example','unused',60,1,coverage);
+ const observations=store.observations.bind(store),seen:{view:string;from:string;to:string;compare:string;mode:string}[]=[];
+ store.observations=async(org,id,filters,headlines,options,selection)=>{seen.push({view:filters!.view,from:filters!.from,to:filters!.to,compare:filters!.compare,mode:filters!.mode});return observations(org,id,filters,headlines,options,selection);};
+ await warmSuccessfulSourceJobs(store,scope,['o:source:warm'],Date.now()+270000);
+ expect(seen[0]).toMatchObject({view:'revenue',from:'2026-10-13',to:'2026-10-13',mode:'partial'});
+ expect(seen.find(row=>row.view==='traffic'&&row.mode==='partial')).toMatchObject({from:'2026-10-12',to:'2026-10-12'});
+ expect(seen.find(row=>row.view==='overview'&&row.mode==='partial')).toMatchObject({from:'2026-10-12',to:'2026-10-12'});
+ expect(seen.some(row=>row.view==='traffic'&&row.mode==='closed'&&row.from==='2026-09-13'&&row.to==='2026-10-12')).toBe(true);
+ const fresh=new Store({...store.db}),brand=(await fresh.clients('o'))[0],load=vi.fn(async()=>{throw Error('Live rollover warmed frame missed');});
+ for(const [view,date] of [['revenue','2026-10-13'],['traffic','2026-10-12']])await preparedWorkspaceFrame({store:fresh,organizationId:'o',client:brand,filters:{...base,view,from:date,to:date,mode:'partial',period:'today'},preparedDatasets:workspaceDatasets(view),selection:workspaceObservationSelection(view)},load);
+ expect(load).not.toHaveBeenCalled();
 });

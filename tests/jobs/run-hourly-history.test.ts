@@ -60,9 +60,29 @@ it('refuses unpermitted clients, roles and unqualified source versions',async()=
 it('uses a separate runner lease and preserves the current sync lease',async()=>{
  const store=state.store!;await store.run("INSERT INTO runner_leases VALUES('o:sync','current-runner','2026-10-13T18:15:00Z')");await store.run("INSERT INTO runner_leases VALUES('o:hourly-history','other-history-runner','2026-10-13T18:15:00Z')");expect(await hourlyHistoryTick()).toMatchObject({skipped:'already-running',completed:[],failed:[]});expect(await store.all('SELECT id,token FROM runner_leases ORDER BY id')).toEqual([{id:'o:hourly-history',token:'other-history-runner'},{id:'o:sync',token:'current-runner'}]);
 });
-it('captures AppLovin dates nearest its retention boundary before newer comparison days',async()=>{
- await source('applovin','kind-applovin','2026-10-12');const store=state.store!;await store.run("UPDATE jobs SET dueAt='2026-10-13T17:00:00.000Z'");await store.enqueue('o',client.id,'applovin','hourly-history:2026-09-15',new Date().toISOString());
+it('captures AppLovin dates nearest its retention boundary first within the last thirty-day band',async()=>{
+ await source('applovin','kind-applovin','2026-10-03');const store=state.store!;await store.run("UPDATE jobs SET dueAt='2026-10-13T17:00:00.000Z'");await store.enqueue('o',client.id,'applovin','hourly-history:2026-09-15',new Date().toISOString());
  await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+700000});expect(state.captures).toEqual([{provider:'kind-applovin',date:'2026-09-15'}]);
+});
+
+it('captures recent Recharge cohorts before older provider queues without changing their immutable due times',async()=>{
+ await source('meta','kind-meta-performance','2026-08-15');const store=state.store!;
+ for(let day=16;day<=31;day++)await store.enqueue('o',client.id,'meta',`hourly-history:2026-08-${day}`,'2026-10-13T16:00:00.000Z');
+ await store.run("UPDATE jobs SET dueAt='2026-10-13T16:00:00.000Z' WHERE sourceId='meta'");
+ await source('recharge','kind-recharge-cancellations','2026-09-15');await store.run("UPDATE jobs SET dueAt='2026-10-13T17:00:00.000Z' WHERE sourceId='recharge'");
+ await store.enqueue('o',client.id,'recharge','hourly-history:2026-10-11','2026-10-13T18:00:00.000Z');
+ const before=await store.all('SELECT id,dueAt FROM jobs ORDER BY id');
+ for(let count=0;count<3;count++)await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+700000});
+ expect(state.captures).toEqual([{provider:'kind-recharge-cancellations',date:'2026-10-11'},{provider:'kind-recharge-cancellations',date:'2026-09-15'},{provider:'kind-meta-performance',date:'2026-08-15'}]);
+ expect(await store.all('SELECT id,dueAt FROM jobs ORDER BY id')).toEqual(before);
+});
+
+it('does not bypass the normal retry due time when a more recent history date is deferred',async()=>{
+ await source('meta','kind-meta-performance','2026-08-15');await source('recharge','kind-recharge-cancellations','2026-10-12');const store=state.store!;
+ await store.run("UPDATE jobs SET dueAt='2026-10-13T19:00:00Z' WHERE sourceId='recharge'");
+ await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+700000});
+ expect(state.captures).toEqual([{provider:'kind-meta-performance',date:'2026-08-15'}]);
+ expect(await store.first("SELECT status,attempts,dueAt FROM jobs WHERE sourceId='recharge'")).toEqual({status:'pending',attempts:0,dueAt:'2026-10-13T19:00:00Z'});
 });
 it('runs a bounded archive-maintenance phase at 18 GB before continuing historical captures',async()=>{
  const store=state.store!,original=store.first.bind(store);vi.spyOn(store,'first').mockImplementation(async(sql,...args)=>sql==='PRAGMA page_count'?{page_count:Math.ceil(18000000000/4096)}:sql==='PRAGMA freelist_count'?{freelist_count:0}:original(sql,...args));

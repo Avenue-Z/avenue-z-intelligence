@@ -1,0 +1,8 @@
+.comparison{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:10px 0 7px;font-size:12px;line-height:1.5;font-variant-numeric:tabular-nums}
+.comparisonBadge{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;border-radius:3px;padding:3px 7px;font-size:12px;font-weight:650;line-height:1.4;font-variant-numeric:tabular-nums;color:var(--az-muted);background:var(--az-surface-raised)}
+.comparisonBadge[data-tone=favorable]{color:var(--az-positive);background:var(--az-positive-bg)}
+.comparisonBadge[data-tone=unfavorable]{color:var(--az-negative);background:var(--az-negative-bg)}
+.baseline{color:var(--az-muted)}
+.table{font-variant-numeric:tabular-nums}
+.table th:not(:first-child),.table td:not(:first-child){text-align:right}
+.table td:last-child{color:var(--az-muted);font-size:12px}

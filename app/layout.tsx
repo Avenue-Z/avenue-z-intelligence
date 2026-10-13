@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
+import { ThemeProvider } from "../components/theme-provider";
 import "./globals.css";
+import "./avenue-brand-preview.css";
 
 export const metadata: Metadata = {
   title: "Avenue Z Intelligence",
@@ -16,8 +18,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className="antialiased">{children}</body>
+    <html lang="en" className="dark" suppressHydrationWarning>
+      <body className="antialiased"><ThemeProvider>{children}</ThemeProvider></body>
     </html>
   );
 }

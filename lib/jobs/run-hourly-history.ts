@@ -52,10 +52,11 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
    if(storage>=STORAGE_SAFETY_BYTES){out.skipped='storage-capacity';return null;}
    const available=[...eligible.values()].filter(value=>!active.has(value.source.provider)&&(!value.source.provider.startsWith('kind-shopify-')||Date.now()>=shopifyCooldownUntil)&&Date.now()+requiredBudget(value.source.provider)<=budget.deadline);
    if(!available.length)return null;
-   const now=new Date().toISOString(),sourceIds=available.map(value=>value.source.id);
-   // AppLovin's oldest allowed dates can expire during a long initial backfill.
-   // Capture them first; other providers retain comparison-day priority.
-   const job=await store.first<HistoryJob>(`SELECT j.id,j.sourceId,j.clientId,j.attempts FROM jobs j JOIN connections c ON c.id=j.sourceId AND c.organizationId=j.organizationId WHERE j.organizationId=? AND j.clientId='kind-patches' AND j.sourceId IN (${sourceIds.map(()=>'?').join(',')}) AND j.id LIKE '%:hourly-history:____-__-__' AND ((j.status='pending' AND j.dueAt<=?) OR (j.status='running' AND j.leaseUntil<?)) ORDER BY CASE WHEN c.provider='kind-applovin' THEN 0 ELSE 1 END,CASE WHEN c.provider='kind-applovin' THEN substr(j.id,-10) ELSE j.dueAt END,j.dueAt,j.id LIMIT 1`,scope.organizationId,...sourceIds,now,now);
+   const now=new Date().toISOString(),sourceIds=available.map(value=>value.source.id),today=todayIn(available[0].client.timezone,new Date(now));
+   // Fill recent comparisons before older archives, including sources added
+   // after the initial queue. Keep immutable due times and benchmark ordering
+   // within each band; AppLovin retains its oldest-date priority in that band.
+   const job=await store.first<HistoryJob>(`SELECT j.id,j.sourceId,j.clientId,j.attempts FROM jobs j JOIN connections c ON c.id=j.sourceId AND c.organizationId=j.organizationId WHERE j.organizationId=? AND j.clientId='kind-patches' AND j.sourceId IN (${sourceIds.map(()=>'?').join(',')}) AND j.id LIKE '%:hourly-history:____-__-__' AND ((j.status='pending' AND j.dueAt<=?) OR (j.status='running' AND j.leaseUntil<?)) ORDER BY CASE WHEN substr(j.id,-10)>=? THEN 0 WHEN substr(j.id,-10)>=? THEN 1 ELSE 2 END,CASE WHEN c.provider='kind-applovin' THEN 0 ELSE 1 END,CASE WHEN c.provider='kind-applovin' THEN substr(j.id,-10) ELSE j.dueAt END,j.dueAt,j.id LIMIT 1`,scope.organizationId,...sourceIds,now,now,shiftDate(today,-7),shiftDate(today,-30));
    if(!job)return null;
    const leaseUntil=new Date(Date.now()+900000).toISOString(),updated=await store.run("UPDATE jobs SET status='running',leaseUntil=?,attempts=attempts+1 WHERE id=? AND organizationId=? AND ((status='pending' AND dueAt<=?) OR (status='running' AND leaseUntil<?))",leaseUntil,job.id,scope.organizationId,now,now);
    if(!updated.meta.changes)return null;

@@ -1,17 +1,25 @@
 'use client';
 import {useMemo,useState} from 'react';
 import type {QueryFilters} from '../../lib/analytics/contracts';
-import {change} from '../../lib/analytics/metrics';
+import {subscriptionComparison} from '../../lib/analytics/subscription-comparison';
 import {hygieneRows,hygieneSeries,ORDER_STREAM_LABELS,orderStreamRows,orderStreamSeries,renewalMixRows,renewalMixSeries} from '../../lib/analytics/order-diagnostics';
 import type {DiagnosticRow} from '../../lib/analytics/order-diagnostics';
 import type {ClientRecord} from './records';
 import {MetricVisualization} from './metric-visualization';
 import {money,number,percent} from './dashboard';
+import comparisonStyles from './subscription-workspace.module.css';
 
 const EMPTY:DiagnosticRow[]=[];
 const decimal=(value:number|null)=>value===null?'—':new Intl.NumberFormat('en-US',{maximumFractionDigits:2}).format(value);
 function rowsFor(record:ClientRecord,name:string,comparison=false){return (comparison?record.comparisonViews?.[name]?.details:record.views[name]?.details)??EMPTY;}
 const chartScope=(record:ClientRecord,filters:QueryFilters)=>({currency:record.client.currency,timezone:record.client.timezone,currentFrom:filters.from,comparisonFrom:record.comparison.from,comparisonLabel:`${record.comparison.from} – ${record.comparison.to}`});
+
+function AovChange({current,previous,currency}:{current:number|null;previous:number|null;currency:string}){
+ const delta=subscriptionComparison('aov',current,previous);
+ const label=delta.value===null?'Unavailable':delta.kind==='absolute'?`${delta.value>0?'+':''}${money(delta.value,currency)} from 0`:`${delta.value>0?'+':''}${delta.value.toFixed(2)}%`;
+ const direction=delta.direction==='up'?'increased':delta.direction==='down'?'decreased':delta.direction==='unchanged'?'unchanged':'comparison unavailable';
+ return <span className={comparisonStyles.comparisonBadge} data-tone={delta.tone} data-direction={delta.direction} aria-label={`AOV ${direction}${delta.value===null?'':` ${label}`}; ${delta.tone}`}><span aria-hidden="true">{delta.direction==='up'?'↑':delta.direction==='down'?'↓':delta.direction==='unchanged'?'→':'—'}</span>{label}</span>;
+}
 
 export function OrderStreamDiagnostics({record,filters}:{record:ClientRecord;filters:QueryFilters}){
  const rows=rowsFor(record,'orderStreams'),previous=rowsFor(record,'orderStreams',true);
@@ -20,7 +28,7 @@ export function OrderStreamDiagnostics({record,filters}:{record:ClientRecord;fil
  const points=useMemo(()=>orderStreamSeries(rows,metric),[rows,metric]),comparison=useMemo(()=>orderStreamSeries(previous,metric),[previous,metric]);
  if(!rows.length&&!previous.length)return null;
  const unit=metric==='aov'||metric==='revenue'?'currency':'count',streams=[...new Set([...totals.map(row=>row.stream),...prior.keys()])];
- return <section aria-label="Order types"><div className="panel"><div className="panel-heading"><div><h2>Which order type moved?</h2><p>{filters.from} – {filters.to} · {record.client.timezone}</p></div><label>Measure <select aria-label="Order type chart metric" value={metric} onChange={event=>setMetric(event.target.value as typeof metric)}><option value="aov">Average order value</option><option value="revenue">Merchandise revenue</option><option value="orders">Orders</option><option value="units">Units</option></select></label></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Order type</th><th>Revenue</th><th>Orders</th><th>AOV</th><th>Comparison AOV</th><th>AOV change</th><th>Units / order</th></tr></thead><tbody>{totals.map(row=>{const before=prior.get(row.stream);return <tr key={row.stream}><td>{row.label}</td><td>{money(row.revenue,record.client.currency)}</td><td>{number(row.orders)}</td><td>{money(row.aov,record.client.currency)}</td><td>{money(before?.aov,record.client.currency)}</td><td>{percent(change(row.aov,before?.aov??null))}</td><td>{decimal(row.unitsPerOrder)}</td></tr>;})}</tbody></table></div><p className="panel-footer">Acquisition uses positive-value web orders. Renewals use the recurring-order tag. Merchandise revenue excludes shipping and tax, before refunds; Shopify sales above use their own net-sales definition.</p></div><MetricVisualization title={`${metric==='aov'?'AOV':metric==='revenue'?'Revenue':metric==='orders'?'Orders':'Units'} by order type`} subtitle="Separate acquisition and renewal cohorts" series={points} comparisonSeries={comparison} metrics={streams.map(stream=>({key:stream,label:ORDER_STREAM_LABELS[stream]??stream,unit}))} defaultMetrics={streams.filter(stream=>stream!=='unclassified')} {...chartScope(record,filters)} caption="Each order type keeps its own reported counts and value. Missing dates remain gaps; these streams are not a blended all-channel AOV."/></section>;
+ return <section aria-label="Order types"><div className="panel"><div className="panel-heading"><div><h2>Which order type moved?</h2></div><label>Measure <select aria-label="Order type chart metric" value={metric} onChange={event=>setMetric(event.target.value as typeof metric)}><option value="aov">Average order value</option><option value="revenue">Merchandise revenue</option><option value="orders">Orders</option><option value="units">Units</option></select></label></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Order type</th><th>Revenue</th><th>Orders</th><th>AOV</th><th>Comparison AOV</th><th>AOV change</th><th>Units / order</th></tr></thead><tbody>{totals.map(row=>{const before=prior.get(row.stream);return <tr key={row.stream}><td>{row.label}</td><td>{money(row.revenue,record.client.currency)}</td><td>{number(row.orders)}</td><td>{money(row.aov,record.client.currency)}</td><td>{money(before?.aov,record.client.currency)}</td><td><AovChange current={row.aov} previous={before?.aov??null} currency={record.client.currency}/></td><td>{decimal(row.unitsPerOrder)}</td></tr>;})}</tbody></table></div><details><summary className="disclosure-heading">About these numbers</summary><p className="panel-footer">Acquisition uses positive-value web orders. Renewals use the recurring-order tag. Merchandise revenue excludes shipping and tax, before refunds; Shopify sales above use their own net-sales definition.</p></details></div><MetricVisualization title={`${metric==='aov'?'AOV':metric==='revenue'?'Revenue':metric==='orders'?'Orders':'Units'} by order type`}  series={points} comparisonSeries={comparison} metrics={streams.map(stream=>({key:stream,label:ORDER_STREAM_LABELS[stream]??stream,unit}))} defaultMetrics={streams.filter(stream=>stream!=='unclassified')} {...chartScope(record,filters)} /></section>;
 }
 
 export function RenewalMixDiagnostics({record,filters}:{record:ClientRecord;filters:QueryFilters}){

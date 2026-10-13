@@ -1,0 +1,5 @@
+.toggle{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:7px 10px;min-height:34px;background:var(--az-surface-raised);color:var(--az-fg);border:1px solid var(--az-border);border-radius:4px;font-family:inherit;font-size:12px;white-space:nowrap}
+.toggle:hover{background:var(--az-hover);border-color:var(--az-blue)}
+.toggle:focus-visible{outline:2px solid var(--az-blue);outline-offset:3px}
+.toggle:disabled{opacity:.5;cursor:wait}
+@media(max-width:650px){.label{display:none}.toggle{padding:7px}}

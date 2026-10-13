@@ -3,6 +3,7 @@ import {readFileSync,readdirSync} from 'node:fs';
 import {afterEach,expect,it,vi} from 'vitest';
 import {Store} from '../../lib/server/store';
 import type {Observation,QueryFilters,SourceBatch} from '../../lib/analytics/contracts';
+import {dayWindow} from '../../lib/analytics/windows';
 
 function database(){
  // Exercise range-cache misses and the legacy raw paging fallback explicitly.
@@ -52,6 +53,17 @@ it('updates partial rollups when source coverage changes without republishing ob
  const partial={...filters,mode:'partial' as const};expect((await store.observations('o','a',partial))[0].value).toBe(1);
  await store.run("UPDATE connections SET coverageThrough='2026-10-07T02:00:00Z' WHERE id='source'");expect((await store.observations('o','a',partial))[0].value).toBe(3);
  await store.run("UPDATE connections SET coverageThrough=NULL WHERE id='source'");expect((await store.observations('o','a',partial))).toHaveLength(2);
+});
+it('retains and compacts both full traffic days when live coverage ends at the next store midnight',async()=>{
+ const {db}=database(),store=new Store(db),timezone='Europe/Stockholm',coverage=dayWindow(filters.to,timezone).end;
+ await store.run("INSERT INTO clients(id,organizationId,name,slug,timezone,currency,color,config,version) VALUES('a','o','A','a',?,'USD','blue','{}',1)",timezone);
+ await store.run("INSERT INTO connections(id,organizationId,clientId,name,provider,endpoint,secretRef,pollMinutes,enabled,coverageThrough,version) VALUES('source','o','a','Source','kind-shopify-traffic','','',60,1,?,1)",coverage);
+ const rows:Observation[]=['2026-10-06','2026-10-07'].flatMap(date=>['traffic','funnels'].flatMap(dataset=>[0,23].map((hour):Observation=>({date,dataset,metric:'sessions',value:hour===0?1:2,currency:null,definition:dataset==='traffic'?'shopify_human_public_landing_page_traffic':'shopify_human_public_landing_pages',population:'human_public_landing_page_sessions',dimensions:dataset==='traffic'?{page:'/lp',market:'US',device:'mobile',source:'social',utm_source:'meta',utm_medium:'paid',utm_campaign:'one'}:{page:'/lp',market:'US'},start:new Date(Date.parse(dayWindow(date,timezone).start)+hour*3600000).toISOString(),end:new Date(Date.parse(dayWindow(date,timezone).start)+(hour+1)*3600000).toISOString(),sourceId:'',retrievedAt:'',quality:'complete' as const,coverageThrough:coverage}))));
+ await store.persistBatch('o','source',{...batch(),timezone,grain:'hourly',rows,coverageThrough:coverage},'midnight','2026-10-07T22:05:00Z');
+ const actual=await store.observations('o','a',{...filters,view:'traffic',mode:'partial'});
+ expect(actual).toHaveLength(4);
+ expect(actual.map(row=>[row.date,row.dataset,row.value,Date.parse(row.end!)]).sort()).toEqual(['2026-10-06','2026-10-07'].flatMap(date=>['traffic','funnels'].map(dataset=>[date,dataset,3,Date.parse(dayWindow(date,timezone).end)])).sort());
+ expect(actual.every(row=>Object.hasOwn(row,'aggregation'))).toBe(true);
 });
 it('evicts older filter selections instead of retaining unbounded response data',async()=>{
  const {db,queries}=database(),store=new Store(db);await store.persistBatch('o','source',batch(),'one','2026-10-08T00:00:00Z');await store.observations('o','a',filters);

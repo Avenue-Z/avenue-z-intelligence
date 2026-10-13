@@ -3,7 +3,7 @@ import {getStore,requireClientAccess} from './access';
 import {workspacePresentation} from '../analytics/presentation';
 import {queryClient} from '../analytics/query';
 import {todayIn,shiftDate,comparisonPeriod} from '../analytics/windows';
-import {initialReportingDate} from '../analytics/reporting-date';
+import {initialReportingDate,liveReportingDate} from '../analytics/reporting-date';
 import type {AccessScope,QueryFilters} from '../analytics/contracts';
 import {serverSecret} from './secrets';
 import {withAnalyticsMemory} from './analytics-memory';
@@ -44,8 +44,8 @@ async function loadWorkspaceWithinBudget(p:URLSearchParams,scope:AccessScope){
  const clients=(await s.clients(scope.organizationId)).filter(c=>scope.permittedClientIds.includes(c.id)&&(!pageDrill||c.id===focusedClientId));
  if(focusedClientId&&!clients.some(client=>client.id===focusedClientId))throw Error('Client unavailable');
  const focusedClient=clients.find(client=>client.id===focusedClientId);
- if(focusedClient&&(filters.period==='today'||!p.has('from')&&!p.has('to'))){const today=todayIn(focusedClient.timezone);filters.from=filters.to=filters.mode==='partial'?today:shiftDate(today,-1);}
  const connections=await Promise.all(clients.map(c=>s.connections(scope.organizationId,c.id)));let reportingDate:string|null=null;
+ if(focusedClient&&(filters.period==='today'||!p.has('from')&&!p.has('to'))){const today=todayIn(focusedClient.timezone),focusedConnections=connections[clients.indexOf(focusedClient)];filters.from=filters.to=filters.mode==='partial'?liveReportingDate(focusedConnections,filters.view,focusedClient.timezone):shiftDate(today,-1);}
  if(!p.has('from')&&!p.has('to')&&p.get('period')!=='today'&&!connections.some(rows=>rows.some(c=>c.enabled))){
   filters.mode='closed';delete filters.period;filters.from=filters.to=shiftDate(todayIn(focusedClient?.timezone??'America/New_York'),-1);
   const history=await withAnalyticsMemory(()=>Promise.all(clients.map(c=>s.observations(scope.organizationId,c.id,undefined,true))));
@@ -53,7 +53,8 @@ async function loadWorkspaceWithinBudget(p:URLSearchParams,scope:AccessScope){
  }
  const all=await Promise.all(clients.map(async(client,i)=>{
   const fullReviews=p.get('section')==='reviews'||filters.view==='reviews'&&focusedClientId===client.id;
-  const clientFilters=filters.period==='today'?{...filters,from:todayIn(client.timezone),to:todayIn(client.timezone)}:filters;
+  const liveDate=filters.period==='today'?liveReportingDate(connections[i],filters.view,client.timezone):null;
+  const clientFilters=liveDate?{...filters,from:liveDate,to:liveDate}:filters;
   const preparedDatasets=pageDrill?['traffic','funnels']:focusedClientId?(client.id===focusedClientId?workspaceDatasets(filters.view):['overview']):['overview','subscriptions','subscriptionEvents'];
   // The drawer renders this page's selected/comparison funnel only. Keep the
   // main workspace's thirty-day chart context outside this scoped drill read.

@@ -31,6 +31,14 @@ it('refreshes today and all supported benchmark cuts without capping explicit hi
  expect(kindSourceDates(KIND_SOURCES[5] as any,client,{from:'2026-10-07',to:date},now)).toEqual([date,'2026-10-12','2026-10-06','2026-09-15']);
  expect(effectiveKindWindow(sales,client,{from:'2026-10-12',to:date},new Date('2026-10-12T22:35:00Z')).to).toBe('2026-10-12');
 });
+it.each(['kind-shopify-sales','kind-shopify-products','kind-shopify-traffic','kind-meta-performance','kind-applovin'])('%s refreshes the last completed store day during the first calendar hour',provider=>{
+ const source={provider} as any,current={from:'2026-10-14',to:'2026-10-14'};
+ const midnight=new Date('2026-10-13T22:35:00Z');
+ expect(effectiveKindWindow(source,client,current,midnight)).toEqual({from:'2026-10-13',to:'2026-10-13'});
+ expect(kindSourceDates(source,client,current,midnight)).toEqual(['2026-10-13']);
+ expect(effectiveKindWindow(source,client,current,new Date('2026-10-13T23:00:00Z'))).toEqual(current);
+ expect(effectiveKindWindow(source,client,{from:'2026-10-12',to:'2026-10-12'},midnight)).toEqual({from:'2026-10-12',to:'2026-10-12'});
+});
 it('wires country-hour queries into the provider source and qualified contract',async()=>{
  const secret=JSON.stringify({SHOP_DOMAIN:'bright-patches.myshopify.com',SHOPIFY_ADMIN_TOKEN:'private',TRIPLE_WHALE_SQL_KEY:'private',TRIPLE_WHALE_SUMMARY_KEY:'private',META_ACCESS_TOKEN:'private',META_AD_ACCOUNT_ID:'123',META_API_VERSION:'v24.0',META_TIME_ZONE:'Europe/Stockholm',APPLOVIN_REPORT_KEY:'private',RECHARGE_ADMIN_TOKEN:'private'}),queries:string[]=[];
  const fetcher:typeof fetch=async(_url,options)=>{const query=JSON.parse(String(options?.body)).query;queries.push(query);const rows=query.includes('billing_country_code')?(query.includes('GROUP BY event_date,event_hour')?input.hourly:input.daily):query.includes('Subscription Recurring Order')&&query.includes(' AS recurring_revenue')?[]:query.includes('ads_table')?[{event_date:date,...query.includes('event_hour,channel')?{event_hour:2}:{},channel:'facebook-ads',spend:10}]:[{...core,...query.includes('GROUP BY event_date,event_hour')?{shop_timezone:client.timezone}:{event_hour:undefined}}];return Response.json(rows);};

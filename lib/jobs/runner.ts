@@ -28,7 +28,14 @@ async function freshCore(s:Store,scope:AccessScope,c:Client,now:Date,due:DueRevi
 export async function syncTick(){
  const s=getStore(),scope=await serviceScope(s),scheduler=new DailyScheduler(s),id=`${scope.organizationId}:sync`,token=await scheduler.acquire(id,new Date().toISOString(),900000);
  if(!token)return {skipped:'already-running',completed:[],failed:[]};
- try{const started=Date.now();await enqueueDue(scope);const result=await runSyncBatch(scope,{maxJobs:7,deadline:started+700000});const cacheWarm=await warmSuccessfulSourceJobs(s,scope,result.completed,started+770000);return {...result,cacheWarm};}
+ try{
+  const started=Date.now();await enqueueDue(scope);const result=await runSyncBatch(scope,{maxJobs:7,deadline:started+700000});
+  // Release the source runner promptly for the next batch. The independent
+  // cache cron can warm views while remaining current feeds catch up.
+  const pendingCurrent=scope.permittedClientIds.length?await s.first(`SELECT j.id FROM jobs j JOIN connections c ON c.id=j.sourceId AND c.organizationId=j.organizationId AND c.clientId=j.clientId WHERE j.organizationId=? AND j.clientId IN (${scope.permittedClientIds.map(()=>'?').join(',')}) AND c.enabled=1 AND j.id NOT LIKE '%:hourly-history:____-__-__' AND j.status IN ('pending','running') AND j.dueAt<=? LIMIT 1`,scope.organizationId,...scope.permittedClientIds,new Date().toISOString()):null;
+  const cacheWarm=pendingCurrent?{attempted:0,completed:0}:await warmSuccessfulSourceJobs(s,scope,result.completed,started+770000);
+  return {...result,cacheWarm};
+ }
  finally{await scheduler.release(id,token);}
 }
 export async function reviewTick(){

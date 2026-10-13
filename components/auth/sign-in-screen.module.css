@@ -1,38 +1,36 @@
-.screen{min-height:100svh;display:flex;flex-direction:column;padding:38px clamp(24px,5vw,80px) 24px;background:radial-gradient(ellipse at 76% 32%,#eeebfa 0,transparent 44%),#faf9f6;color:#172033;position:relative;isolation:isolate;overflow:hidden}
-.screen::before{content:"";position:absolute;inset:0;z-index:-1;opacity:.25;background-image:linear-gradient(#dedde580 1px,transparent 1px),linear-gradient(90deg,#dedde580 1px,transparent 1px);background-size:88px 88px;mask-image:linear-gradient(90deg,transparent 22%,#000 100%);pointer-events:none}
-.header,.footer{display:flex;align-items:center;justify-content:space-between;gap:24px;width:100%;max-width:1320px;margin:0 auto}
-.brand{display:flex;align-items:center;gap:13px;font-size:17px;font-weight:780;letter-spacing:.035em;color:#172033}
-.mark{display:grid;place-items:center;background:#172033;color:#fff;width:38px;height:40px;font-size:32px;font-weight:900;line-height:1;border-radius:3px}
-.brand small{display:block;font-size:9px;font-weight:600;letter-spacing:.27em;color:#6e7482;margin-top:5px}
-.teamLabel{font-size:12px;color:#747987}
-.content{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(340px,.9fr);align-items:center;gap:clamp(45px,7vw,125px);width:100%;max-width:1120px;margin:auto;padding:60px 0}
-.eyebrow{display:flex;align-items:center;gap:11px;margin:0 0 26px;color:#646474;font-size:10px;font-weight:650;letter-spacing:.12em;line-height:1.6}
-.eyebrow span{height:2px;width:28px;background:#7364c9;flex-shrink:0}
-.introduction h1{font-size:clamp(48px,5.2vw,76px);font-weight:650;letter-spacing:-.058em;line-height:1.06;margin:0;color:#172033}
-.introduction h1>span{color:#7262b9}
-.description{max-width:430px;font-size:17px;line-height:1.8;color:#757887;margin:26px 0 0;letter-spacing:-.01em}
-.features{display:flex;flex-wrap:wrap;gap:12px 26px;margin-top:37px;color:#575e70;font-size:12px}
+.screen{min-height:100svh;display:flex;flex-direction:column;padding:34px clamp(24px,5vw,76px) 26px;background:#000;color:#fff;font-family:Avenir,Helvetica,Arial,sans-serif;position:relative;isolation:isolate}
+.header,.footer{display:flex;align-items:center;justify-content:space-between;gap:24px;width:100%;max-width:1400px;margin:0 auto}
+.header{padding-bottom:28px;border-bottom:1px solid #2a2a2a}
+.brand{display:flex;align-items:center;gap:22px;color:#fff}
+.brand img{width:147px;height:31px;flex-shrink:0}
+.brand>span{border-left:1px solid #535353;padding-left:22px;font-size:10px;font-weight:500;letter-spacing:.18em;line-height:24px}
+.teamLabel{font-size:12px;color:#9a9a9a}
+.content{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(340px,.88fr);align-items:center;gap:clamp(48px,7vw,118px);width:100%;max-width:1250px;margin:auto;padding:64px 0 78px}
+.eyebrow{margin:0 0 27px;color:#ababab;font-size:10px;font-weight:500;letter-spacing:.13em;line-height:1.6}
+.introduction h1{font-size:clamp(50px,5.2vw,80px);font-weight:900;letter-spacing:-.05em;line-height:1.09;margin:0;color:#fff}
+.introduction h1>span{position:relative;display:inline-block}
+.introduction h1>span::after{content:"";display:block;height:4px;background:linear-gradient(90deg,#387ace 5%,#8342ee 97%);margin-top:14px;width:100%}
+.description{max-width:455px;font-size:18px;line-height:1.7;color:#ababab;margin:29px 0 0;letter-spacing:-.01em}
+.features{display:flex;flex-wrap:wrap;gap:12px 25px;margin-top:34px;color:#d5d5d5;font-size:12px}
 .features>span{display:flex;align-items:center;gap:8px;white-space:nowrap}
-.features svg{color:#9085b2;stroke-width:1.6}
-.signIn{background:#ffffffed;border:1px solid #e6e3eb;border-radius:20px;box-shadow:0 25px 70px -35px #352c683b,0 2px 5px #17203303;padding:38px 36px 0;max-width:430px;width:100%;justify-self:end;position:relative}
-.cardMark{display:grid;place-items:center;width:48px;height:48px;border-radius:13px;background:#f0edf8;color:#7c6abd;margin-bottom:28px}
-.cardEyebrow{color:#8a849b;font-size:10px;font-weight:600;letter-spacing:.13em;margin:0 0 12px}
-.signIn h2{font-size:31px;font-weight:600;line-height:1.25;letter-spacing:-.04em;margin:0;color:#23283b}
-.cardDescription{color:#86828e;font-size:14px;line-height:1.65;margin:11px 0 31px}
-.googleButton{display:flex;align-items:center;justify-content:center;gap:13px;width:100%;min-height:54px;padding:14px 18px;background:#fff;border:1px solid #d9d5e1;border-radius:9px;color:#323447;font-size:14px;font-weight:600;line-height:1.4;transition:background .15s,border-color .15s,box-shadow .15s;text-decoration:none;box-shadow:0 2px 3px #29223e04}
-.googleButton:hover{background:#faf9ff;border-color:#a69bc5;box-shadow:0 3px 12px #75679812}
-.googleButton:focus-visible{outline:3px solid #9d8adb;outline-offset:4px}
+.features svg{color:#a4a4a4;stroke-width:1.6}
+.signIn{color:#fff;padding:6px 0 0;max-width:358px;width:100%;justify-self:end;position:relative}
+.cardEyebrow{color:#ababab;font-size:10px;font-weight:500;letter-spacing:.13em;margin:0 0 12px}
+.signIn h2{font-size:34px;font-weight:800;line-height:1.25;letter-spacing:-.035em;margin:0;color:#fff}
+.cardDescription{color:#ababab;font-size:14px;line-height:1.65;margin:12px 0 29px}
+.googleButton{display:flex;align-items:center;justify-content:center;gap:12px;width:100%;min-height:52px;padding:14px 18px;background:#fff;border:1px solid #b8b8b8;border-radius:46px;color:#000;font-size:14px;font-weight:800;line-height:1.4;transition:background .15s,border-color .15s;text-decoration:none}
+.googleButton:hover{background:#f2f5f7;border-color:#000}
+.googleButton:focus-visible{outline:3px solid #4271d5;outline-offset:4px}
 .googleButton:disabled{cursor:wait;opacity:.65}
 .googleButton svg{flex-shrink:0}
-.accountNote{text-align:center;font-size:11px;color:#8b8696;line-height:1.8;margin:17px 0 31px}
-.accountNote strong{color:#625b73;font-weight:550}
-.cardFooter{border-top:1px solid #eeebf1;display:flex;align-items:center;justify-content:center;gap:7px;margin:0 -36px;padding:17px;font-size:10px;color:#9891a3;line-height:1.6}
-.cardFooter span{width:5px;height:5px;background:#afa1c9;border-radius:50%}
-.error{color:#96394f;background:#fff3f5;border:1px solid #f3dce3;border-radius:7px;padding:12px;font-size:12px;line-height:1.65;margin:0 0 18px}
+.accountNote{text-align:center;font-size:12px;color:#ababab;line-height:1.8;margin:17px 0 28px}
+.accountNote strong{color:#fff;font-weight:800}
+.cardFooter{border-top:1px solid #2a2a2a;padding:17px 0 0;font-size:11px;color:#888;text-align:center;line-height:1.6}
+.error{color:#96394f;background:#fff3f5;border:1px solid #f3dce3;border-radius:4px;padding:12px;font-size:12px;line-height:1.65;margin:0 0 18px}
 .signIn :global(.google-signin-error){color:#96394f;font-size:12px;line-height:1.65;margin:12px 0 0}
-.footer{font-size:10px;color:#a09ba8;letter-spacing:.025em;padding-top:20px}
+.footer{font-size:10px;color:#888;letter-spacing:.025em;padding-top:22px;border-top:1px solid #2a2a2a}
 .footer>span:first-child{font-size:9px;letter-spacing:.12em}
-@media(min-width:1600px){.content{max-width:1230px;gap:150px}.introduction h1{font-size:83px}.description{font-size:18px}.signIn{max-width:440px;padding-top:42px;padding-bottom:0}}
-@media(max-width:800px){.screen{padding:28px 26px 22px}.content{grid-template-columns:1fr;max-width:500px;gap:42px;padding:62px 0;align-items:start}.introduction h1{font-size:58px}.description{font-size:15px;max-width:395px;margin-top:20px}.eyebrow{font-size:9px;margin-bottom:20px}.features{margin-top:24px;gap:20px;font-size:11px}.signIn{justify-self:start;max-width:none}.teamLabel{display:none}.footer{font-size:9px}.footer>span:last-child{display:none}}
-@media(max-width:420px){.screen{padding:24px 20px 20px}.content{padding:46px 0}.introduction h1{font-size:49px}.features{gap:15px;font-size:10px}.features svg{width:15px}.signIn{padding:28px 25px 0;border-radius:16px}.cardMark{margin-bottom:22px}.cardDescription{margin-bottom:24px}.cardFooter{margin:0 -25px}.eyebrow{font-size:8px;letter-spacing:.08em}.accountNote{margin-bottom:25px}}
+@media(min-width:1600px){.content{max-width:1340px;gap:145px}.introduction h1{font-size:88px}.description{font-size:19px}.signIn{max-width:380px}}
+@media(max-width:800px){.screen{padding:27px 26px 22px}.content{grid-template-columns:1fr;max-width:500px;gap:43px;padding:49px 0 54px;align-items:start}.introduction h1{font-size:58px}.description{font-size:15px;max-width:395px;margin-top:22px}.eyebrow{font-size:9px;margin-bottom:19px}.features{margin-top:24px;gap:20px;font-size:11px}.signIn{justify-self:start;max-width:none}.teamLabel{display:none}.footer{font-size:9px}.footer>span:last-child{display:none}}
+@media(max-width:420px){.screen{padding:23px 20px 20px}.brand{gap:15px}.brand>span{padding-left:15px;font-size:8px;letter-spacing:.12em}.brand img{width:127px;height:auto}.content{padding:39px 0 46px}.introduction h1{font-size:48px}.features{gap:15px;font-size:10px}.features svg{width:15px}.signIn{padding:6px 0 0}.cardDescription{margin-bottom:24px}.eyebrow{font-size:8px;letter-spacing:.08em}.accountNote{margin-bottom:25px}}
 @media(prefers-reduced-motion:reduce){.googleButton{transition:none}}

@@ -14,6 +14,9 @@ export function confirmedIntradayCutoff(connections:Connection[],view:string,tim
  const sources=intradayConnections(connections,view),coverage=sources.map(source=>source.coverageThrough),start=Date.parse(dayWindow(date,timezone).start);
  if(!coverage.length||!coverage.every((value):value is string=>!!value&&Number.isFinite(Date.parse(value))&&Date.parse(value)>=start))return null;
  const cutoff=matchedCutoff(coverage,timezone);if(!cutoff)return null;
+ // Coverage at the next midnight completes this entire selected store day.
+ // Projecting 00:00 back onto its start would incorrectly remove every hour.
+ if(Date.parse(cutoff)===Date.parse(dayWindow(date,timezone).end))return cutoff;
  const local=Temporal.Instant.from(cutoff).toZonedDateTimeISO(timezone);if(local.toPlainDate().toString()===date)return cutoff;
  const clock=local.toPlainTime();
  return Temporal.PlainDate.from(date).toZonedDateTime({timeZone:timezone,plainTime:clock}).toInstant().toString();

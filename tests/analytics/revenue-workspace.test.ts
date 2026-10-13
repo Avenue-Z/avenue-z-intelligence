@@ -26,3 +26,8 @@ it('uses actual hourly sales on today without diverting the user to Overview',()
  const html=renderToStaticMarkup(createElement(RevenueWorkspace,{record:{...r,cutoff:'2026-10-11T01:00:00Z',datasetHourlySeries:{revenue:hourly},comparisonDatasetHourlySeries:{}} as ClientRecord,filters:f,update:()=>{}}));
  expect(html).toContain('Actual hourly intervals');expect(html).toContain('Hourly');expect(html).toContain('Daily context');expect(html).toContain('hours reported');expect(html).not.toContain('reports cover closed store days');expect(html).not.toContain('use Overview');
 });
+it('compares each sales-channel order count and AOV with its matched prior channel',()=>{
+ const html=renderToStaticMarkup(createElement(RevenueWorkspace,{record:record(),filters,update:()=>{}}));
+ const channelRow=html.match(/<td><button[^>]*>Online Store<\/button>[\s\S]*?<\/tr>/)?.[0]??'';
+ expect(channelRow).toContain('20');expect(channelRow).toContain('vs yesterday · 10');expect(channelRow).toContain('vs yesterday · $10');expect(channelRow).toContain('Unchanged 0.0%');
+});

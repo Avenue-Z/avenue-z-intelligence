@@ -1,4 +1,4 @@
-import {expect,it} from 'vitest';
+import {expect,it,vi} from 'vitest';
 import * as navigation from '../../lib/analytics/workspace-cache';
 import {queryClient} from '../../lib/analytics/query';
 import {workspaceDatasets} from '../../lib/analytics/workspace-datasets';
@@ -8,9 +8,9 @@ import type {Client,Observation,QueryFilters} from '../../lib/analytics/contract
 
 const client:Client={id:'kind-patches',name:'Kind Patches',slug:'kind-patches',timezone:'UTC',currency:'USD',color:'#2549c5',version:1,config:{markets:['US'],benchmarkMarket:'US',revenueDefinition:'web',spendChannels:[],recurringLabel:'Subscriptions',minSessions:100,minOpportunity:5,maxActions:6,reviewTime:'09:00',reviewTimezone:'UTC',reviewMode:'closed',incidents:[]}};
 const filters:QueryFilters={from:'2026-10-07',to:'2026-10-07',compare:'previous',market:'',stream:'',source:'',device:'',page:'',mode:'closed',view:'overview'};
-function workspace(changes:Partial<QueryFilters>={},organizationId='agency',actorId='analyst'):Workspace{
+function workspace(changes:Partial<QueryFilters>={},organizationId='agency',actorId='analyst',priorRows:Observation[]=[]):Workspace{
  const f={...filters,...changes},rows:Observation[]=[['overview','revenue',100],['revenue','revenue',50],['revenue','orders',5],['funnels','sessions',1000],['funnels','converting_sessions',20]].map(([dataset,metric,value])=>({date:f.to,dataset:dataset as string,metric:metric as string,value:value as number,dimensions:{},definition:metric as string,population:'web',currency:metric==='revenue'?'USD':null,sourceId:'source',retrievedAt:'2026-10-08T00:00:00Z',coverageThrough:'2026-10-08T00:00:00Z',quality:'complete'}));
- return {scope:{organizationId,actorId,role:'analyst',permittedClientIds:[client.id]},filters:f,clients:[{...workspacePresentation(queryClient(client,rows,[],f,{preparedDatasets:[...new Set(['overview','traffic','revenue','markets','products','subscriptions','media','creatives','reviews','settings'].flatMap(workspaceDatasets))]}),f),findings:[],reviews:[],note:{body:'',version:0},scheduleState:{active:false,waitingForSources:true,lastJob:undefined}}],jobs:[],reportingDateNote:null,loadedAt:'2026-10-08T12:00:00Z'};
+ return {scope:{organizationId,actorId,role:'analyst',permittedClientIds:[client.id]},filters:f,clients:[{...workspacePresentation(queryClient(client,[...rows,...priorRows],[],f,{preparedDatasets:[...new Set(['overview','traffic','revenue','markets','products','subscriptions','media','creatives','reviews','settings'].flatMap(workspaceDatasets))]}),f),findings:[],reviews:[],note:{body:'',version:0},scheduleState:{active:false,waitingForSources:true,lastJob:undefined}}],jobs:[],reportingDateNote:null,loadedAt:'2026-10-08T12:00:00Z'};
 }
 
 it('switches to an unvisited tab immediately with its metrics and immutable original selection',()=>{
@@ -22,6 +22,15 @@ it('switches to an unvisited tab immediately with its metrics and immutable orig
  expect(initial.clients[0].viewMetrics.revenue).toBe(100);
  expect(navigation.selectWorkspaceView(next,'overview')!.clients[0].viewMetrics.revenue).toBe(100);
  expect(navigation.selectWorkspaceView(next,'funnels')!.clients[0].viewMetrics.cvr).toBe(.02);
+});
+it('projects the comparison baseline for the selected dataset instead of retaining the previous tab baseline',()=>{
+ const initial=workspace({},'agency','analyst',[
+  {date:'2026-10-06',dataset:'revenue',metric:'revenue',value:40,dimensions:{},definition:'revenue',population:'web',currency:'USD',sourceId:'source',retrievedAt:'2026-10-08T00:00:00Z',coverageThrough:'2026-10-08T00:00:00Z',quality:'complete'},
+  {date:'2026-10-06',dataset:'revenue',metric:'orders',value:4,dimensions:{},definition:'orders',population:'web',currency:null,sourceId:'source',retrievedAt:'2026-10-08T00:00:00Z',coverageThrough:'2026-10-08T00:00:00Z',quality:'complete'}
+ ]);
+ expect(initial.clients[0].comparisonEvidence).toEqual([]);
+ const revenue=navigation.selectWorkspaceView(initial,'revenue')!;expect(revenue.clients[0].viewPriorMetrics).toMatchObject({revenue:40,orders:4,aov:10});
+ expect(navigation.selectWorkspaceView(revenue,'overview')!.clients[0].viewPriorMetrics).toEqual(initial.clients[0].prior);
 });
 it('requires full review documents before projecting an analytics index into the Reviews view',()=>{
  const initial=workspace();initial.clients[0].reviewsIndexOnly=true;
@@ -116,4 +125,136 @@ it('reuses a diagnostically complete frame only for its exact custom comparison 
  expect(cache.read(initial.filters,Date.parse('2026-10-08T12:00:05Z'),client.id)?.workspace.clients[0].viewMetrics.revenue).toBe(50);
  expect(cache.read({...initial.filters,compareFrom:'2026-09-02',compareTo:'2026-09-02'},undefined,client.id)).toBeNull();
  expect(cache.read(initial.filters,undefined,'beam')).toBeNull();
+});
+
+
+function focusedFrame(view='revenue',changes:Partial<QueryFilters>={}):Workspace{
+ const frame=workspace({...changes,view});frame.focusedClientId=client.id;frame.loadedAt=new Date().toISOString();
+ frame.clients[0].preparedDatasets=workspaceDatasets(view);frame.clients[0].views=Object.fromEntries(Object.entries(frame.clients[0].views).filter(([dataset])=>frame.clients[0].preparedDatasets!.includes(dataset)));
+ return frame;
+}
+const parameters=(frame:Workspace)=>new URLSearchParams({...frame.filters,clientId:client.id});
+async function flushPreloads(){for(let i=0;i<8;i++)await Promise.resolve();}
+
+it('preloads unvisited client views with two background requests and joins foreground reads',async()=>{
+ const initial=focusedFrame(),cache=new navigation.WorkspaceCache(initial),pending=new Map<string,(frame:Workspace)=>void>();
+ const load=vi.fn((params:URLSearchParams,_signal:AbortSignal)=>new Promise<Workspace>(resolve=>pending.set(params.get('view')!,resolve)));
+ const preloader=new navigation.WorkspacePreloader(cache,load),params=parameters(initial);
+ preloader.preload(initial,params,client.id,['traffic','products','media']);await flushPreloads();
+ expect(load.mock.calls.map(([params])=>params.get('view'))).toEqual(['traffic','products']);
+ const trafficParams=new URLSearchParams(params);trafficParams.set('view','traffic');const foreground=preloader.request(trafficParams);
+ expect(load).toHaveBeenCalledTimes(2);
+ pending.get('traffic')!(focusedFrame('traffic'));await foreground;await flushPreloads();
+ expect(load.mock.calls.map(([params])=>params.get('view'))).toEqual(['traffic','products','media']);
+ expect(cache.read({...initial.filters,view:'traffic'},Date.now(),client.id)?.workspace.filters.view).toBe('traffic');
+ preloader.cancel();
+});
+
+it('deduplicates repeated preload waves and cancels old filters without caching late responses',async()=>{
+ const initial=focusedFrame(),cache=new navigation.WorkspaceCache(initial),signals:AbortSignal[]=[],pending:((frame:Workspace)=>void)[]=[];
+ const load=vi.fn((_params:URLSearchParams,signal:AbortSignal)=>new Promise<Workspace>(resolve=>{signals.push(signal);pending.push(resolve);}));
+ const preloader=new navigation.WorkspacePreloader(cache,load),params=parameters(initial);
+ preloader.preload(initial,params,client.id,['traffic','products','media']);preloader.preload(initial,params,client.id,['traffic','products','media']);await flushPreloads();
+ expect(load).toHaveBeenCalledTimes(2);
+ const changed=new URLSearchParams(params);changed.set('from','2026-10-06');preloader.select(changed);
+ expect(signals.every(signal=>signal.aborted)).toBe(true);
+ pending[0](focusedFrame('traffic'));pending[1](focusedFrame('products'));await flushPreloads();
+ expect(cache.read({...initial.filters,view:'traffic'},Date.now(),client.id)).toBeNull();expect(load).toHaveBeenCalledTimes(2);
+});
+
+it('preloads the exact comparison, date and supported dimension selection for each tab',async()=>{
+ const initial=focusedFrame('traffic',{compare:'custom',compareFrom:'2026-09-01',compareTo:'2026-09-01',market:'US',source:'Meta',device:'mobile',page:'/offer'}),cache=new navigation.WorkspaceCache(initial);
+ const load=vi.fn(async(params:URLSearchParams)=>focusedFrame(params.get('view')!,Object.fromEntries([...params].filter(([key])=>key!=='clientId')) as Partial<QueryFilters>));
+ const preloader=new navigation.WorkspacePreloader(cache,load);preloader.preload(initial,parameters(initial),client.id,['revenue']);await flushPreloads();
+ expect(load).toHaveBeenCalledTimes(1);const requested=load.mock.calls[0][0];
+ expect(Object.fromEntries(requested)).toMatchObject({clientId:client.id,view:'revenue',from:initial.filters.from,to:initial.filters.to,compare:'custom',compareFrom:'2026-09-01',compareTo:'2026-09-01',market:'',source:'',device:'',page:''});
+ expect(cache.read({...initial.filters,view:'revenue',market:'',source:'',device:'',page:''},Date.now(),client.id)).not.toBeNull();
+ expect(cache.read({...initial.filters,view:'revenue'},Date.now(),client.id)).toBeNull();preloader.cancel();
+});
+
+it('refreshes preloaded tabs when an hourly source capture changes, even when browser entries are young',async()=>{
+ const initial=focusedFrame();initial.clients[0].connections=[{id:'source',version:1,enabled:true,lastSuccess:'2026-10-08T12:00:00Z',coverageThrough:'2026-10-08T11:00:00Z'}] as any;
+ const cache=new navigation.WorkspaceCache(initial),load=vi.fn(async(params:URLSearchParams)=>{const next=focusedFrame(params.get('view')!);next.clients[0].connections=initial.clients[0].connections;return next;});
+ const preloader=new navigation.WorkspacePreloader(cache,load),params=parameters(initial);preloader.preload(initial,params,client.id,['products']);await flushPreloads();
+ expect(load).toHaveBeenCalledTimes(1);preloader.preload(initial,params,client.id,['products']);await flushPreloads();expect(load).toHaveBeenCalledTimes(1);
+ const updated=focusedFrame();updated.clients[0].connections=[{...initial.clients[0].connections[0],lastSuccess:'2026-10-08T13:00:00Z',coverageThrough:'2026-10-08T12:00:00Z'}];preloader.preload(updated,params,client.id,['products']);await flushPreloads();
+ expect(load).toHaveBeenCalledTimes(2);preloader.cancel();
+});
+
+it('does not restore an older-hour tab while its replacement is still warming',async()=>{
+ const initial=focusedFrame();initial.clients[0].connections=[{id:'source',version:1,enabled:true,lastSuccess:'2026-10-08T12:00:00Z',coverageThrough:'2026-10-08T11:00:00Z'}] as Workspace['clients'][number]['connections'];
+ const cache=new navigation.WorkspaceCache(initial);let release!:(frame:Workspace)=>void;
+ const load=vi.fn().mockImplementationOnce(async()=>{const traffic=focusedFrame('traffic');traffic.clients[0].connections=initial.clients[0].connections;return traffic;}).mockImplementationOnce(()=>new Promise<Workspace>(resolve=>{release=resolve;}));
+ const preloader=new navigation.WorkspacePreloader(cache,load),params=parameters(initial);preloader.preload(initial,params,client.id,['traffic']);await flushPreloads();
+ expect(cache.read({...initial.filters,view:'traffic'},Date.now(),client.id)).not.toBeNull();
+ const updated=focusedFrame();updated.clients[0].connections=[{...initial.clients[0].connections[0],lastSuccess:'2026-10-08T13:00:00Z',coverageThrough:'2026-10-08T12:00:00Z'}];cache.remember(updated);preloader.preload(updated,params,client.id,['traffic']);await flushPreloads();
+ expect(cache.read({...initial.filters,view:'traffic'},Date.now(),client.id)).toBeNull();expect(cache.read(updated.filters,Date.now(),client.id)?.workspace.clients[0].connections[0].coverageThrough).toBe('2026-10-08T12:00:00Z');
+ const current=focusedFrame('traffic');current.clients[0].connections=updated.clients[0].connections;release(current);await flushPreloads();expect(cache.read({...initial.filters,view:'traffic'},Date.now(),client.id)?.workspace.clients[0].connections[0].coverageThrough).toBe('2026-10-08T12:00:00Z');preloader.cancel();
+});
+
+
+it('replaces an obsolete joined request before a new navigation can restore the previous source hour',async()=>{
+ const initial=focusedFrame();initial.clients[0].connections=[{id:'source',enabled:true,lastSuccess:'2026-10-08T12:00:00Z'}] as Workspace['clients'][number]['connections'];
+ const cache=new navigation.WorkspaceCache(initial),reads:{view:string;signal:AbortSignal;resolve:(frame:Workspace)=>void}[]=[];
+ const load=vi.fn((params:URLSearchParams,signal:AbortSignal)=>new Promise<Workspace>(resolve=>{reads.push({view:params.get('view')!,signal,resolve});}));
+ const preloader=new navigation.WorkspacePreloader(cache,load),params=parameters(initial);preloader.preload(initial,params,client.id,['traffic','products']);await flushPreloads();
+ const trafficParams=new URLSearchParams(params);trafficParams.set('view','traffic');const first=preloader.request(trafficParams);
+ const oldOuter={current:new AbortController() as AbortController|null},oldKey={current:'traffic'};navigation.cancelWorkspaceRequest(oldOuter,oldKey);
+ const updated=focusedFrame();updated.clients[0].connections=[{...initial.clients[0].connections[0],lastSuccess:'2026-10-08T13:00:00Z'}];preloader.preload(updated,params,client.id,['traffic']);await flushPreloads();
+ const next=preloader.request(trafficParams);expect(next).not.toBe(first);expect(reads[0].signal.aborted).toBe(true);expect(reads[1].signal.aborted).toBe(true);expect(reads).toHaveLength(3);
+ const oldTraffic=focusedFrame('traffic');oldTraffic.clients[0].connections=initial.clients[0].connections;reads[0].resolve(oldTraffic);await flushPreloads();
+ const currentTraffic=focusedFrame('traffic');currentTraffic.clients[0].connections=updated.clients[0].connections;reads[2].resolve(currentTraffic);
+ for(const result of await Promise.all([first,next]))expect(result.clients[0].connections[0].lastSuccess).toBe('2026-10-08T13:00:00Z');
+ expect(cache.read({...initial.filters,view:'traffic'},Date.now(),client.id)?.workspace.clients[0].connections[0].lastSuccess).toBe('2026-10-08T13:00:00Z');reads[1].resolve(focusedFrame('products'));preloader.cancel();
+});
+
+it('aborts a joined foreground request when its selected client or filters change',async()=>{
+ const initial=focusedFrame(),cache=new navigation.WorkspaceCache(initial),signals:AbortSignal[]=[],releases:((frame:Workspace)=>void)[]=[];
+ const load=vi.fn((_params:URLSearchParams,signal:AbortSignal)=>new Promise<Workspace>(resolve=>{signals.push(signal);releases.push(resolve);}));
+ const preloader=new navigation.WorkspacePreloader(cache,load),params=parameters(initial);preloader.preload(initial,params,client.id,['traffic']);await flushPreloads();
+ const traffic=new URLSearchParams(params);traffic.set('view','traffic');const foreground=preloader.request(traffic),rejected=expect(foreground).rejects.toMatchObject({name:'AbortError'});
+ const next=new URLSearchParams(params);next.set('compare','weekday');preloader.select(next);expect(signals[0].aborted).toBe(true);
+ releases[0](focusedFrame('traffic'));await rejected;expect(cache.read({...initial.filters,view:'traffic'},Date.now(),client.id)).toBeNull();
+});
+
+it('does not revive a detached old-hour foreground read after forced cancellation',async()=>{
+ const initial=focusedFrame();initial.clients[0].connections=[{id:'source',enabled:true,lastSuccess:'2026-10-08T12:00:00Z'}] as Workspace['clients'][number]['connections'];
+ const cache=new navigation.WorkspaceCache(initial),releases:((frame:Workspace)=>void)[]=[],load=vi.fn((_params:URLSearchParams,_signal:AbortSignal)=>new Promise<Workspace>(resolve=>releases.push(resolve)));
+ const preloader=new navigation.WorkspacePreloader(cache,load),params=parameters(initial);preloader.preload(initial,params,client.id,['traffic']);await flushPreloads();
+ const traffic=new URLSearchParams(params);traffic.set('view','traffic');const foreground=preloader.request(traffic),rejected=expect(foreground).rejects.toMatchObject({name:'AbortError'});
+ const updated=focusedFrame();updated.clients[0].connections=[{...initial.clients[0].connections[0],lastSuccess:'2026-10-08T13:00:00Z'}];preloader.preload(updated,params,client.id,['traffic']);await flushPreloads();preloader.cancel();
+ releases[0](focusedFrame('traffic'));releases[1](focusedFrame('traffic'));await rejected;await flushPreloads();expect(load).toHaveBeenCalledTimes(2);
+});
+
+it('retries a joined foreground read through the current wave when fetch rejects its obsolete signal',async()=>{
+ const initial=focusedFrame();initial.clients[0].connections=[{id:'source',enabled:true,lastSuccess:'2026-10-08T12:00:00Z'}] as Workspace['clients'][number]['connections'];
+ const cache=new navigation.WorkspaceCache(initial);let release!:(frame:Workspace)=>void;
+ const load=vi.fn().mockImplementationOnce((_params:URLSearchParams,signal:AbortSignal)=>new Promise<Workspace>((_resolve,reject)=>signal.addEventListener('abort',()=>reject(new DOMException('Aborted','AbortError'))))).mockImplementationOnce(()=>new Promise<Workspace>(resolve=>{release=resolve;}));
+ const preloader=new navigation.WorkspacePreloader(cache,load),params=parameters(initial);preloader.preload(initial,params,client.id,['traffic']);await flushPreloads();
+ const traffic=new URLSearchParams(params);traffic.set('view','traffic');const foreground=preloader.request(traffic);
+ const updated=focusedFrame();updated.clients[0].connections=[{...initial.clients[0].connections[0],lastSuccess:'2026-10-08T13:00:00Z'}];preloader.preload(updated,params,client.id,['traffic']);await flushPreloads();
+ const current=focusedFrame('traffic');current.clients[0].connections=updated.clients[0].connections;release(current);expect((await foreground).clients[0].connections[0].lastSuccess).toBe('2026-10-08T13:00:00Z');expect(load).toHaveBeenCalledTimes(2);preloader.cancel();
+});
+
+it('cancels old-actor requests and refuses preloading clients outside the current access scope',async()=>{
+ const initial=focusedFrame(),cache=new navigation.WorkspaceCache(initial);let signal!:AbortSignal,release!:(frame:Workspace)=>void;
+ const load=vi.fn((_params:URLSearchParams,pendingSignal:AbortSignal)=>new Promise<Workspace>(resolve=>{signal=pendingSignal;release=resolve;}));
+ const preloader=new navigation.WorkspacePreloader(cache,load),params=parameters(initial);preloader.preload(initial,params,client.id,['traffic']);await flushPreloads();
+ const traffic=new URLSearchParams(params);traffic.set('view','traffic');const foreground=preloader.request(traffic),rejected=expect(foreground).rejects.toMatchObject({name:'AbortError'});
+ const narrowed=focusedFrame();narrowed.scope={...narrowed.scope,actorId:'other-user',permittedClientIds:[]};narrowed.clients=[];preloader.preload(narrowed,params,client.id,['traffic']);
+ expect(signal.aborted).toBe(true);expect(load).toHaveBeenCalledTimes(1);release(focusedFrame('traffic'));await rejected;
+ expect(cache.read({...initial.filters,view:'traffic'},Date.now(),client.id)).toBeNull();
+});
+
+it('captures request parameters before the caller changes a URL selection',async()=>{
+ const initial=focusedFrame(),cache=new navigation.WorkspaceCache(initial),load=vi.fn(async(params:URLSearchParams)=>focusedFrame(params.get('view')!));
+ const preloader=new navigation.WorkspacePreloader(cache,load),params=parameters(initial);params.set('view','traffic');const request=preloader.request(params);params.set('view','products');await request;
+ expect(load.mock.calls[0][0].get('view')).toBe('traffic');expect(cache.read({...initial.filters,view:'traffic'},Date.now(),client.id)).not.toBeNull();preloader.cancel();
+});
+
+it('leaves normal navigation available after an optional preload fails',async()=>{
+ const initial=focusedFrame(),cache=new navigation.WorkspaceCache(initial),load=vi.fn().mockRejectedValueOnce(new Error('Temporary read timeout')).mockResolvedValueOnce(focusedFrame('traffic'));
+ const preloader=new navigation.WorkspacePreloader(cache,load),params=parameters(initial);preloader.preload(initial,params,client.id,['traffic']);await flushPreloads();
+ const traffic=new URLSearchParams(params);traffic.set('view','traffic');await expect(preloader.request(traffic)).resolves.toMatchObject({filters:{view:'traffic'}});
+ expect(load).toHaveBeenCalledTimes(2);preloader.cancel();
 });

@@ -111,7 +111,12 @@ export async function* fetchKindBatches(connection:Connection,client:Client,w:Ki
 export function effectiveKindWindow(connection:Connection,client:Client,w:KindWindow,now=new Date()){
  const today=todayIn(client.timezone,now),hour=hourlySessionCutoff(client.timezone,now).hour,completedTo=hour?today:shiftDate(today,-1),to=w.to<completedTo?w.to:completedTo;
  if(connection.provider==='kind-triple-whale-diagnostics')return {from:w.from>shiftDate(to,-59)?w.from:shiftDate(to,-59),to};
- if(hourlyProviders.has(connection.provider))return {from:w.from>shiftDate(to,-61)?w.from:shiftDate(to,-61),to};
+ if(hourlyProviders.has(connection.provider)){
+  // Routine single-day polls still refresh a real complete store day during
+  // hour zero. Its capture ends at midnight; no new-day hours are invented.
+  if(!hour&&w.from===today&&w.to===today)return {from:completedTo,to:completedTo};
+  return {from:w.from>shiftDate(to,-61)?w.from:shiftDate(to,-61),to};
+ }
  if(connection.provider==='kind-triple-whale-summary')return {from:to,to};
  if(connection.provider==='kind-recharge-cancellations'){const minimum=shiftDate(to,w.to<today?-61:-2);return {from:w.from>minimum?w.from:minimum,to};}
  if(connection.provider==='kind-meta'||connection.provider==='kind-recharge')return {from:today,to:today};

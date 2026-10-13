@@ -1,0 +1,6 @@
+.comparison{display:flex;align-items:center;flex-wrap:wrap;gap:5px;margin-top:7px;font-size:12px;line-height:1.5;font-variant-numeric:tabular-nums}
+.delta{display:inline-flex;align-items:center;gap:3px;font-weight:650;white-space:nowrap;color:var(--az-muted)}
+.delta[data-tone=favorable]{color:var(--az-positive)}
+.delta[data-tone=unfavorable]{color:var(--az-negative)}
+.baseline,.missing{font-size:11px;color:var(--az-muted);font-weight:400}
+.missing{display:block;margin-top:7px}

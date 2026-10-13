@@ -65,7 +65,10 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
     if(!cutoff) {current=[];previous=[];peers=[];warnings.push('An intraday comparison needs confirmed, current hourly coverage from every contributing source.');}
     else {const clock=Temporal.Instant.from(cutoff).toZonedDateTimeISO(client.timezone).toPlainTime();
       const selectedEnd=Temporal.Instant.from(cutoff).toZonedDateTimeISO(client.timezone);
-      const priorEnd=Temporal.PlainDate.from(comparison.to).toZonedDateTime({timeZone:client.timezone,plainTime:clock});
+      // A cutoff at next-day midnight completes the selected day. Its matched
+      // baseline also ends at the next midnight, not at that day's start.
+      const priorDate=selectedEnd.toPlainDate().toString()>f.to?shiftDate(comparison.to,1):comparison.to;
+      const priorEnd=Temporal.PlainDate.from(priorDate).toZonedDateTime({timeZone:client.timezone,plainTime:clock});
       currentEnd=Number(selectedEnd.epochMilliseconds);previousEnd=Number(priorEnd.epochMilliseconds);cutoff=selectedEnd.toInstant().toString();
       const withinMatchedPeriod=(row:Observation,finalDate:string,matchedEnd:number)=>row.date<finalDate?(!row.end||Date.parse(row.end)<=Date.parse(dayWindow(row.date,client.timezone).end)):!!row.end&&Date.parse(row.end)<=matchedEnd;
       current=current.filter(row=>withinMatchedPeriod(row,f.to,currentEnd));previous=previous.filter(row=>withinMatchedPeriod(row,comparison.to,previousEnd));peers=peers.filter(row=>withinMatchedPeriod(row,f.to,currentEnd));

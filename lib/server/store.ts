@@ -1,8 +1,8 @@
 import type {Client,Connection,Observation,SourceBatch,Review,Finding,QueryFilters} from '../analytics/contracts';
-import {shiftDate,dayWindow,matchedCutoff,comparisonPeriod,todayIn} from '../analytics/windows';
+import {shiftDate,dayWindow,comparisonPeriod,todayIn} from '../analytics/windows';
 import {preferredObservations} from '../analytics/source-precedence';
 import {FunnelRollupAccumulator} from '../analytics/funnel-rollup';
-import {intradayConnections} from '../analytics/intraday-coverage';
+import {confirmedIntradayCutoff} from '../analytics/intraday-coverage';
 import {Temporal} from '@js-temporal/polyfill';
 import {QueryCache} from './query-cache';
 import {observationCodec} from './observation-codec';
@@ -99,21 +99,29 @@ export class Store {
     const latestOperationalDates=new Map<string,string>();for(const pointer of operationalPointers){const prior=latestOperationalDates.get(pointer.sourceId);if(!prior||pointer.date>prior)latestOperationalDates.set(pointer.sourceId,pointer.date);}
     const freshOperationalPointers=operationalPointers.filter(pointer=>pointer.date===latestOperationalDates.get(pointer.sourceId));
     const pointers=selectedPointers.filter(pointer=>!operationalSources.has(pointer.sourceId));
-    let cutoffClock:string|undefined;
-    if(clientRow&&filters?.mode==='partial'){const contributing=intradayConnections(sources,filters.view),coverage=contributing.map(c=>c.coverageThrough),known=contributing.length>0&&coverage.every((x):x is string=>!!x&&Date.parse(x)>=Date.parse(dayWindow(filters.to,clientRow.timezone).start));const cutoff=known?matchedCutoff(coverage as string[],clientRow.timezone):null;if(cutoff)cutoffClock=Temporal.Instant.from(cutoff).toZonedDateTimeISO(clientRow.timezone).toPlainTime().toString();}
+    let cutoffClock:string|undefined,completePartialDay=false;
+    if(clientRow&&filters?.mode==='partial'){
+      const cutoff=confirmedIntradayCutoff(sources,filters.view,clientRow.timezone,filters.to);
+      if(cutoff){
+        completePartialDay=Date.parse(cutoff)===Date.parse(dayWindow(filters.to,clientRow.timezone).end);
+        // A next-midnight capture completes both matched days. Applying its
+        // 00:00 clock to their starts would discard every contributed hour.
+        if(!completePartialDay)cutoffClock=Temporal.Instant.from(cutoff).toZonedDateTimeISO(clientRow.timezone).toPlainTime().toString();
+      }
+    }
     // Observation loading deliberately retains every dataset/dimension for
     // queryClient's unsupported-filter checks, peers and navigation. View and
     // dimension selections therefore share rows, while load-affecting filters
     // and fresh metadata are part of the key. Published pointers invalidate
     // across refreshes, including refreshes performed by another instance.
     const version=pointers.map(p=>[p.sourceId,p.snapshotId,p.date]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
-    const key=JSON.stringify(['chart-series-v5',org,client,filters?[filters.from,filters.to,filters.compare,filters.compareFrom??null,filters.compareTo??null,filters.mode]:null,headlinesOnly,clientRow?.timezone??null,cutoffClock??null,...selection?[{datasets:selectedDatasets,dimensions:!!selection.dimensions,includePriorWeek:selection.includePriorWeek!==false,trendDatasets:[...trendDatasets].sort(),filters:dimensionSelection}]:[],version]);
+    const key=JSON.stringify(['chart-series-v6',org,client,filters?[filters.from,filters.to,filters.compare,filters.compareFrom??null,filters.compareTo??null,filters.mode]:null,headlinesOnly,clientRow?.timezone??null,cutoffClock??null,completePartialDay,...selection?[{datasets:selectedDatasets,dimensions:!!selection.dimensions,includePriorWeek:selection.includePriorWeek!==false,trendDatasets:[...trendDatasets].sort(),filters:dimensionSelection}]:[],version]);
     const load=()=>durableObservationPayload(this.db,org,client,key,async()=>{
     checkBudget();
     // Missing partial coverage must retain raw hourly rows so queryClient can
     // decline the comparison; it must never turn a full day into a partial day.
     const cutoffDates=new Set(filters?[filters.to,comparisonPeriod(filters).to,shiftDate(filters.to,-7)]:[]);
-    const accumulator=clientRow&&(!filters||filters.mode==='closed'||cutoffClock)?new FunnelRollupAccumulator({timezone:clientRow.timezone,cutoffClock,...filters?.mode==='partial'?{cutoffDates}:{}}):null;
+    const accumulator=clientRow&&(!filters||filters.mode==='closed'||cutoffClock||completePartialDay)?new FunnelRollupAccumulator({timezone:clientRow.timezone,cutoffClock,...filters?.mode==='partial'?{cutoffDates}:{}}):null;
     const fullDayContext=clientRow&&filters?.mode==='partial'&&trendDatasets.length?new TrendRollupAccumulator(filters):null;
     const contextualDatasets=trendDatasets.filter(dataset=>['traffic','funnels','products','markets'].includes(dataset));
     const contextualPointers=filters&&contextualDatasets.length?pointers.filter(pointer=>!detailWindows.some(window=>inWindow(pointer.date,window))&&trendWindows.some(window=>inWindow(pointer.date,window))&&(!profiles.get(pointer.sourceId)||profiles.get(pointer.sourceId)!.some(profile=>contextualDatasets.includes(profile.dataset)))):[];

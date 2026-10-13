@@ -63,3 +63,17 @@ it('defaults live and historical analytics to the previous period while retainin
  expect(parseFilters(new URLSearchParams({from:'2026-10-12',to:'2026-10-12'})).compare).toBe('previous');
  expect(parseFilters(new URLSearchParams({compare:'weekday'})).compare).toBe('weekday');
 });
+it('keeps the live URL and displayed date on its captured store day until the first complete next-day hour',async()=>{
+ vi.useFakeTimers();vi.setSystemTime(new Date('2026-10-13T22:30:00Z'));try{
+  state.permitted=['a'];const readFilters:any[]=[],client={id:'a',name:'A',timezone:'Europe/Stockholm',currency:'USD',config:{incidents:[],spendChannels:[],benchmarkMarket:'US',minSessions:10,minOpportunity:1,maxActions:6}};
+  const source={id:'sales',provider:'kind-shopify-sales',enabled:true,coverageThrough:'2026-10-13T21:00:00Z'};
+  state.store={first:async()=>null,clients:async()=>[client],connections:async()=>[source],observations:async(_o:any,_c:any,f:any)=>{readFilters.push(f);return [];},findings:async()=>[],reviews:async()=>[],note:async()=>({body:''}),jobs:async()=>[]};
+  const live=new URLSearchParams({clientId:'a',period:'today',from:'2026-10-14',to:'2026-10-14',view:'revenue'});
+  expect((await loadWorkspace(live)).filters).toMatchObject({from:'2026-10-13',to:'2026-10-13',period:'today',mode:'partial'});
+  expect(readFilters.at(-1)).toMatchObject({from:'2026-10-13',to:'2026-10-13'});
+  const explicit=new URLSearchParams({clientId:'a',from:'2026-10-14',to:'2026-10-14',view:'revenue',mode:'partial'});
+  expect((await loadWorkspace(explicit)).filters).toMatchObject({from:'2026-10-14',to:'2026-10-14'});
+  source.coverageThrough='2026-10-13T23:00:00Z';vi.setSystemTime(new Date('2026-10-13T23:05:00Z'));
+  expect((await loadWorkspace(live)).filters).toMatchObject({from:'2026-10-14',to:'2026-10-14',period:'today'});
+ }finally{vi.useRealTimers();}
+});

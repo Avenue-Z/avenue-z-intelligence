@@ -62,6 +62,22 @@ it('warms durable closed and partial selections after a successful source job wi
  await s.persistBatch('o','s',{clientId:'kind-patches',channels:[],complete:true,coverageThrough:'2026-10-12T13:00:00Z',rows:[{date:'2026-10-11',dataset:'overview',metric:'revenue',value:42,definition:'web',currency:'USD',dimensions:{}}]},'warm','2026-10-12T13:00:00Z');
  const result=await syncTick();expect(result.completed).toEqual(['o:s:warm']);expect(result).toHaveProperty('cacheWarm.completed',30);expect(await s.all("SELECT status FROM observation_cache_entries WHERE organizationId='o' AND clientId='kind-patches'")).toEqual(Array.from({length:24},()=>({status:'ready'})));
 });
+it.each(['pending','running'])('releases the sync lease without warming while enabled current jobs remain %s',async status=>{
+ const s=state.store;await s.enqueue('o','kind-patches','s','warm','2026-10-12T13:00:00Z');await s.finish('o:s:warm');state.syncCompleted=['o:s:warm'];
+ await s.persistBatch('o','s',{clientId:'kind-patches',channels:[],complete:true,coverageThrough:'2026-10-12T13:00:00Z',rows:[{date:'2026-10-11',dataset:'overview',metric:'revenue',value:42,definition:'web',currency:'USD',dimensions:{}}]},'warm','2026-10-12T13:00:00Z');
+ await s.enqueue('o','kind-patches','s','queued','2026-10-12T13:00:00Z');await s.run('UPDATE jobs SET status=? WHERE id=?',status,'o:s:queued');const jobs=await s.all('SELECT id,status,attempts,dueAt FROM jobs ORDER BY id');
+ const result=await syncTick();
+ expect(result.completed).toEqual(['o:s:warm']);expect(result).toHaveProperty('cacheWarm',{attempted:0,completed:0});
+ expect(await s.all('SELECT * FROM observation_cache_entries')).toEqual([]);
+ expect(await s.all('SELECT * FROM runner_leases')).toEqual([]);expect(await s.all('SELECT id,status,attempts,dueAt FROM jobs ORDER BY id')).toEqual(jobs);
+});
+it.each(['history','future','disabled','other-organization'])('retains inline warming when only %s work remains',async kind=>{
+ const s=state.store;await s.enqueue('o','kind-patches','s','warm','2026-10-12T13:00:00Z');await s.finish('o:s:warm');state.syncCompleted=['o:s:warm'];
+ await s.persistBatch('o','s',{clientId:'kind-patches',channels:[],complete:true,coverageThrough:'2026-10-12T13:00:00Z',rows:[{date:'2026-10-11',dataset:'overview',metric:'revenue',value:42,definition:'web',currency:'USD',dimensions:{}}]},'warm','2026-10-12T13:00:00Z');
+ if(kind==='disabled'){await s.run("INSERT INTO connections SELECT 'disabled','o','kind-patches',name,provider,endpoint,secretRef,pollMinutes,0,lastSuccess,coverageThrough,error,version FROM connections WHERE id='s'");await s.enqueue('o','kind-patches','disabled','queued','2026-10-12T13:00:00Z');}
+ else await s.enqueue(kind==='other-organization'?'other':'o','kind-patches','s',kind==='history'?'hourly-history:2026-10-11':'queued',kind==='future'?'2026-10-12T14:00:00Z':'2026-10-12T13:00:00Z');
+ expect(await syncTick()).toHaveProperty('cacheWarm.completed',30);expect(await s.all('SELECT * FROM runner_leases')).toEqual([]);
+});
 it('does not warm caches when no source job completed or the cache migration is absent',async()=>{
  const s=state.store,observations=vi.spyOn(s,'observations');expect((await syncTick()).completed).toEqual([]);expect(observations).not.toHaveBeenCalled();
  await s.enqueue('o','kind-patches','s','warm','2026-10-12T13:00:00Z');state.syncCompleted=['o:s:warm'];await s.run('DROP TABLE observation_cache_entries');expect((await syncTick()).completed).toEqual(['o:s:warm']);expect(observations).not.toHaveBeenCalled();
