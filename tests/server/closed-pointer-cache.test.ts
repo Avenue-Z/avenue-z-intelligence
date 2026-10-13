@@ -12,6 +12,34 @@ it('retains the original closed-day snapshot and warm cache when a mixed batch o
  const {store,queries}=await setup();await store.persistBatch('o','source',batch(),'first','2026-10-12T12:00:00Z');const first=await store.observations('o','a',filters),pointer=await store.first("SELECT snapshotId FROM current_snapshots WHERE sourceId='source' AND date='2026-10-11'"),reads=queries.filter(sql=>sql.startsWith('SELECT o.payload')).length;
  await store.persistBatch('o','source',batch(100,40,'2026-10-12T13:00:00Z'),'second','2026-10-12T13:00:00Z');expect(await store.first("SELECT snapshotId FROM current_snapshots WHERE sourceId='source' AND date='2026-10-11'")).toEqual(pointer);expect(await store.observations('o','a',filters)).toEqual(first);expect(queries.filter(sql=>sql.startsWith('SELECT o.payload'))).toHaveLength(reads);expect(first.map(value=>value.date)).toEqual(['2026-10-11']);
 });
+it('stores only the changing partial day when a refresh repeats fully covered closed facts',async()=>{
+ const {store,sqlite}=await setup();await store.persistBatch('o','source',batch(),'first','2026-10-12T12:00:00Z');
+ await store.persistBatch('o','source',batch(100,40,'2026-10-12T13:00:00Z'),'second','2026-10-12T13:00:00Z');
+ expect(sqlite.prepare('SELECT COUNT(*) AS n FROM observations').get()?.n).toBe(3);
+ expect(sqlite.prepare("SELECT date FROM observations WHERE snapshotId='o:a:source:second'").all()).toEqual([{date:'2026-10-12'}]);
+ expect(sqlite.prepare("SELECT publishedAt,snapshotId FROM current_snapshots WHERE date='2026-10-11'").get()).toMatchObject({publishedAt:'2026-10-12T13:00:00Z',snapshotId:'o:a:source:first'});
+});
+it('persists corrected methodological evidence even when the numeric value is unchanged',async()=>{
+ const {store,sqlite}=await setup();await store.persistBatch('o','source',batch(),'first','2026-10-12T12:00:00Z');
+ const corrected=batch(100,40);corrected.rows[0]={...corrected.rows[0],definition:'corrected net web revenue',population:'web orders excluding promotion'};
+ await store.persistBatch('o','source',corrected,'corrected-method','2026-10-12T13:00:00Z');
+ expect(sqlite.prepare("SELECT COUNT(*) AS n FROM observations WHERE snapshotId='o:a:source:corrected-method' AND date='2026-10-11'").get()?.n).toBe(1);
+ expect((await store.observations('o','a',filters))[0]).toMatchObject({value:100,definition:'corrected net web revenue',population:'web orders excluding promotion'});
+});
+it('pins retained facts when another publication changes the pointer after the deduplication lookup',async()=>{
+ const {store,sqlite}=await setup();await store.persistBatch('o','source',batch(),'first','2026-10-12T12:00:00Z');
+ const originalBatch=store.db.batch;let interleaved=false;store.db.batch=async statements=>{if(!interleaved){interleaved=true;await store.persistBatch('o','source',batch(999,30),'interleaved','2026-10-12T13:00:00Z');}return originalBatch(statements);};
+ await store.persistBatch('o','source',batch(100,40),'second','2026-10-12T14:00:00Z');
+ expect((await store.observations('o','a',filters))[0].value).toBe(100);
+ expect(sqlite.prepare("SELECT snapshotId,publishedAt FROM current_snapshots WHERE date='2026-10-11'").get()).toMatchObject({snapshotId:'o:a:source:first',publishedAt:'2026-10-12T14:00:00Z'});
+ expect(sqlite.prepare("SELECT COUNT(*) AS n FROM observations WHERE snapshotId='o:a:source:second' AND date='2026-10-11'").get()?.n).toBe(0);
+});
+it('can replay a deduplicated batch after a later correction without losing the original snapshot provenance',async()=>{
+ const {store}=await setup();await store.persistBatch('o','source',batch(),'first','2026-10-12T12:00:00Z');const second=batch(100,40,'2026-10-12T13:00:00Z');
+ await store.persistBatch('o','source',second,'second','2026-10-12T13:00:00Z');await store.persistBatch('o','source',batch(999,50,'2026-10-12T14:00:00Z'),'correction','2026-10-12T14:00:00Z');
+ await store.persistBatch('o','source',second,'second','2026-10-12T15:00:00Z');
+ expect((await store.observations('o','a',filters))[0]).toMatchObject({value:100,retrievedAt:'2026-10-12T13:00:00Z',coverageThrough:'2026-10-12T13:00:00Z'});
+});
 it('invalidates corrected closed-day counts while preventing an older replay after an unchanged poll',async()=>{
  const {store}=await setup();await store.persistBatch('o','source',batch(),'first','2026-10-12T12:00:00Z');await store.persistBatch('o','source',batch(100,30),'same-facts','2026-10-12T14:00:00Z');await store.persistBatch('o','source',batch(999,30),'late-old','2026-10-12T13:00:00Z');expect((await store.observations('o','a',filters))[0].value).toBe(100);
  await store.persistBatch('o','source',batch(110,30),'corrected','2026-10-12T15:00:00Z');expect((await store.observations('o','a',filters))[0].value).toBe(110);

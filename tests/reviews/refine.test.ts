@@ -31,3 +31,14 @@ it('renders a configured measurement-break caveat across its date without changi
  expect(result.sections.find((section:any)=>section.title==='Sources & limitations').paragraphs.join(' ')).toContain('Measurement change');
  c.comparison={from:'2026-09-23',to:'2026-09-23'};refineReview(result,c,{...scope,from:'2026-09-24',to:'2026-09-24'});expect(result.sections.find((section:any)=>section.title==='Detail tables').tables.find((table:any)=>table.title==='Landing pages · US').scope).not.toContain('not comparable');
 });
+
+it('applies matched spend qualification to contradictory current MER prose while retaining other dated references',()=>{
+ const c=client(),result={headlines:['Spend vs revenue','MER 2.0 versus 1.8 on 2026-10-07 versus 2026-10-06 is arithmetic only, not a verified efficiency verdict','C','D'],actions:[],sections:REVIEW_SECTIONS.map(title=>({title,paragraphs:title==='Watch list'?['Current MER is unverified and coverage is unconfirmed.','MER for 2026-09-30 is arithmetic only; its coverage is unconfirmed.']:[],bullets:[],tables:[]}))} as any;
+ refineReview(result,c,filters);
+ expect(result.headlines[1]).toContain('qualified matching source windows');expect(result.headlines[1]).not.toContain('not a verified');
+ const watch=result.sections.find((s:any)=>s.title==='Watch list');expect(watch.paragraphs[0]).toContain('qualified matching source windows');expect(watch.paragraphs[1]).toBe('MER for 2026-09-30 is arithmetic only; its coverage is unconfirmed.');
+});
+it('rejects a model profitability claim and preserves an unavailable efficiency verdict',()=>{
+ const c=client();c.spendVerdict.spendComparison='unavailable';const result={headlines:['Spend vs revenue','MER confirms profitability and is above break-even','C','D'],actions:[],sections:REVIEW_SECTIONS.map(title=>({title,paragraphs:[],bullets:[],tables:[]}))} as any;
+ refineReview(result,c,filters);expect(result.headlines[1]).toContain('arithmetic ratios');expect(result.headlines[1]).toContain('does not establish profitability');expect(result.headlines[1]).not.toContain('confirms profitability');
+});

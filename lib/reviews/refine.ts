@@ -34,7 +34,20 @@ export function refineReview(result:Result,c:ClientEvidence,f:QueryFilters){
  for(const current of result.sections){current.paragraphs=current.paragraphs.map(p=>unsupportedPageBenchmark(p)?comparisonCheck:p);current.bullets=current.bullets.map(p=>unsupportedPageBenchmark(p)?comparisonCheck:p);}
  result.headlines=result.headlines.map(h=>unsupportedPageBenchmark(h)||/^Biggest supported page gap:/i.test(h)?pages.length?`Qualified page opportunity: ${pages[0].market} ${pages[0].page}, estimated converting-session gap ${number(pages[0].gap)} versus ${pages[0].benchmarkReason.toLowerCase()} (${percent(pages[0].cvr)} versus ${percent(pages[0].benchmark)}).`:'No supplied page comparison passed all configured volume, coverage and impact checks.':h);
  const money=(n:number|null|undefined)=>n==null?'Unavailable':new Intl.NumberFormat('en-US',{style:'currency',currency:c.client.currency,maximumFractionDigits:2}).format(n);
- const spend=authoritativeSpendReview(c.metrics,c.prior,c.client.currency,c.spendVerdict.spendComparison!=='unavailable');
+ const qualifiedSpend=c.spendVerdict.spendComparison!=='unavailable',spend=authoritativeSpendReview(c.metrics,c.prior,c.client.currency,qualifiedSpend);
+ const normalizeEfficiency=(text:string)=>{
+  if(!/\bMER\b|revenue\s*\/\s*spend/i.test(text))return text;
+  const dates=text.match(/\b\d{4}-\d{2}-\d{2}\b/g)??[],selectedScope=dates.every(date=>date>=f.from&&date<=f.to||date>=c.comparison.from&&date<=c.comparison.to);
+  const deniesQualification=/arithmetic[ -]only|unverified|not.{0,25}(?:verified|qualified).{0,30}(?:efficiency|window)|coverage.{0,25}unconfirmed/i.test(text);
+  const claimsQualification=/(?:verified|qualified).{0,30}(?:efficiency|matching|window)/i.test(text)&&!deniesQualification;
+  const unsupportedProfit=/(?:confirms?|proves?|establishes?)\s+profit|(?:above|at|below|reached).{0,15}break[ -]?even/i.test(text)&&!/(?:does not|cannot|doesn't)\s+(?:confirm|prove|establish)/i.test(text);
+  if(selectedScope&&(qualifiedSpend&&deniesQualification||!qualifiedSpend&&claimsQualification||unsupportedProfit))return `${f.from}–${f.to} versus ${c.comparison.from}–${c.comparison.to}. ${spend.paragraph}`;
+  if(unsupportedProfit)return 'MER does not establish profitability or break-even without matching margin evidence.';
+  return text;
+ };
+ result.headlines=result.headlines.map(normalizeEfficiency);
+ for(const current of result.sections){current.paragraphs=current.paragraphs.map(normalizeEfficiency);current.bullets=current.bullets.map(normalizeEfficiency);}
+ result.actions=result.actions.map(action=>({...action,detail:normalizeEfficiency(action.detail),nextStep:normalizeEfficiency(action.nextStep)}));
  const index=result.headlines.findIndex(h=>/spend.*revenue|revenue.*spend/i.test(h));result.headlines[index<0?0:index]=spend.headline;
  result.kpis=[{label:'Revenue',value:money(c.metrics.revenue),note:c.client.config.revenueDefinition.replaceAll('_',' ')},{label:'Orders',value:number(c.metrics.orders),note:'Same commerce population as revenue'},{label:'Ad spend',value:money(c.metrics.spend),note:c.client.config.spendChannels.join(' · ')},{label:'Human sessions',value:number(c.metrics.sessions),note:'Human Shopify session population'},{label:'Session CVR',value:percent(c.metrics.cvr),note:'Converting sessions / human sessions'},{label:'Revenue / spend',value:c.metrics.mer==null?'Unavailable':`${c.metrics.mer.toFixed(2)}×`,note:'MER does not establish profitability'}];
  result.summary=[`${c.client.name} · ${c.client.timezone} · ${c.client.currency}. ${f.from}–${f.to}, ${f.mode==='partial'?`partial store day${c.reportTiming.localCutoff?` through ${c.reportTiming.localCutoff}`:''}`:'closed store days'}, compared with ${c.comparison.from}–${c.comparison.to}${f.mode==='partial'?' at the same store-local clock':''}. Revenue ${money(c.metrics.revenue)} versus ${money(c.prior.revenue)}; orders ${number(c.metrics.orders)} versus ${number(c.prior.orders)}; human sessions ${number(c.metrics.sessions)} versus ${number(c.prior.sessions)}; CVR ${percent(c.metrics.cvr)} versus ${percent(c.prior.cvr)}.${result.actions[0]?` First follow-up: ${result.actions[0].title}.`:''}`,spend.paragraph];

@@ -4,7 +4,7 @@ const state=vi.hoisted(()=>({platform:'vercel',env:{} as Record<string,unknown>,
 vi.mock('@avenue/runtime',()=>({runtimePlatform:state.platform,env:state.env}));
 vi.mock('../../lib/server/access',()=>({getStore:()=>({first:state.first,run:state.run})}));
 import {allowGoogleIdentity,standaloneIdentity,standaloneAuthConfig,standaloneAuth} from '../../lib/server/standalone-auth';
-beforeEach(()=>{vi.clearAllMocks();Object.assign(state.env,{AUTH_SECRET:'a'.repeat(48),AUTH_URL:'https://app.example',AUTH_GOOGLE_ID:'client',AUTH_GOOGLE_SECRET:'secret',APP_BOOTSTRAP_ADMIN_EMAIL:'owner@example.com'});state.first.mockResolvedValue(null);state.run.mockResolvedValue({meta:{changes:1}});});
+beforeEach(()=>{vi.clearAllMocks();for(const key of Object.keys(state.env))delete state.env[key];Object.assign(state.env,{AUTH_SECRET:'a'.repeat(48),AUTH_URL:'https://app.example',AUTH_GOOGLE_ID:'client',AUTH_GOOGLE_SECRET:'secret',APP_BOOTSTRAP_ADMIN_EMAIL:'owner@example.com'});state.first.mockResolvedValue(null);state.run.mockResolvedValue({meta:{changes:1}});});
 it('rejects Google profiles with unverified email and uninvited accounts',async()=>{
  expect(await allowGoogleIdentity({email:'owner@example.com',email_verified:false,sub:'id'})).toBe(false);
  expect(await allowGoogleIdentity({email:'outsider@example.com',email_verified:true,sub:'id'})).toBe(false);
@@ -16,7 +16,7 @@ it('allows the explicit bootstrap admin only for an empty workspace',async()=>{
  expect(await allowGoogleIdentity({email:'owner@example.com',email_verified:true,sub:'owner'})).toBe(false);
 });
 it('accepts an invited verified email with an existing native Sites identity',async()=>{
- state.first.mockResolvedValue({email:'analyst@example.com',role:'analyst',actorId:'old-sites-id'});
+ state.first.mockImplementation(async(query:string)=>query.startsWith('SELECT email FROM member_identities')||query.includes("actorId LIKE 'google:%'")?null:{email:'analyst@example.com',role:'analyst',actorId:'old-sites-id',clients:'["kind-patches"]'});
  expect(await allowGoogleIdentity({email:'analyst@example.com',email_verified:true,sub:'google-id'})).toBe(true);
 });
 it('ignores forged platform headers and rejects tampered app sessions',async()=>{
@@ -30,6 +30,9 @@ it('ignores forged platform headers and rejects tampered app sessions',async()=>
 });
 it('retains the SDK CSRF and secure-cookie protections',()=>{
  const config=standaloneAuthConfig();expect(config.skipCSRFCheck).toBeUndefined();expect(config.useSecureCookies).toBe(true);expect(config.session?.strategy).toBe('jwt');
+});
+it('fails closed when company OAuth credentials are missing',()=>{
+ delete state.env.AUTH_GOOGLE_SECRET;expect(()=>standaloneAuthConfig()).toThrow('Google application sign-in is not configured');
 });
 it('serves authentication behind Next proxy routing using the configured public host',async()=>{
  const r=await standaloneAuth(new Request('http://localhost:3000/api/auth/providers',{headers:{host:'app.example'}}));expect(r.status).toBe(200);expect(await r.json()).toHaveProperty('google');

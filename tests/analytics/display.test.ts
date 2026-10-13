@@ -57,7 +57,7 @@ describe('detail presentation',()=>{
     const html=workspace(view,[observation('revenue',100,{channel:'Web',market:'US',product:'Bundle'},view),observation('orders',5,{channel:'Web',market:'US',product:'Bundle'},view)]);
     expect(html).not.toContain('>CVR<');
     expect(html).not.toContain('>CHECKOUT COMPLETION<');
-    expect(html).toContain(view==='products'?'>PRODUCT ORDERS<':'>ORDERS<');
+    expect(html).toContain(view==='products'?'>PRODUCT ORDERS<':view==='revenue'?'>Orders<':'>ORDERS<');
     expect(html).toContain('$20');
   });
   it('shows the separate human traffic cut with source and UTM dimensions',()=>{

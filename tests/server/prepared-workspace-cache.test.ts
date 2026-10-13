@@ -2,7 +2,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync,readdirSync} from 'node:fs';
 import {randomBytes,createHash} from 'node:crypto';
 import {afterEach,expect,it,vi} from 'vitest';
-import type {Client,Connection,Observation,QueryFilters} from '../../lib/analytics/contracts';
+import type {Client,Connection,Observation,QueryFilters,SourceBatch} from '../../lib/analytics/contracts';
 import clients from '../../data/initial-clients.json';
 import {queryClient} from '../../lib/analytics/query';
 import {workspacePresentation} from '../../lib/analytics/presentation';
@@ -24,6 +24,59 @@ function fixture(){
  const load=vi.fn(async(connections:Connection[])=>workspacePresentation(queryClient(input.client,[],connections,input.filters,{preparedDatasets:input.preparedDatasets}),input.filters));
  return {sqlite,store,input,load};
 }
+function addPointer(sqlite:DatabaseSync,sourceId:string,date:string,key:string){
+ sqlite.prepare('INSERT INTO snapshots(id,organizationId,clientId,sourceId,retrievedAt,coverageThrough,complete,status,objectKey) VALUES(?,?,?,?,?,?,?,?,?)').run(key,'o','a',sourceId,'2026-10-13T00:00:00Z','2026-10-13T00:00:00Z',1,'ready','private-archive');
+ sqlite.prepare('INSERT INTO current_snapshots(organizationId,clientId,sourceId,date,snapshotId) VALUES(?,?,?,?,?) ON CONFLICT(organizationId,clientId,sourceId,date) DO UPDATE SET snapshotId=excluded.snapshotId').run('o','a',sourceId,date,key);
+}
+function canonicalLoad(input:PreparedWorkspaceInput){return vi.fn(async(connections:Connection[])=>workspacePresentation(queryClient(input.client,await input.store.observations(input.organizationId,input.client.id,input.filters,false,undefined,input.selection),connections,input.filters,{preparedDatasets:input.preparedDatasets}),input.filters));}
+it('retains a closed historical frame across unrelated provider and out-of-window date refreshes',async()=>{
+ const {sqlite,input,load}=fixture();await input.store.saveQualification('o','a','source',1,1,{profiles:[{dataset:'overview',metric:'revenue'},{dataset:'traffic',metric:'sessions'}]},'admin');
+ await input.store.saveQualification('o','a','products',1,1,{profiles:[{dataset:'products',metric:'net_sales'}]},'admin');addPointer(sqlite,'products','2026-10-11','products-first');addPointer(sqlite,'source','2026-10-13','today-first');addPointer(sqlite,'source','2026-01-01','old-first');
+ await preparedWorkspaceFrame(input,load);addPointer(sqlite,'products','2026-10-11','products-next');await input.store.saveQualification('o','a','products',2,1,{profiles:[{dataset:'products',metric:'gross_sales'}]},'admin');addPointer(sqlite,'source','2026-10-13','today-next');addPointer(sqlite,'source','2026-01-01','old-next');
+ await preparedWorkspaceFrame(input,load);expect(load).toHaveBeenCalledTimes(1);
+});
+it('still invalidates the overview history and exact custom comparison windows',async()=>{
+ const {sqlite,input,load}=fixture();await input.store.saveQualification('o','a','source',1,1,{profiles:[{dataset:'overview',metric:'revenue'},{dataset:'traffic',metric:'sessions'}]},'admin');addPointer(sqlite,'source','2026-09-12','history-first');
+ await preparedWorkspaceFrame(input,load);addPointer(sqlite,'source','2026-09-12','history-corrected');await preparedWorkspaceFrame(input,load);expect(load).toHaveBeenCalledTimes(2);
+ const custom={...input,filters:{...input.filters,compare:'custom' as const,compareFrom:'2026-08-15',compareTo:'2026-08-16'}};addPointer(sqlite,'source','2026-08-15','comparison-first');await preparedWorkspaceFrame(custom,load);addPointer(sqlite,'source','2026-08-15','comparison-corrected');await preparedWorkspaceFrame(custom,load);expect(load).toHaveBeenCalledTimes(4);
+});
+it('invalidates only contributing Revenue trend days and keeps context and non-context cache keys distinct',async()=>{
+ const {sqlite,input,load}=fixture();input.filters={...input.filters,from:'2026-10-12',to:'2026-10-12',view:'revenue'};input.preparedDatasets=['revenue'];input.selection={datasets:['revenue'],includePriorWeek:false,trendDatasets:['revenue']};await input.store.saveQualification('o','a','source',1,1,{profiles:[{dataset:'revenue',metric:'revenue'},{dataset:'revenue',metric:'orders'}]},'admin');await input.store.saveQualification('o','a','traffic',1,1,{profiles:[{dataset:'traffic',metric:'sessions'}]},'admin');
+ addPointer(sqlite,'source','2026-09-13','context-start');addPointer(sqlite,'source','2026-09-12','before-context');addPointer(sqlite,'traffic','2026-09-13','excluded-detail');await preparedWorkspaceFrame(input,load);expect(load).toHaveBeenCalledTimes(1);
+ addPointer(sqlite,'source','2026-09-12','before-context-corrected');addPointer(sqlite,'traffic','2026-09-13','excluded-detail-corrected');await preparedWorkspaceFrame(input,load);expect(load).toHaveBeenCalledTimes(1);
+ addPointer(sqlite,'source','2026-09-13','context-start-corrected');await preparedWorkspaceFrame(input,load);expect(load).toHaveBeenCalledTimes(2);
+ const withoutContext={...input,selection:{datasets:['revenue'],includePriorWeek:false}};await preparedWorkspaceFrame(withoutContext,load);expect(load).toHaveBeenCalledTimes(3);addPointer(sqlite,'source','2026-09-13','context-start-corrected-again');await preparedWorkspaceFrame(withoutContext,load);expect(load).toHaveBeenCalledTimes(3);await preparedWorkspaceFrame(input,load);expect(load).toHaveBeenCalledTimes(4);
+ sqlite.exec("UPDATE snapshots SET status='writing' WHERE id='context-start-corrected-again'");await preparedWorkspaceFrame(input,load);expect(load).toHaveBeenCalledTimes(5);
+});
+it('keeps renewal history and market prior-day pointers in their contributing scope',async()=>{
+ const {sqlite,input,load}=fixture();input.selection.datasets=['overview','subscriptions','markets'];input.preparedDatasets=['overview','subscriptions','markets'];await input.store.saveQualification('o','a','source',1,1,{profiles:[{dataset:'subscriptions',metric:'recurring_revenue'},{dataset:'markets',metric:'sessions'}]},'admin');addPointer(sqlite,'source','2026-08-17','renewal-first');addPointer(sqlite,'source','2026-10-09','market-prior');
+ await preparedWorkspaceFrame(input,load);addPointer(sqlite,'source','2026-08-17','renewal-corrected');await preparedWorkspaceFrame(input,load);addPointer(sqlite,'source','2026-10-09','market-corrected');await preparedWorkspaceFrame(input,load);expect(load).toHaveBeenCalledTimes(3);
+});
+it('remains conservative when any historical qualification lacks a complete profile contract',async()=>{
+ const {sqlite,input,load}=fixture();await input.store.saveQualification('o','a','source',1,1,{profiles:[]},'admin');await input.store.saveQualification('o','a','source',2,1,{profiles:[{dataset:'products',metric:'net_sales'}]},'admin');addPointer(sqlite,'source','2026-01-01','unknown-first');
+ await preparedWorkspaceFrame(input,load);addPointer(sqlite,'source','2026-01-01','unknown-corrected');await preparedWorkspaceFrame(input,load);expect(load).toHaveBeenCalledTimes(2);
+});
+it('returns corrected numeric facts and drops contributing data after deletion or loss of READY status',async()=>{
+ const {sqlite,input}=fixture();await input.store.saveQualification('o','a','source',1,1,{profiles:[{dataset:'overview',metric:'revenue'}]},'admin');
+ const fact=(value:number):SourceBatch=>({clientId:'a',timezone:'Europe/Stockholm',currency:'USD',channels:[],dimensions:[],grain:'daily',complete:true,coverageThrough:'2026-10-11T22:00:00Z',rows:[{date:'2026-10-11',dataset:'overview',metric:'revenue',value,definition:input.client.config.revenueDefinition,population:'web',currency:'USD',dimensions:{},sourceId:'',retrievedAt:'',coverageThrough:null,quality:'complete'}]});
+ await input.store.persistBatch('o','source',fact(10),'ten','2026-10-12T00:00:00Z');const load=canonicalLoad(input);expect((await preparedWorkspaceFrame(input,load)).metrics.revenue).toBe(10);
+ await input.store.persistBatch('o','source',fact(25),'twenty-five','2026-10-12T01:00:00Z');expect((await preparedWorkspaceFrame(input,load)).metrics.revenue).toBe(25);
+ sqlite.exec("DELETE FROM current_snapshots WHERE sourceId='source'");expect((await preparedWorkspaceFrame(input,load)).metrics.revenue).toBeNull();
+ await input.store.persistBatch('o','source',fact(30),'restored-thirty','2026-10-12T02:00:00Z');expect((await preparedWorkspaceFrame(input,load)).metrics.revenue).toBe(30);sqlite.exec("UPDATE snapshots SET status='writing' WHERE id='o:a:source:restored-thirty'");expect((await preparedWorkspaceFrame(input,load)).metrics.revenue).toBeNull();expect(load).toHaveBeenCalledTimes(4);
+});
+it('keeps latest operational values fresh while ignoring superseded operational dates',async()=>{
+ const {sqlite,input}=fixture();await input.store.saveQualification('o','a','ops',1,1,{profiles:[{dataset:'media',metric:'active_ads'}]},'admin');
+ const inventory=(date:string,value:number):SourceBatch=>({clientId:'a',timezone:'Europe/Stockholm',currency:'USD',channels:[],dimensions:[],grain:'daily',complete:true,coverageThrough:'2026-10-13T10:00:00Z',rows:[{date,dataset:'media',metric:'active_ads',value,definition:'current active inventory',population:'active_ads',currency:null,dimensions:{},sourceId:'',retrievedAt:'',coverageThrough:null,quality:'complete'}]});
+ await input.store.persistBatch('o','ops',inventory('2026-10-12',3),'old','2026-10-13T10:00:00Z');await input.store.persistBatch('o','ops',inventory('2026-10-13',5),'latest','2026-10-13T10:00:00Z');const load=canonicalLoad(input);
+ expect((await preparedWorkspaceFrame(input,load)).liveOperations.find(row=>row.metric==='active_ads')?.value).toBe(5);
+ await input.store.persistBatch('o','ops',inventory('2026-10-12',99),'superseded-correction','2026-10-13T11:00:00Z');expect((await preparedWorkspaceFrame(input,load)).liveOperations.find(row=>row.metric==='active_ads')?.value).toBe(5);expect(load).toHaveBeenCalledTimes(1);
+ await input.store.persistBatch('o','ops',inventory('2026-10-13',7),'latest-correction','2026-10-13T11:00:00Z');expect((await preparedWorkspaceFrame(input,load)).liveOperations.find(row=>row.metric==='active_ads')?.value).toBe(7);expect(load).toHaveBeenCalledTimes(2);
+});
+it('retains a non-operational frame across active-inventory refreshes while keeping operational cache keys distinct',async()=>{
+ const {sqlite,input,load}=fixture();input.selection={...input.selection,includeOperations:false};await input.store.saveQualification('o','a','source',1,1,{profiles:[{dataset:'traffic',metric:'sessions'}]},'admin');await input.store.saveQualification('o','a','ops',1,1,{profiles:[{dataset:'media',metric:'active_ads'}]},'admin');addPointer(sqlite,'ops','2026-10-13','ops-first');
+ await preparedWorkspaceFrame(input,load);addPointer(sqlite,'ops','2026-10-13','ops-second');await preparedWorkspaceFrame(input,load);expect(load).toHaveBeenCalledTimes(1);
+ const withOperations={...input,selection:{...input.selection,includeOperations:true}};await preparedWorkspaceFrame(withOperations,load);expect(load).toHaveBeenCalledTimes(2);addPointer(sqlite,'ops','2026-10-13','ops-third');await preparedWorkspaceFrame(withOperations,load);expect(load).toHaveBeenCalledTimes(3);await preparedWorkspaceFrame(input,load);expect(load).toHaveBeenCalledTimes(3);
+});
 it('reuses only a prepared analytics frame, independently decodes it, and reattaches fresh closed-day source headers',async()=>{
  const {sqlite,input,load}=fixture();const first=await preparedWorkspaceFrame(input,load);first.warnings.push('caller change');first.client.name='changed';
  sqlite.exec("UPDATE connections SET lastSuccess='new',error='fresh error',coverageThrough='2026-10-12T01:00:00Z'");

@@ -1,4 +1,5 @@
-import {it,expect} from 'vitest';
+import {it,expect,vi} from 'vitest';
+import * as analytics from '../../lib/analytics/query';
 import {evidenceDetailRows,supplementalReviewEvidence,closedTrafficReviewCuts} from '../../lib/ai/evidence';
 import clients from '../../data/initial-clients.json';
 import {FunnelRollupAccumulator} from '../../lib/analytics/funnel-rollup';
@@ -76,4 +77,31 @@ it('keeps omitted rollup contribution counts coherent with the returned segment 
  const details=evidenceDetailRows(accumulator.finish(),1);
  expect(details).toMatchObject({segmentCount:2,returnedSegmentCount:1,omitted:1,storedObservationCount:2,returnedStoredObservationCount:1,omittedStoredObservationCount:1,observationCount:5,returnedObservationCount:3,omittedObservationCount:2});
  expect(details.rows[0].provenance.reduce((sum,p)=>sum+p.observationCount,0)).toBe(details.returnedObservationCount);
+});
+
+it('includes the selected day in closed references and uses the preceding day for partial references',()=>{
+ const rows=['2026-10-06','2026-10-07','2026-10-08'].flatMap((date,i)=>[row(date,'traffic','sessions',(i+1)*100,{page:'/offer',market:'US'}),row(date,'funnels','sessions',(i+1)*100,{page:'/offer',market:'US'})]);
+ for(const mode of ['closed','partial'] as const){
+  const evidence=supplementalReviewEvidence(client,rows,[],{...filters,mode});
+  const reference=mode==='closed'?'2026-10-08':'2026-10-07',value=mode==='closed'?300:200;
+  expect(evidence.priorClosedDetail.datasets.funnels.storeDate).toBe(reference);
+  expect(evidence.priorClosedDetail.datasets.funnels.rows[0].metrics.sessions).toBe(value);
+  expect(evidence.priorClosedDetail.datasets.funnels.comparison.rows[0].metrics.sessions).toBe(value-100);
+  expect(evidence.traffic?.storeDate).toBe(reference);expect(evidence.traffic?.countries.rows[0].metrics.sessions).toBe(value);
+ }
+});
+it('does not repeatedly prepare unrelated dense days while preserving dated comparisons, renewal history and MTD',()=>{
+ const dense=Array.from({length:7},(_,day)=>Array.from({length:120},(_,page)=>row(`2026-10-0${day+1}`,'traffic','sessions',1,{page:`/page-${page}`,market:'US'}))).flat();
+ const rows=[...dense,...['2026-09-30','2026-10-06','2026-10-07'].map((date,i)=>row(date,'overview','revenue',[80,100,120][i])),...['2026-10-01','2026-10-02','2026-10-06','2026-10-07','2026-09-09','2026-09-10'].flatMap(date=>[row(date,'subscriptions','recurring_revenue',120),row(date,'subscriptions','recurring_orders',4),row(date,'media','spend',5,{channel:'meta'})])];
+ const spy=vi.spyOn(analytics,'queryClient');try{
+  const evidence=supplementalReviewEvidence(client,rows,[],filters);
+  expect(evidence.closedPriorDay.arithmetic).toMatchObject({previousDay:{revenueChange:.2},sameWeekday:{revenueChange:.5}});
+  expect(evidence.dailyRenewals.find(day=>day.storeDate==='2026-10-07')).toMatchObject({orders:4,aov:30});
+  expect(evidence.closedRecurringWeeks.comparison.revenue).toBe(120);
+  expect(evidence.channelMonthToDate.find(c=>c.dataset==='media')?.rows[0].metrics.spend).toBe(20);
+  expect(evidence.traffic?.countries.rows[0].metrics.sessions).toBe(120);
+  const dated=spy.mock.calls.filter(call=>call[3].from===call[3].to);
+  expect(dated.every(call=>call[1].filter(r=>r.dataset==='traffic').length<=240)).toBe(true);
+  expect(dated.length).toBeLessThan(25);
+ }finally{spy.mockRestore();}
 });

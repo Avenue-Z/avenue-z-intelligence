@@ -11,6 +11,7 @@ vi.mock('../../lib/server/secrets',()=>({serverSecret:(name:string)=>name==='OPE
 vi.mock('../../lib/ai/provider',()=>({askOpenAI:state.model}));
 import {aiContext,aiHistory,answerAI,generateAIReview} from '../../lib/ai/server';
 import {REVIEW_SECTIONS,compactAIContextForModel} from '../../lib/ai/context';
+import {fingerprint} from '../../lib/reviews/build';
 const filters={from:'2026-10-07',to:'2026-10-07',mode:'closed',compare:'previous',view:'overview',market:'',source:'',page:'',device:'',stream:''} as const;
 function database(){const db=new DatabaseSync(':memory:');for(const f of readdirSync('drizzle').filter(f=>f.endsWith('.sql')))db.exec(readFileSync(`drizzle/${f}`,'utf8'));return {prepare(sql:string){let values:any[]=[];const p={bind(...v:any[]){values=v;return p;},async first(){return db.prepare(sql).get(...values)??null;},async all(){return {results:db.prepare(sql).all(...values)};},async run(){return {meta:{changes:Number(db.prepare(sql).run(...values).changes)}};}};return p;},async batch(statements:any[]){db.exec('BEGIN');try{const r=[];for(const s of statements)r.push(await s.run());db.exec('COMMIT');return r;}catch(e){db.exec('ROLLBACK');throw e;}}};}
 beforeEach(async()=>{state.store=new Store(database());state.model.mockReset();for(const c of clients)await state.store.run('INSERT INTO clients(id,organizationId,name,slug,timezone,currency,color,config,version) VALUES(?,?,?,?,?,?,?,?,?)',c.id,'o',c.name,c.slug,c.timezone,c.currency,c.color,JSON.stringify(c.config),1);});
@@ -53,4 +54,27 @@ it('builds weekday and previous-day headline references without preparing dense 
  const unsupported=(await aiContext('beam',{...filters,view:'traffic',device:'mobile'},undefined,undefined,false,true,'Traffic')).context.clients[0];expect(unsupported.weekday).toMatchObject({metrics:{revenue:null}});expect((unsupported.weekday as any).warnings.join(' ')).toContain('Unsupported metrics are unavailable');
  const partial=(await aiContext('beam',{...filters,view:'traffic',mode:'partial'},undefined,undefined,false,true,'Traffic')).context.clients[0];expect(partial.weekday).toMatchObject({metrics:{revenue:null}});expect((partial.weekday as any).warnings.join(' ')).toContain('confirmed, current hourly coverage');
  }finally{spy.mockRestore();}
+});
+
+it('regenerates a saved report when the review standard changes while still deduplicating same-standard reruns',async()=>{
+ await state.store.saveReview('o','beam',filters.to,'original',{type:'historical',text:'Original dated source review'},'2026-10-08T00:00:00Z');
+ const context=(await aiContext('beam',filters,undefined,state.scope as any,true)).context;
+ await state.store.saveReview('o','beam',filters.to,'legacy-model',{type:'ai',inputFingerprint:await fingerprint(context),headlines:['Legacy generation standard']},'2026-10-08T00:01:00Z');
+ state.model.mockResolvedValue({kpis:Array.from({length:4},()=>({label:'Metric',value:'Unavailable',note:'Not supplied'})),headlines:['Historical source','Spend vs revenue unconfirmed','No live metrics','Check source'],sections:REVIEW_SECTIONS.map(title=>({title,paragraphs:[],bullets:[],tables:[]})),sourceIds:[],actions:[]});
+ const id=await generateAIReview(state.scope as any,'beam',filters);expect(state.model).toHaveBeenCalledTimes(1);
+ expect((await state.store.reviews('o','beam')).find((r:any)=>r.id===id)?.payload.reviewStandardVersion).toBe('avenuez-daily-v2');
+ const input=JSON.parse(state.model.mock.calls[0][2]);expect(input.context.clients[0].qualifiedPageOpportunities).toEqual([]);
+ expect(state.model.mock.calls[0][4]).toContain('exact dated numeric');
+ await generateAIReview(state.scope as any,'beam',filters);expect(state.model).toHaveBeenCalledTimes(1);
+});
+
+it('loads dense review cuts only for selected and comparison days while retaining MTD, weekday headlines and renewal benchmarks',async()=>{
+ const dates=['2026-09-09','2026-09-30','2026-10-01','2026-10-05','2026-10-06','2026-10-07'];
+ const rows=dates.flatMap((date,i)=>[{date,dataset:'traffic',metric:'sessions',value:100+i,definition:'human',population:'human',currency:null,dimensions:{page:'/offer',market:'US'}},{date,dataset:'overview',metric:'revenue',value:100+i,definition:'net_sales',population:'sales',currency:'USD',dimensions:{}},{date,dataset:'subscriptions',metric:'recurring_revenue',value:50+i,definition:'renewals',population:'renewals',currency:'USD',dimensions:{}},{date,dataset:'subscriptions',metric:'recurring_orders',value:2,definition:'renewals',population:'renewals',currency:null,dimensions:{}},{date,dataset:'media',metric:'spend',value:10,definition:'spend',population:'ads',currency:'USD',dimensions:{channel:'meta'}}]);
+ await state.store.persistBatch('o','qualified',{clientId:'beam',complete:true,coverageThrough:'2026-10-08T04:00:00Z',rows} as any,'review-history','2026-10-08T10:00:00Z');
+ const read=vi.spyOn(state.store,'observations'),result=await aiContext('beam',filters,undefined,state.scope as any,true),loaded=await Promise.all(read.mock.results.map(r=>r.value));
+ expect(loaded.every(rows=>rows.filter((r:any)=>r.dataset==='traffic').every((r:any)=>r.date>='2026-10-06'))).toBe(true);
+ expect(result.context.clients[0].traffic?.storeDate).toBe('2026-10-07');expect((result.context.clients[0].weekday as any).metrics.revenue).toBe(101);
+ expect(result.context.clients[0].dailyRenewals.find(day=>day.storeDate==='2026-10-01')?.revenue).toBe(52);
+ expect(result.context.clients[0].closedRecurringWeeks?.comparison.revenue).toBe(50);expect(result.context.clients[0].channelMonthToDate.find(c=>c.dataset==='media')?.rows[0].metrics.spend).toBe(40);
 });

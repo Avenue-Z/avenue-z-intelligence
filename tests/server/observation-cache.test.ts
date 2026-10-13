@@ -99,3 +99,27 @@ it('retains the previous market day even outside a four-week or custom compariso
  await store.saveQualification('o','a','markets',1,1,{profiles:[{dataset:'markets',metric:'revenue'}]},'u');
  for(const compare of ['fourWeeks','custom'] as const){const scope={...filters,from:'2026-10-11',to:'2026-10-11',compare,...compare==='custom'?{compareFrom:'2026-08-17',compareTo:'2026-08-17'}:{}};expect((await store.observations('o','a',scope)).map(row=>row.date)).toEqual(['2026-10-10','2026-10-11']);}
 });
+
+it('loads exactly thirty revenue context days without inflating selected totals or loading unrelated dense history',async()=>{
+ const {db}=database(),store=new Store(db),base=batch().rows[0],dates=Array.from({length:33},(_,index)=>new Date(Date.UTC(2026,8,10+index)).toISOString().slice(0,10));
+ const rows:Observation[]=dates.flatMap((date,index)=>[...['web','Recharge'].flatMap((stream,streamIndex)=>[{...base,date,dataset:'revenue',metric:'net_sales',value:100+index+streamIndex,definition:'shopify_net_sales',population:'shopify_sales',dimensions:{stream}},{...base,date,dataset:'revenue',metric:'orders',value:10,definition:'shopify_orders',population:'shopify_sales',dimensions:{stream}}]),{...base,date,dataset:'traffic',metric:'sessions',value:999,dimensions:{page:'/unrelated-heavy-page'}}]);
+ await store.persistBatch('o','mixed',{...batch(),rows},'context','2026-10-13T00:00:00Z');await store.saveQualification('o','a','mixed',1,1,{profiles:[{dataset:'revenue',metric:'net_sales'},{dataset:'revenue',metric:'orders'},{dataset:'traffic',metric:'sessions'}]},'admin');
+ const scope={...filters,from:'2026-10-12',to:'2026-10-12',view:'revenue'},selection={datasets:['revenue'],includePriorWeek:false,trendDatasets:['revenue']};
+ for(const compare of ['weekday','custom'] as const){const selected={...scope,compare,...compare==='custom'?{compareFrom:'2026-09-10',compareTo:'2026-09-10'}:{}};
+  const actual=await new Store(db).observations('o','a',selected,false,undefined,selection),revenue=actual.filter(row=>row.metric==='net_sales');
+  expect(actual.every(row=>row.dataset==='revenue')).toBe(true);expect([...new Set(revenue.map(row=>row.date))]).toEqual(compare==='custom'?['2026-09-10',...dates.slice(3)]:dates.slice(3));
+  expect(revenue.filter(row=>row.date===scope.to).reduce((sum,row)=>sum+row.value!,0)).toBe(265);
+ }
+ const selectedStream=await store.observations('o','a',{...scope,stream:'web'},false,undefined,{...selection,dimensions:true});expect(selectedStream).toHaveLength(60);expect(selectedStream.every(row=>row.dimensions.stream==='web')).toBe(true);
+ expect(new Set((await store.observations('o','a',scope,false,undefined,{datasets:['revenue'],includePriorWeek:false})).map(row=>row.date))).toEqual(new Set(['2026-10-11','2026-10-12']));
+ await store.persistBatch('o','mixed',{...batch(),rows:[{...rows.find(row=>row.date==='2026-09-13'&&row.metric==='net_sales'&&row.dimensions.stream==='web')!,value:777}]},'history-corrected','2026-10-13T01:00:00Z');
+ expect((await new Store(db).observations('o','a',scope,false,undefined,selection)).find(row=>row.date==='2026-09-13'&&row.metric==='net_sales')?.value).toBe(777);
+});
+
+it('omits unrelated current operations only when the workspace explicitly excludes them',async()=>{
+ const {db}=database(),store=new Store(db),base=batch().rows[0];await store.persistBatch('o','source',batch(),'selected','2026-10-08T00:00:00Z');await store.saveQualification('o','a','source',1,1,{profiles:[{dataset:'overview',metric:'revenue'}]},'admin');
+ await store.persistBatch('o','ops',{...batch(),rows:[{...base,date:'2026-10-13',dataset:'media',metric:'active_ads',value:12}]},'latest','2026-10-13T12:00:00Z');await store.saveQualification('o','a','ops',1,1,{profiles:[{dataset:'media',metric:'active_ads'}]},'admin');
+ const scope={datasets:['overview'],includePriorWeek:false};expect((await store.observations('o','a',filters,false,undefined,scope)).find(row=>row.metric==='active_ads')?.value).toBe(12);
+ const focused=await store.observations('o','a',filters,false,undefined,{...scope,includeOperations:false});expect(focused).toHaveLength(1);expect(focused[0]).toMatchObject({metric:'revenue',value:42});
+ await store.persistBatch('o','ops',{...batch(),rows:[{...base,date:'2026-10-13',dataset:'media',metric:'active_ads',value:17}]},'corrected','2026-10-13T13:00:00Z');expect(await new Store(db).observations('o','a',filters,false,undefined,{...scope,includeOperations:false})).toEqual(focused);expect((await new Store(db).observations('o','a',filters,false,undefined,scope)).find(row=>row.metric==='active_ads')?.value).toBe(17);
+});

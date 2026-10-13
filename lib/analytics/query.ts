@@ -116,7 +116,14 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
     const end=Temporal.PlainDate.from(row.date).toZonedDateTime({timeZone:client.timezone,plainTime:historyClock});
     return Date.parse(row.end)<=Number(end.epochMilliseconds);
   }):[];
-  const datasetHistorySeries=prepareSeries&&dailyDatasets.includes('markets')?buildDatasetSeries(marketHistory,shiftDate(f.from,-1),f.to,['markets']):{};
+  const revenueHistory=prepareSeries&&dailyDatasets.includes('revenue')?filtered(capable,{...f,from:shiftDate(f.to,-29)}).filter(row=>{
+    if(row.dataset!=='revenue')return false;
+    if(f.mode==='closed')return row.date<today;
+    if(!historyClock||!row.end)return false;
+    const end=Temporal.PlainDate.from(row.date).toZonedDateTime({timeZone:client.timezone,plainTime:historyClock});
+    return Date.parse(row.end)<=Number(end.epochMilliseconds);
+  }):[];
+  const datasetHistorySeries={...prepareSeries&&dailyDatasets.includes('markets')?buildDatasetSeries(marketHistory,shiftDate(f.from,-1),f.to,['markets']):{},...prepareSeries&&dailyDatasets.includes('revenue')?buildDatasetSeries(revenueHistory,shiftDate(f.to,-29),f.to,['revenue']):{}};
   return {client,metrics,prior,comparison,verdict,series,datasetSeries,comparisonDatasetSeries,datasetHistorySeries,details,actions,opportunities,views,preparedDatasets:[...new Set(datasets)],datasetMetrics:views[dataset]?.viewMetrics??summarize([]),activeIncidents,warnings,cutoff,availableDimensions,evidence:current,comparisonEvidence:previous,connections,selectedCount:current.length,liveOperations,subscriptions:subscriptionComparison(filtered(all,{...f,from:undefined,to:undefined}),f.to,client.config.incidents,f.mode==='partial'?{timezone:client.timezone,cutoff}:undefined)};
 }
 export type ClientAnalytics=ReturnType<typeof queryClient>;

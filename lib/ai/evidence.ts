@@ -52,7 +52,7 @@ export function evidenceDetailRows(rows:Observation[],limit=80){
 export function closedTrafficReviewCuts(rows:Observation[],client:Client,filters:QueryFilters){
  const before=filters.mode==='partial'?filters.to:shiftDate(filters.to,1),dates=rows.filter(r=>r.dataset==='traffic'&&r.date<before&&r.date<todayIn(client.timezone)).map(r=>r.date).sort(),date=dates.at(-1);
  if(!date)return null;
- const selected=queryClient(client,rows,[],{...filters,from:date,to:date,mode:'closed'}).evidence.filter(r=>r.dataset==='traffic');
+ const selected=queryClient(client,rows.filter(r=>r.dataset==='traffic'&&r.date===date),[],{...filters,from:date,to:date,mode:'closed'},{preparedDatasets:[]}).evidence.filter(r=>r.dataset==='traffic');
  if(!selected.length)return null;
  const aggregate=(keys:string[])=>{
   const groups=new Map<string,Observation[]>();
@@ -70,10 +70,19 @@ export function supplementalReviewEvidence(client:Client,rows:Observation[],conn
  const sources:{id:string;label:string;url:string}[]=[];
  const source=(kind:string,date:string)=>{const id=`${kind}:${client.id}:${date}`;if(!sources.some(s=>s.id===id))sources.push({id,label:`${client.name} · ${date} · closed store-day evidence`,url:`/clients/${encodeURIComponent(client.id)}?${new URLSearchParams({...filters,from:date,to:date,mode:'closed',view:'overview'})}`});return id;};
  const before=filters.mode==='partial'?filters.to:shiftDate(filters.to,1),closed=rows.filter(r=>r.date<before&&r.date<todayIn(client.timezone));
- const queryDay=(date:string,compare:QueryFilters['compare']='previous')=>queryClient(client,rows,connections,{...filters,from:date,to:date,mode:'closed',compare});
- const newestByDataset=Object.fromEntries([...new Set(closed.filter(r=>r.dataset!=='overview'&&!['active_ads','active_creatives','active_customers'].includes(r.metric)).map(r=>r.dataset))].map(dataset=>{const date=closed.filter(r=>r.dataset===dataset).map(r=>r.date).sort().at(-1)!;
-  const selected=queryDay(date).evidence.filter(r=>r.dataset===dataset),comparison=queryDay(date).comparisonEvidence.filter(r=>r.dataset===dataset);
-  return [dataset,{storeDate:date,comparisonDate:shiftDate(date,-1),sourceId:source('closed-detail',date),scopeLabel:`Closed-day reference · ${date} · ${client.timezone}${filters.mode==='partial'?'; not the current partial day':''}`,window:dayWindow(date,client.timezone),warnings:queryDay(date).warnings,...evidenceDetailRows(selected),comparison:evidenceDetailRows(comparison)}];}));
+ // Headline trends and renewal benchmarks use lightweight history. Dense
+ // page/product/source evidence is needed only for its exact dated cut and
+ // comparison, never for every repeated daily headline/renewal check.
+ const history=rows.filter(r=>r.dataset==='overview'||r.dataset==='subscriptions'),byDate=new Map<string,Observation[]>(),newestDates=new Map<string,string>();
+ for(const r of rows){if(r.dataset==='overview'||r.dataset==='subscriptions')continue;const values=byDate.get(r.date);if(values)values.push(r);else byDate.set(r.date,[r]);}
+ for(const r of closed)if(r.dataset!=='overview'&&!['active_ads','active_creatives','active_customers'].includes(r.metric)){const prior=newestDates.get(r.dataset);if(!prior||r.date>prior)newestDates.set(r.dataset,r.date);}
+ const dayQueries=new Map<string,ReturnType<typeof queryClient>>();
+ const queryDay=(date:string,dataset?:string)=>{const key=JSON.stringify([date,dataset??null]),cached=dayQueries.get(key);if(cached)return cached;
+  const detail=dataset&&dataset!=='overview'&&dataset!=='subscriptions'?[...byDate.get(date)??[],...byDate.get(shiftDate(date,-1))??[]].filter(r=>r.dataset===dataset):[];
+  const result=queryClient(client,[...history,...detail],connections,{...filters,from:date,to:date,mode:'closed',compare:'previous'},{preparedDatasets:[]});dayQueries.set(key,result);return result;};
+ const newestByDataset=Object.fromEntries([...newestDates].map(([dataset,date])=>{
+  const current=queryDay(date,dataset),selected=current.evidence.filter(r=>r.dataset===dataset),comparison=current.comparisonEvidence.filter(r=>r.dataset===dataset);
+  return [dataset,{storeDate:date,comparisonDate:shiftDate(date,-1),sourceId:source('closed-detail',date),scopeLabel:`Closed-day reference · ${date} · ${client.timezone}${filters.mode==='partial'?'; not the current partial day':''}`,window:dayWindow(date,client.timezone),warnings:current.warnings,...evidenceDetailRows(selected),comparison:evidenceDetailRows(comparison)}];}));
  const priorDate=shiftDate(filters.to,-1),prior=queryDay(priorDate),previous=queryDay(shiftDate(priorDate,-1)),weekday=queryDay(shiftDate(priorDate,-7));
  const exposeDay=(date:string,a:ReturnType<typeof queryClient>)=>({storeDate:date,sourceId:source('closed-comparison',date),window:dayWindow(date,client.timezone),metrics:a.metrics,spendVerdict:a.verdict,observedDates:[...new Set(a.evidence.map(r=>r.date))],sourceQuality:[...new Set(a.evidence.map(r=>r.quality))],warnings:a.warnings,evidenceCount:a.selectedCount});
  const dailyRenewals=[];
@@ -86,7 +95,7 @@ export function supplementalReviewEvidence(client:Client,rows:Observation[],conn
  }
  const spendChannelTrend=[];
  for(let date=shiftDate(appendicesTo,-6);date<=appendicesTo;date=shiftDate(date,1)){
-  const media=queryDay(date).evidence.filter(r=>r.dataset==='media'&&r.metric==='spend');if(!media.length)continue;
+  const media=queryDay(date,'media').evidence.filter(r=>r.dataset==='media'&&r.metric==='spend');if(!media.length)continue;
   const channels=[...new Set(media.map(r=>r.dimensions.channel).filter(Boolean))].map(channel=>{const values=media.filter(r=>r.dimensions.channel===channel);return {channel,spend:sumMetric(values,'spend'),qualifiedClosed:values.every(r=>r.quality==='complete'&&r.coverageThrough&&Date.parse(r.coverageThrough)>=Date.parse(dayWindow(date,client.timezone).end)),...evidenceDetailRows(values)};});
   spendChannelTrend.push({storeDate:date,sourceId:source('closed-spend',date),channels,qualification:'Store-day channel spend only. UTC platform_spend and current inventory are separate; channel totals do not establish MER or matched revenue scope.'});
  }

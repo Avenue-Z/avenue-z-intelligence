@@ -13,5 +13,6 @@ export function workspaceDatasets(view:string):string[]{
  */
 export function workspaceObservationSelection(viewOrDatasets:string|string[]){
  const datasets=(Array.isArray(viewOrDatasets)?viewOrDatasets:workspaceDatasets(viewOrDatasets)).filter(dataset=>dataset!=='reviews'&&dataset!=='settings');
- return {datasets,includePriorWeek:false};
+ const includeOperations=datasets.includes('renewalDiagnostics')||datasets.includes('media')&&datasets.includes('revenue');
+ return {datasets,includePriorWeek:false,includeOperations,...datasets.includes('revenue')?{trendDatasets:['revenue']}:{}};
 }

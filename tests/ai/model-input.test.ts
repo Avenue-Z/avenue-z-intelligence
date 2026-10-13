@@ -71,3 +71,12 @@ it('preserves numeric zero and labels sparse absent metrics as unavailable rathe
  expect(row.metrics).toEqual({sessions:0});expect(row.summary.sessions).toBe(0);expect(row.derived).toEqual({});
  expect(projection.instruction).toMatch(/absent.*unavailable/i);expect(projection.instruction).toMatch(/never zero/i);
 });
+
+it('retains a smaller numeric preview before dropping all dated detail when mandatory workflow identities consume the budget',()=>{
+ const context=fixture(true);context.clients[0].findings=Array.from({length:1024},(_,i)=>({id:`existing-${i}`,title:'Preserve the exact identity of an existing conversion investigation so its subsequent evidence is matched to the shared workflow',detail:'Dated detail',status:'closed',owner:'Media',severity:'investigate'}));
+ const projection=boundedAIContextForModel(context) as any;
+ expect(projection.preview.rowLimit).toBe(2);expect(new TextEncoder().encode(JSON.stringify(projection)).byteLength).toBeLessThanOrEqual(280000);
+ expect(projection.context.clients[0].datasetDetails.products.rows).toHaveLength(2);
+ expect(projection.context.clients[0].findings).toHaveLength(1024);
+ expect(projection.instruction).toMatch(/omitted.*preview.*not.*unavailable/i);
+});

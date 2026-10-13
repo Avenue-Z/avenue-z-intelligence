@@ -4,7 +4,9 @@ import {expect,it} from 'vitest';
 import {Store} from '../../lib/server/store';
 import {backfillSnapshotDayProjections,writeSnapshotDayProjection} from '../../lib/server/snapshot-day-projections';
 import {observationCodec} from '../../lib/server/observation-codec';
-import type {Observation,QueryFilters,SourceBatch} from '../../lib/analytics/contracts';
+import type {Client,Observation,QueryFilters,SourceBatch} from '../../lib/analytics/contracts';
+import clients from '../../data/initial-clients.json';
+import {queryClient} from '../../lib/analytics/query';
 function database(projections=true){
  const sqlite=new DatabaseSync(':memory:');for(const file of readdirSync('drizzle').filter(f=>f.endsWith('.sql')&&(projections||!f.startsWith('0008_'))))sqlite.exec(readFileSync(`drizzle/${file}`,'utf8'));
  const queries:string[]=[],batches:{sql:string;values:unknown[]}[][]=[];
@@ -105,4 +107,22 @@ it('uses dense projections only for pointer dates inside selected, comparison or
  expect(actual).toEqual(expected);expect(actual).toHaveLength(2503);expect(actual.filter(row=>row.dataset==='overview').map(row=>[row.date,row.value])).toEqual([['2026-10-01',100],['2026-10-02',100],['2026-10-10',100]]);
  expect(chunkReads.length).toBeGreaterThan(0);expect(JSON.stringify(chunkReads)).toContain('2026-10-10');expect(JSON.stringify(chunkReads)).not.toContain('2026-10-01');expect(JSON.stringify(chunkReads)).not.toContain('2026-10-02');expect(rawReads(projected.queries)).toBe(1);
  expect(projected.queries.find(sql=>sql.startsWith('SELECT o.payload'))).toContain("json_extract(o.payload,'$.dataset') IN (?)");
+});
+
+it('preserves qualified Revenue context, stream filtering and exact comparisons on pure and mixed dense day captures',async()=>{
+ const projected=database(),legacy=database(false),base=batch().rows[0],dates=Array.from({length:34},(_,index)=>new Date(Date.UTC(2026,8,9+index)).toISOString().slice(0,10)),client={...(clients[0] as Client),id:'a',timezone:'UTC'};
+ const revenue=dates.flatMap((date,index)=>['web','Recharge'].flatMap((stream,streamIndex)=>[{...base,date,dataset:'revenue',metric:'revenue',value:100+index+streamIndex,population:'shopify_sales',definition:'shopify_net_sales',dimensions:{stream}},{...base,date,dataset:'revenue',metric:'orders',value:10,population:'shopify_sales',definition:'shopify_orders',dimensions:{stream}}]));
+ for(const mixed of [false,true]){
+  const source=mixed?'mixed':'pure',rows:Observation[]=mixed?revenue.flatMap(row=>[row,...row.metric==='revenue'&&row.dimensions.stream==='web'?Array.from({length:80},(_,index)=>({...base,date:row.date,dataset:'traffic',metric:'sessions',value:index+1,dimensions:{page:`/heavy-${index}`}})):[]]):revenue;
+  for(const fixture of [projected,legacy]){const store=new Store(fixture.connect());await store.persistBatch('o',source,{...batch(),rows},`${source}-context`,'2026-10-13T00:00:00Z');await store.saveQualification('o','a',source,1,1,{profiles:[{dataset:'revenue',metric:'revenue'},{dataset:'revenue',metric:'orders'},...mixed?[{dataset:'traffic',metric:'sessions'}]:[]]},'admin');}
+  // Select one source at a time so overlapping source authority cannot conceal history selection bugs.
+  for(const fixture of [projected,legacy])fixture.sqlite.prepare('DELETE FROM current_snapshots WHERE sourceId<>?').run(source);
+  const selection={datasets:['revenue'],includePriorWeek:false,trendDatasets:['revenue'],dimensions:true},scope={...filters,from:'2026-10-12',to:'2026-10-12',view:'revenue',stream:'web'};
+  for(const compare of ['weekday','custom'] as const){const selected={...scope,compare,...compare==='custom'?{compareFrom:'2026-09-09',compareTo:'2026-09-09'}:{}};
+   const actual=await new Store(projected.connect()).observations('o','a',selected,false,undefined,selection);expect(actual).toEqual(await new Store(legacy.connect()).observations('o','a',selected,false,undefined,selection));expect(actual.every(row=>row.dataset==='revenue'&&row.dimensions.stream==='web')).toBe(true);
+   const result=queryClient(client,actual,[],selected,{preparedDatasets:['revenue']});expect(result.datasetSeries.revenue).toHaveLength(1);expect(result.datasetSeries.revenue[0].summary).toMatchObject({revenue:133,orders:10,aov:13.3});expect(result.comparisonDatasetSeries.revenue[0].summary.revenue).toBe(compare==='weekday'?126:100);
+   expect(result.datasetHistorySeries.revenue).toHaveLength(30);expect(result.datasetHistorySeries.revenue.map(row=>row.date)).toEqual(dates.slice(4));expect(result.datasetHistorySeries.revenue.every(row=>row.summary.revenue!==null&&row.summary.orders===10&&row.summary.aov===row.summary.revenue!/10)).toBe(true);
+  }
+ }
+ expect(projected.queries.some(sql=>sql.includes('snapshot_day_projection_chunks'))).toBe(true);expect(rawReads(projected.queries)).toBeGreaterThan(0);
 });
