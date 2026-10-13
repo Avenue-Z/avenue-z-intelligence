@@ -4,6 +4,7 @@ vi.mock('@avenue/runtime',()=>({runtimePlatform:'sites'}));
 vi.mock('../../lib/server/access',()=>({requireClientAccess:async()=>({organizationId:'o',permittedClientIds:state.permitted,role:'admin'}),getStore:()=>state.store}));
 vi.mock('../../lib/server/secrets',()=>({serverSecret:()=>null}));
 import {loadWorkspace,workspaceSearchParams,parseFilters} from '../../lib/server/workspace';
+import {buildAlertQueue} from '../../lib/analytics/alerts';
 it('preserves shared URL scope for the initial server render',()=>{const p=workspaceSearchParams({from:'2026-09-10',to:'2026-10-08',view:'reviews',section:['findings','portfolio']});expect(p.get('from')).toBe('2026-09-10');expect(p.get('to')).toBe('2026-10-08');expect(p.get('section')).toBe('findings');});
 it('resolves an old archive date before loading its detail tables',async()=>{
  const client={id:'a',name:'A',timezone:'UTC',currency:'USD',config:{incidents:[],spendChannels:[],benchmarkMarket:'US',minSessions:10,minOpportunity:1,maxActions:6}};
@@ -30,6 +31,21 @@ it('loads lightweight review indexes for analytics and full documents for both c
 it('keeps an unfocused portfolio to headline and renewal datasets without advertising client tabs',async()=>{
  const reads:string[][]=[];state.permitted=['a'];state.store={first:async()=>null,clients:async()=>[{id:'a',name:'A',timezone:'UTC',currency:'USD',config:{incidents:[],spendChannels:[],benchmarkMarket:'US',minSessions:10,minOpportunity:1,maxActions:6}}],connections:async()=>[],observations:async(_o:any,_c:any,_f:any,_h:any,_b:any,selection:any)=>{reads.push(selection.datasets);return [];},findings:async()=>[],reviews:async()=>[],note:async()=>({body:''}),jobs:async()=>[]};
  const result=await loadWorkspace(new URLSearchParams({from:'2026-10-07',to:'2026-10-07'}));expect(reads).toEqual([['overview','subscriptions','subscriptionEvents']]);expect(result.clients[0].views.products).toBeUndefined();expect(result.clients[0].preparedDatasets).toEqual(['overview','subscriptions','subscriptionEvents']);
+});
+
+it('loads only matched-period page evidence for global business alerts and preserves tracked ownership',async()=>{
+ state.permitted=['a'];const reads:{clientId:string;filters:any;selection:any}[]=[];
+ const tracked={id:'assigned',clientId:'a',title:'Subscription follow-up',detail:'Review the cancellation cohort',severity:'investigate',status:'investigating',owner:'Retention lead',evidence:['https://claude.ai/artifact/original'],version:2,updatedAt:'2026-10-06T12:00:00Z'};
+ const observations=['2026-10-06','2026-10-07'].flatMap(date=>[0,1,2,3].flatMap(hour=>['sessions','converting_sessions'].map(metric=>({date,dataset:'funnels',metric,value:metric==='sessions'?1000:date==='2026-10-06'?30:hour===3?900:10,dimensions:{page:'/lp',market:'US'},definition:'shopify_human_public_landing_pages',population:'human_public_landing_page_sessions',currency:null,sourceId:'source',retrievedAt:'2026-10-07T03:00:00Z',coverageThrough:'2026-10-07T03:00:00Z',quality:'complete',start:`${date}T0${hour}:00:00Z`,end:`${date}T0${hour+1}:00:00Z`}))));
+ state.store={first:async()=>null,clients:async()=>['a','outside'].map(id=>({id,name:id,timezone:'UTC',currency:'USD',config:{incidents:[],spendChannels:[],benchmarkMarket:'US',minSessions:100,minOpportunity:5,maxActions:6}})),connections:async()=>[{id:'source',provider:'gateway',enabled:true,coverageThrough:'2026-10-07T03:00:00Z'}],observations:async(_o:string,clientId:string,f:any,_h:boolean,_o2:any,selection:any)=>{reads.push({clientId,filters:f,selection});return observations.filter(row=>selection.datasets.includes(row.dataset));},findings:async()=>[tracked],reviews:async()=>[],note:async()=>({body:''}),jobs:async()=>[]};
+ const result=await loadWorkspace(new URLSearchParams({section:'findings',view:'subscriptions',from:'2026-10-07',to:'2026-10-07',mode:'partial',market:'US'}));
+ expect(reads).toHaveLength(1);expect(reads[0].clientId).toBe('a');expect(reads[0].selection).toEqual({datasets:['overview','subscriptions','subscriptionEvents','funnels'],includePriorWeek:false,includeOperations:false,trendDatasets:[]});
+ expect(reads[0].filters).toMatchObject({from:'2026-10-07',to:'2026-10-07',compare:'previous',mode:'partial',market:'US',view:'subscriptions'});
+ const queue=buildAlertQueue(result.clients,result.filters),conversion=queue.find(alert=>alert.category==='Conversion opportunity');
+ expect(conversion?.figures).toEqual([{label:'Sessions',current:3000,previous:null,format:'number'},{label:'Conversion rate',current:.01,previous:.03,format:'percent'}]);
+ expect(conversion?.period).toMatchObject({from:'2026-10-07',to:'2026-10-07',market:'US',mode:'partial'});
+ expect(queue.find(alert=>alert.key==='assigned')).toMatchObject({owner:'Retention lead',status:'investigating',finding:tracked});
+ expect(tracked).toMatchObject({owner:'Retention lead',status:'investigating',version:2});
 });
 
 it('narrows dimensions only for an authorized focused Traffic page drill',async()=>{
