@@ -1,0 +1,43 @@
+import {it,expect} from 'vitest';
+import {fetchRechargeSubscriptionCohort} from '../../lib/sources/recharge-subscription-cohort';
+import {queryClient} from '../../lib/analytics/query';
+import {buildSubscriptionExplorer,subscriptionMetricValue} from '../../lib/analytics/subscription-explorer';
+import {fetchKindSource} from '../../lib/sources/kind-fetch';
+import {kindQualification} from '../../lib/sources/kind-patches';
+import {requireQualifiedSource,validateRegisteredBatch} from '../../lib/sources/registered-contract';
+import initial from '../../data/initial-clients.json';
+import type {Client} from '../../lib/analytics/contracts';
+const client=initial[0] as Client,config={RECHARGE_ADMIN_TOKEN:'private-test-token'} as any,window={from:'2026-10-12',to:'2026-10-13'},now=new Date('2026-10-13T12:35:00Z');
+const record=(id:number,created_at:string,cancelled_at:string|null=null,status=cancelled_at?'cancelled':'active')=>({id,created_at,cancelled_at,status,customer_id:999,cancellation_reason_comments:'private customer details'});
+const total=(batch:any,date:string,metric:string)=>batch.rows.filter((r:any)=>r.date===date&&r.metric===metric).reduce((n:number,r:any)=>n+r.value,0);
+const read=(rows:any[]):typeof fetch=>async()=>Response.json({subscriptions:rows,next_cursor:null});
+it('counts every new subscription but only cancellations on its same Stockholm creation day and before the completed-hour cutoff',async()=>{
+ const batch=await fetchRechargeSubscriptionCohort(client,config,window,read([record(1,'2026-10-13T10:00:00Z'),record(2,'2026-10-13T10:00:00Z','2026-10-13T11:00:00Z'),record(3,'2026-10-12T10:00:00Z','2026-10-13T10:00:00Z'),record(4,'2026-10-13T11:00:00Z','2026-10-13T12:05:00Z'),record(6,'2026-10-12T21:59:00Z','2026-10-12T22:00:00Z'),record(7,'2026-10-12T22:01:00Z','2026-10-13T10:00:00Z')]),Date.now()+10000,now);
+ expect(total(batch,'2026-10-13','new_subscriptions')).toBe(4);expect(total(batch,'2026-10-13','same_day_subscription_cancellations')).toBe(2);expect(total(batch,'2026-10-12','new_subscriptions')).toBe(2);expect(total(batch,'2026-10-12','same_day_subscription_cancellations')).toBe(0);expect(batch.coverageThrough).toBe('2026-10-13T12:00:00Z');expect(JSON.stringify(batch)).not.toContain('private customer details');expect(JSON.stringify(batch)).not.toContain('customer_id');
+});
+it('buckets the numerator at cancellation time so yesterday comparisons exclude cancellations later than today’s matched clock',async()=>{
+ const batch=await fetchRechargeSubscriptionCohort(client,config,window,read([record(1,'2026-10-12T08:00:00Z','2026-10-12T10:00:00Z'),record(2,'2026-10-12T08:00:00Z','2026-10-12T14:00:00Z')]),Date.now()+10000,now);
+ const before=batch.rows.filter((r:any)=>r.date==='2026-10-12'&&Date.parse(r.end)<=Date.parse('2026-10-12T12:00:00Z'));expect(before.filter((r:any)=>r.metric==='new_subscriptions').reduce((n:number,r:any)=>n+r.value,0)).toBe(2);expect(before.filter((r:any)=>r.metric==='same_day_subscription_cancellations').reduce((n:number,r:any)=>n+r.value,0)).toBe(1);
+});
+it('omits the status filter, completes cursor pagination and deduplicates identities across pages',async()=>{
+ let calls=0;const fetcher:typeof fetch=async url=>{const p=new URL(String(url)).searchParams;calls++;expect(p.has('status')).toBe(false);if(!p.has('cursor')){expect(p.has('created_at_min')).toBe(true);expect(p.has('created_at_max')).toBe(true);return Response.json({subscriptions:[record(1,'2026-10-13T08:00:00Z'),record(2,'2026-10-13T09:00:00Z','2026-10-13T10:00:00Z')],next_cursor:'next'});}expect([...p.keys()].sort()).toEqual(['cursor','limit']);return Response.json({subscriptions:[record(1,'2026-10-13T08:00:00Z'),record(3,'2026-10-13T11:00:00Z',null,'expired')],next_cursor:null});};const batch=await fetchRechargeSubscriptionCohort(client,config,window,fetcher,Date.now()+10000,now);expect(calls).toBe(2);expect(total(batch,'2026-10-13','new_subscriptions')).toBe(3);expect(total(batch,'2026-10-13','same_day_subscription_cancellations')).toBe(1);
+});
+it('requires complete pagination and valid creation timestamps rather than fabricating a denominator',async()=>{
+ await expect(fetchRechargeSubscriptionCohort(client,config,window,async()=>Response.json({subscriptions:[]}),Date.now()+10000,now)).rejects.toThrow('pagination');await expect(fetchRechargeSubscriptionCohort(client,config,window,read([{id:1,status:'active',cancelled_at:null}]),Date.now()+10000,now)).rejects.toThrow('creation timestamp');
+});
+
+it('publishes creation and same-day cancellation counts alongside the separate calendar cancellations under one qualified Recharge feed',async()=>{
+ const full={SHOP_DOMAIN:'bright-patches.myshopify.com',SHOPIFY_ADMIN_TOKEN:'private',TRIPLE_WHALE_SQL_KEY:'private',TRIPLE_WHALE_SUMMARY_KEY:'private',META_ACCESS_TOKEN:'private',META_AD_ACCOUNT_ID:'123',META_API_VERSION:'v24.0',META_TIME_ZONE:'Europe/Stockholm',APPLOVIN_REPORT_KEY:'private',RECHARGE_ADMIN_TOKEN:'private'},source={provider:'kind-recharge-cancellations',endpoint:'https://api.rechargeapps.com'} as any;
+ const fetcher:typeof fetch=async url=>{const u=new URL(String(url));if(u.pathname==='/store')return Response.json({store:{platform_domain:full.SHOP_DOMAIN,storefront_domain:'kindpatches.com',test_mode:false}});return u.searchParams.has('status')?Response.json({subscriptions:[{...record(1,'2026-10-13T08:00:00Z','2026-10-13T10:00:00Z'),updated_at:'2026-10-13T11:00:00Z'}],next_cursor:null}):Response.json({subscriptions:[record(1,'2026-10-13T08:00:00Z','2026-10-13T10:00:00Z'),record(2,'2026-10-13T09:00:00Z')],next_cursor:null});};
+ const batch=await fetchKindSource(source,client,window,JSON.stringify(full),fetcher,Date.now()+10000,now);expect(total(batch,'2026-10-13','new_subscriptions')).toBe(2);expect(total(batch,'2026-10-13','same_day_subscription_cancellations')).toBe(1);expect(total(batch,'2026-10-13','subscription_cancellations')).toBe(1);const contract=requireQualifiedSource(kindQualification(batch,source.provider),client);expect(contract.profiles.filter(p=>p.dataset==='subscriptionEvents')).toHaveLength(3);expect(()=>validateRegisteredBatch(batch,contract)).not.toThrow();
+});
+
+it('renders an exact same-hour day-over-day cohort rate through the production query pipeline, excluding yesterday’s later cancellations',async()=>{
+ const batch=await fetchRechargeSubscriptionCohort(client,config,window,read([record(1,'2026-10-12T08:00:00Z','2026-10-12T10:00:00Z'),record(2,'2026-10-12T08:00:00Z','2026-10-12T14:00:00Z'),record(3,'2026-10-13T08:00:00Z','2026-10-13T10:00:00Z'),record(4,'2026-10-13T09:00:00Z')]),Date.now()+10000,now);
+ const sources=['kind-triple-whale','kind-recharge-cancellations'].map(provider=>({enabled:true,provider,coverageThrough:batch.coverageThrough})) as any,filters={from:'2026-10-13',to:'2026-10-13',mode:'partial',compare:'previous',view:'subscriptions',market:'',stream:'',source:'',device:'',page:''} as any,query=queryClient(client,batch.rows,sources,filters,{preparedDatasets:['subscriptions','subscriptionEvents']}),explorer=buildSubscriptionExplorer({current:[],comparison:[],currentEvents:query.datasetSeries.subscriptionEvents,comparisonEvents:query.comparisonDatasetSeries.subscriptionEvents,range:filters,comparisonRange:query.comparison});
+ expect(query.cutoff).toBe('2026-10-13T12:00:00Z');expect(explorer.current.metrics.new_subscriptions).toBe(2);expect(explorer.previous.metrics.same_day_subscription_cancellations).toBe(1);expect(subscriptionMetricValue(explorer.current.metrics,'same_day_cancellation_rate')).toBe(.5);expect(subscriptionMetricValue(explorer.previous.metrics,'same_day_cancellation_rate')).toBe(.5);
+});
+it('keeps cohort creation dates and cancellation dates correct across the repeated and skipped Stockholm clock hours',async()=>{
+ const fall=await fetchRechargeSubscriptionCohort(client,config,{from:'2026-10-25',to:'2026-10-25'},read([record(1,'2026-10-25T00:20:00Z','2026-10-25T01:20:00Z')]),Date.now()+10000,new Date('2026-10-26T12:00:00Z'));expect(total(fall,'2026-10-25','new_subscriptions')).toBe(1);expect(total(fall,'2026-10-25','same_day_subscription_cancellations')).toBe(1);expect(fall.rows.find(r=>r.metric==='same_day_subscription_cancellations'&&r.value===1)).toMatchObject({start:'2026-10-25T00:00:00Z',end:'2026-10-25T02:00:00Z'});
+ const spring=await fetchRechargeSubscriptionCohort(client,config,{from:'2026-03-29',to:'2026-03-29'},read([record(1,'2026-03-29T00:20:00Z','2026-03-29T01:20:00Z')]),Date.now()+10000,new Date('2026-03-30T12:00:00Z'));expect(spring.rows).toHaveLength(23*2);expect(total(spring,'2026-03-29','same_day_subscription_cancellations')).toBe(1);
+});

@@ -5,13 +5,13 @@ import {hourlySessionCutoff,localHourInterval,observation,providerJson,sourceBat
 
 export const rechargeCancellationDefinition='recharge_current_cancelled_subscription_records_cancelled_at_utc_to_store_date_excludes_reactivated';
 export const rechargeCancellationPopulation='recharge_cancelled_subscription_records';
-function utcInstant(value:unknown){
+export function utcInstant(value:unknown){
  if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$/.test(value))throw new Error('Recharge cancellation timestamp missing or invalid');
  // Recharge's API standards specify UTC date-times from version 2021-11.
  // Explicit offsets are respected; omitted offsets are interpreted as UTC.
  const iso=value.replace(' ','T');try{return Temporal.Instant.from(/(?:Z|[+-]\d{2}:\d{2})$/.test(iso)?iso:`${iso}Z`);}catch{throw new Error('Recharge cancellation timestamp missing or invalid');}
 }
-function subscriptionIdentity(value:unknown){if(typeof value==='number'&&(!Number.isSafeInteger(value)||value<=0)||!/^\d+$/.test(String(value))||String(value)==='0')throw new Error('Recharge subscription identity missing or invalid');return String(value);}
+export function subscriptionIdentity(value:unknown){if(typeof value==='number'&&(!Number.isSafeInteger(value)||value<=0)||!/^\d+$/.test(String(value))||String(value)==='0')throw new Error('Recharge subscription identity missing or invalid');return String(value);}
 export async function fetchRechargeCancellations(client:Client,config:KindConfig,window:KindWindow,fetcher:typeof fetch,deadline:number,asOf=new Date()):Promise<SourceBatch>{
  const dates=sourceDates(window);if(!dates.length)throw new Error('Recharge cancellation window is empty');
  const today=todayIn(client.timezone,asOf);if(window.to>today)throw new Error('Recharge cancellation window extends into the future');

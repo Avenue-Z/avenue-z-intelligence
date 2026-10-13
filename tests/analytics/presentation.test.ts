@@ -33,3 +33,13 @@ it('preserves canonically qualified page and spend actions with dated source lin
 it('retains source-quality flags independently of removed browser observations',()=>{
  const rows=facts();rows.find(row=>row.dataset==='overview'&&row.date===f.to)!.quality='historical';const p=workspacePresentation(queryClient(c,rows,[],f,{preparedDatasets:['overview','traffic','funnels']}),f);expect(p.sourceQuality?.historical).toBe(true);expect(p.evidence).toEqual([]);
 });
+
+it('ships matched prior product metrics and dimension cohorts without repeating leaf observations',()=>{
+ const filters={...f,view:'products'};
+ const rows=['2026-10-06','2026-10-07'].flatMap(date=>[['revenue',date===filters.to?120:100],['orders',date===filters.to?12:5]].map(([metric,value])=>({date,dataset:'products',metric:String(metric),value:Number(value),definition:'product_net_sales',population:'product_sales',dimensions:{product_id:'sku-1',product:'Patch'},sourceId:'p',retrievedAt:'2026-10-08T00:00:00Z',coverageThrough:'2026-10-08T00:00:00Z',currency:metric==='revenue'?'USD':null,quality:'complete'} as Observation)));
+ const presented=workspacePresentation(queryClient(c,rows,[],filters,{preparedDatasets:['products']}),filters);
+ expect(presented.viewMetrics).toMatchObject({revenue:120,orders:12,aov:10});
+ expect(presented.viewPriorMetrics).toMatchObject({revenue:100,orders:5,aov:20});
+ expect(presented.comparisonViews?.products.details[0]).toMatchObject({dimensions:{product_id:'sku-1',product:'Patch'},metrics:{revenue:100,orders:5},evidence:[]});
+ expect(presented.comparisonEvidence).toEqual([]);
+});

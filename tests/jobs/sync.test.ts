@@ -42,3 +42,14 @@ it('reserves enough runtime for a full paginated hourly Traffic capture',async()
  const store=state.store!;await store.run("UPDATE connections SET provider='kind-shopify-traffic'");const claim=vi.spyOn(store,'claim');
  expect(await runSyncBatch(scope,{maxJobs:7,deadline:Date.now()+89999})).toEqual({completed:[],failed:[]});expect(claim).not.toHaveBeenCalled();
 });
+it('keeps Recharge cohort work pending when less than three minutes remain without changing source health or polling cadence',async()=>{
+ const store=state.store!;await store.run("UPDATE connections SET provider='kind-recharge-cancellations'");
+ expect(await runSyncBatch(scope,{maxJobs:7,deadline:Date.now()+179999})).toEqual({completed:[],failed:[]});
+ expect(await store.first('SELECT status,attempts,error,leaseUntil FROM jobs')).toEqual({status:'pending',attempts:0,error:null,leaseUntil:null});
+ expect(await store.first('SELECT error,lastSuccess,pollMinutes FROM connections')).toEqual({error:null,lastSuccess:null,pollMinutes:60});
+});
+it('allows a Recharge cohort source to start with exactly three minutes remaining and retains its normal retry policy',async()=>{
+ const store=state.store!;await store.run("UPDATE connections SET provider='kind-recharge-cancellations'");
+ expect((await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+180000})).failed).toHaveLength(1);
+ expect(await store.first('SELECT status,attempts,error,dueAt FROM jobs')).toEqual({status:'pending',attempts:1,error:'Provider read timed out',dueAt:'2026-10-12T13:02:00.000Z'});
+});

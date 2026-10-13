@@ -40,3 +40,14 @@ describe('subscription explorer',()=>{
   expect(subscriptionMetricValue({recurring_orders:0,recurring_revenue:0},'aov')).toBeNull();
  });
 });
+it('weights same-day creation-cohort cancellation rate from matched event counts and retains calendar cancellations separately',()=>{
+ const result=buildSubscriptionExplorer({range:{from:'2026-10-12',to:'2026-10-13'},comparisonRange:{from:'2026-10-10',to:'2026-10-11'},current:[],comparison:[],currentEvents:[{date:'2026-10-12',metrics:{new_subscriptions:10,same_day_subscription_cancellations:3,subscription_cancellations:40}},{date:'2026-10-13',metrics:{new_subscriptions:90,same_day_subscription_cancellations:2,subscription_cancellations:60}}]});
+ expect(subscriptionMetricValue(result.current.metrics,'same_day_cancellation_rate' as any)).toBe(.05);expect(result.current.metrics.subscription_cancellations).toBe(100);expect(result.current.coverage.same_day_cancellation_rate.reportedDays).toBe(2);
+});
+it('does not infer a same-day cancellation denominator from active customers or mismatched captured creation days',()=>{
+ const result=buildSubscriptionExplorer({range:{from:'2026-10-12',to:'2026-10-13'},comparisonRange:{from:'2026-10-10',to:'2026-10-11'},current:[{date:'2026-10-12',metrics:{active_customers:10000}}],comparison:[],currentEvents:[{date:'2026-10-12',metrics:{new_subscriptions:10,same_day_subscription_cancellations:1}},{date:'2026-10-13',metrics:{new_subscriptions:20}}]});expect(subscriptionMetricValue(result.current.metrics,'same_day_cancellation_rate' as any)).toBeNull();expect(subscriptionMetricValue({new_subscriptions:0,same_day_subscription_cancellations:0},'same_day_cancellation_rate' as any)).toBeNull();
+});
+
+it('withholds a selected 30-day cohort rate when only seven requested creation days are captured, while retaining each known daily rate',()=>{
+ const events=Array.from({length:7},(_,index)=>({date:`2026-10-${String(index+1).padStart(2,'0')}`,metrics:{new_subscriptions:100,same_day_subscription_cancellations:5}})),result=buildSubscriptionExplorer({range:{from:'2026-09-08',to:'2026-10-07'},comparisonRange:{from:'2026-08-09',to:'2026-09-07'},current:[],comparison:[],currentEvents:events});expect(result.current.coverage.same_day_cancellation_rate).toEqual({reportedDays:7,totalDays:30});expect(subscriptionMetricValue(result.current.metrics,'same_day_cancellation_rate')).toBeNull();expect(subscriptionMetricValue(result.points.at(-1)!.selected,'same_day_cancellation_rate')).toBe(.05);
+});

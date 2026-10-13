@@ -57,3 +57,9 @@ it('rolls an explicit live-today marker across store midnight while keeping a ch
   expect((await loadWorkspace(new URLSearchParams({clientId:'a',from:'2026-10-13',to:'2026-10-13',view:'products'}))).filters).toMatchObject({from:'2026-10-13',to:'2026-10-13',mode:'closed',view:'products'});
  }finally{vi.useRealTimers();}
 });
+
+it('defaults live and historical analytics to the previous period while retaining an explicit comparison',()=>{
+ expect(parseFilters(new URLSearchParams()).compare).toBe('previous');
+ expect(parseFilters(new URLSearchParams({from:'2026-10-12',to:'2026-10-12'})).compare).toBe('previous');
+ expect(parseFilters(new URLSearchParams({compare:'weekday'})).compare).toBe('weekday');
+});
