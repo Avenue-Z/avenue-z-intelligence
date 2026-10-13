@@ -5,10 +5,11 @@ import {Store} from '../../lib/server/store';
 import initial from '../../data/initial-clients.json';
 import type {AccessScope,SourceBatch} from '../../lib/analytics/contracts';
 
-const state=vi.hoisted(()=>({store:null as Store|null,sqlite:null as DatabaseSync|null,archives:[] as string[],active:new Set<string>(),peak:0,captures:[] as {provider:string;date:string}[],failure:'',partial:false,parallel:false,release:null as (()=>void)|null,waiting:null as Promise<void>|null}));
+const state=vi.hoisted(()=>({store:null as Store|null,sqlite:null as DatabaseSync|null,archives:[] as string[],active:new Set<string>(),peak:0,captures:[] as {provider:string;date:string}[],failure:'',partial:false,parallel:false,release:null as (()=>void)|null,waiting:null as Promise<void>|null,maintenance:[] as {maxSnapshots:number;maxRows:number;deadline:number}[]}));
 vi.mock('@avenue/runtime',()=>({env:{BUCKET:{put:async(key:string)=>{if(state.failure==='archive')throw Error('Archive unavailable');state.archives.push(key);}}},runtimePlatform:'sites'}));
 vi.mock('../../lib/server/access',()=>({getStore:()=>state.store}));
 vi.mock('../../lib/server/secrets',()=>({serverSecret:(name:string)=>name==='APP_ORGANIZATION_ID'?'o':'private-test-value'}));
+vi.mock('../../lib/jobs/archive-materialization-retention',()=>({pruneArchivedMaterializations:async(_store:unknown,_scope:unknown,options:{maxSnapshots:number;maxRows:number;deadline:number})=>{state.maintenance.push(options);return {verifiedSnapshots:1,prunedSnapshots:1,rowsDeleted:12,charactersDeleted:6000,projectionChunksDeleted:1,skipped:0};}}));
 vi.mock('../../lib/sources/kind-fetch',()=>({fetchKindSource:async(source:{provider:string},client:{id:string;timezone:string;currency:string},window:{from:string;to:string})=>{
  if(state.active.has(source.provider))throw Error('Duplicate active provider');state.active.add(source.provider);state.peak=Math.max(state.peak,state.active.size);state.captures.push({provider:source.provider,date:window.to});
  if(state.parallel){if(state.active.size===2)state.release?.();else await state.waiting;}
@@ -19,7 +20,7 @@ import {runHourlyHistoryBatch,hourlyHistoryTick} from '../../lib/jobs/run-hourly
 
 const scope:AccessScope={organizationId:'o',actorId:'scheduler',role:'service',permittedClientIds:['kind-patches']},client={...initial[0],version:1};
 beforeEach(async()=>{
- vi.useFakeTimers();vi.setSystemTime('2026-10-13T18:00:00Z');state.archives=[];state.active=new Set();state.peak=0;state.captures=[];state.failure='';state.partial=false;state.parallel=false;state.waiting=new Promise(resolve=>{state.release=resolve;});
+ vi.useFakeTimers();vi.setSystemTime('2026-10-13T18:00:00Z');state.archives=[];state.active=new Set();state.peak=0;state.captures=[];state.failure='';state.partial=false;state.parallel=false;state.maintenance=[];state.waiting=new Promise(resolve=>{state.release=resolve;});
  const sqlite=state.sqlite=new DatabaseSync(':memory:');for(const file of readdirSync('drizzle').filter(file=>file.endsWith('.sql')))sqlite.exec(readFileSync(`drizzle/${file}`,'utf8'));
  const prepare=(sql:string)=>{let values:unknown[]=[];const statement={bind(...input:unknown[]){values=input;return statement;},async all(){return {results:sqlite.prepare(sql).all(...values as any[])};},async first(){return sqlite.prepare(sql).get(...values as any[])??null;},async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...values as any[]).changes)}};}};return statement;};
  const store=state.store=new Store({prepare,batch:async statements=>Promise.all(statements.map(statement=>statement.run()))});
@@ -60,4 +61,8 @@ it('uses a separate runner lease and preserves the current sync lease',async()=>
 it('captures AppLovin dates nearest its retention boundary before newer comparison days',async()=>{
  await source('applovin','kind-applovin','2026-10-12');const store=state.store!;await store.run("UPDATE jobs SET dueAt='2026-10-13T17:00:00.000Z'");await store.enqueue('o',client.id,'applovin','hourly-history:2026-09-15',new Date().toISOString());
  await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+700000});expect(state.captures).toEqual([{provider:'kind-applovin',date:'2026-09-15'}]);
+});
+it('runs a bounded archive-maintenance phase at 18 GB before continuing historical captures',async()=>{
+ const store=state.store!,original=store.first.bind(store);vi.spyOn(store,'first').mockImplementation(async(sql,...args)=>sql==='PRAGMA page_count'?{page_count:Math.ceil(18000000000/4096)}:sql==='PRAGMA freelist_count'?{freelist_count:0}:original(sql,...args));
+ const result=await hourlyHistoryTick();expect(state.maintenance).toEqual([{maxSnapshots:8,maxRows:250000,deadline:Date.now()+180000}]);expect(result).toHaveProperty('maintenance.rowsDeleted',12);expect(await store.all('SELECT * FROM runner_leases')).toEqual([]);
 });

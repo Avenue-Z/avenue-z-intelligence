@@ -191,7 +191,7 @@ export class Store {
       freshOperationalPointers.length?readPage<{payload:string}>(`SELECT json_extract(o.payload,'$') AS payload FROM json_each(?) p JOIN observations o ON o.snapshotId=json_extract(p.value,'$.snapshotId') AND o.date=json_extract(p.value,'$.date') WHERE json_extract(o.payload,'$.metric') IN ('active_customers','active_ads','active_creatives') ORDER BY o.date,o.rowKey`,JSON.stringify(freshOperationalPointers)).then(rows=>rows.map(row=>JSON.parse(row.payload) as Observation)):Promise.resolve([])]);
     return operations.length?[...cached,...operations]:cached;
   }
-  async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string}) {
+  async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string},options?:{restoreMaterialization?:boolean}) {
     const id=`${org}:${batch.clientId}:${source}:${key}`;
     const ready=await this.first('SELECT id,retrievedAt,coverageThrough,complete FROM snapshots WHERE id=? AND status=?',id,'ready');
     const created=await this.run('INSERT INTO snapshots(id,organizationId,clientId,sourceId,retrievedAt,coverageThrough,complete,status,objectKey) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',id,org,batch.clientId,source,now,batch.coverageThrough,Number(batch.complete),'writing',`snapshots/${id}.json`);
@@ -227,8 +227,12 @@ export class Store {
     // by snapshot/date instead of replaying tens of thousands of INSERT OR
     // IGNORE statements. A previously retained, unmaterialized date can still
     // be restored after a later source correction.
-    const materialized=new Set<string>(ready?(await this.all<{date:string}>("SELECT value AS date FROM json_each(?) d WHERE EXISTS (SELECT 1 FROM observations o WHERE o.snapshotId=? AND o.date=d.value LIMIT 1)",JSON.stringify(dates),id)).map(value=>value.date):[]);
-    const writeRows=rows.filter(row=>!retained.has(row.date)&&!materialized.has(row.date));
+    // Archived copies can be only partly pruned when a bounded maintenance
+    // run ends. Replay every original row for those captures; first-wins
+    // inserts fill gaps while preserving the immutable capture metadata.
+    const archived=ready?await this.first("SELECT id FROM audit WHERE id=? AND organizationId=? AND clientId=? AND action='snapshot.materialization.archive_verified'",`archive-materialization:${id}`,org,batch.clientId):null;
+    const materialized=new Set<string>(ready&&!archived?(await this.all<{date:string}>("SELECT value AS date FROM json_each(?) d WHERE EXISTS (SELECT 1 FROM observations o WHERE o.snapshotId=? AND o.date=d.value LIMIT 1)",JSON.stringify(dates),id)).map(value=>value.date):[]);
+    const writeRows=options?.restoreMaterialization?rows:rows.filter(row=>!retained.has(row.date)&&!materialized.has(row.date));
     for(let n=0;n<writeRows.length;n+=2000){const inserts=[];for(let start=n;start<Math.min(n+2000,writeRows.length);start+=500){const values=writeRows.slice(start,start+500).map(r=>({date:r.date,rowKey:JSON.stringify([r.dataset,r.metric,r.start,r.end,Object.entries(r.dimensions).sort()]),payload:JSON.stringify(r)}));inserts.push(this.db.prepare("INSERT INTO observations(snapshotId,date,rowKey,payload) SELECT ?,json_extract(value,'$.date'),json_extract(value,'$.rowKey'),json_extract(value,'$.payload') FROM json_each(?) WHERE 1 ON CONFLICT DO NOTHING").bind(id,JSON.stringify(values)));}await this.db.batch(inserts);}
     const pointers=[];
     for(const date of dates){const {dataHash,coveredThrough}=dayHashes.get(date)!;

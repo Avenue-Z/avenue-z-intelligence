@@ -9,10 +9,11 @@ import {fetchKindSource} from '../sources/kind-fetch';
 import {assertSourceActivation,validateRegisteredBatch,type RegisteredContract} from '../sources/registered-contract';
 import {historicalHourlyProviders,planHistoricalHourlyJobs} from './hourly-history';
 import {DailyScheduler} from './scheduler';
+import {pruneArchivedMaterializations} from './archive-materialization-retention';
 
 const STORAGE_SAFETY_BYTES=22000000000;
 type HistoryBudget={maxJobs:number;deadline:number};
-type HistoryResult={completed:string[];failed:{id:string;error:string}[];skipped?:string;storageBytes?:number};
+type HistoryResult={completed:string[];failed:{id:string;error:string}[];skipped?:string;storageBytes?:number;maintenance?:Awaited<ReturnType<typeof pruneArchivedMaterializations>>};
 type EligibleSource={source:Connection;client:Client;contract:RegisteredContract};
 type HistoryJob={id:string;sourceId:string;clientId:string;attempts:number};
 function requiredBudget(provider:string){return ['kind-meta-performance','kind-shopify-traffic'].includes(provider)?300000:provider==='kind-shopify-products'?90000:30000;}
@@ -88,6 +89,14 @@ export async function hourlyHistoryTick():Promise<HistoryResult>{
  const organization=await store.first<{initialized:number}>('SELECT initialized FROM organizations WHERE id=?',organizationId);if(!organization?.initialized)throw Error('Workspace must be initialized before historical jobs run');
  const scope:AccessScope={organizationId,actorId:'application-history-scheduler',role:'service',permittedClientIds:['kind-patches']},scheduler=new DailyScheduler(store),id=`${organizationId}:hourly-history`,token=await scheduler.acquire(id,new Date().toISOString(),900000);
  if(!token)return {skipped:'already-running',completed:[],failed:[]};
- try{const started=Date.now();await planHistoricalHourlyJobs(store,scope);return await runHourlyHistoryBatch(store,scope,{maxJobs:40,deadline:started+700000});}
+ try{
+  const started=Date.now();let maintenance:HistoryResult['maintenance'];
+  if(await storageBytes(store)>=18000000000){
+   const maintenanceStarted=Date.now();
+   try{maintenance=await pruneArchivedMaterializations(store,scope,{maxSnapshots:8,maxRows:250000,deadline:started+180000});console.info('Historical archive maintenance',{ms:Date.now()-maintenanceStarted,...maintenance});}
+   catch(error){console.warn('Historical archive maintenance deferred',{kind:error instanceof Error?error.name:'Unknown',ms:Date.now()-maintenanceStarted});}
+  }
+  await planHistoricalHourlyJobs(store,scope);const result=await runHourlyHistoryBatch(store,scope,{maxJobs:40,deadline:started+700000});return {...result,...maintenance?{maintenance}:{}};
+ }
  finally{await scheduler.release(id,token);}
 }
