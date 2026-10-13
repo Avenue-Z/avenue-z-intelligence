@@ -39,7 +39,7 @@ export async function runSyncBatch(scope:AccessScope,budget={maxJobs:7,deadline:
         validateRegisteredBatch(batch,qualified);const hash=await fingerprint(batch),key=`snapshots/${scope.organizationId}:${client.id}:${source.id}:${hash}.json`;
         await env.BUCKET.put(key,JSON.stringify(batch),{httpMetadata:{contentType:'application/json'}});
         const capturedAt=new Date().toISOString();
-        await retryPublication('source.capture',budget.deadline,()=>s.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,actualWindow));
+        await s.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,actualWindow,{publicationDeadline:budget.deadline});
         if(batch.coverageThrough&&(!coverage||Date.parse(batch.coverageThrough)>Date.parse(coverage)))coverage=batch.coverageThrough;
         // Once today's complete query is durably archived and published, its
         // freshness is independent of optional historical repairs that follow.

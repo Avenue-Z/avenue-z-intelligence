@@ -12,6 +12,7 @@ import {trendContextWindows} from '../analytics/trend-context';
 import {TrendRollupAccumulator} from '../analytics/trend-rollup';
 import {readTrendObservations} from './trend-observations';
 import {reviewIndexFields} from '../reviews/index';
+import {retryPublication} from '../jobs/publication-retry';
 type Db={prepare:(sql:string)=>any;batch:(statements:any[])=>Promise<any[]>;allowCrossRequestCoalescing?:boolean};
 // Vercel reuses a warm adapter; Sites owns a fresh adapter per Store. This
 // optional memory cache stays isolated while the durable cache is shared.
@@ -192,10 +193,17 @@ export class Store {
       freshOperationalPointers.length?readPage<{payload:string}>(`SELECT json_extract(o.payload,'$') AS payload FROM json_each(?) p JOIN observations o ON o.snapshotId=json_extract(p.value,'$.snapshotId') AND o.date=json_extract(p.value,'$.date') WHERE json_extract(o.payload,'$.metric') IN ('active_customers','active_ads','active_creatives') ORDER BY o.date,o.rowKey`,JSON.stringify(freshOperationalPointers)).then(rows=>rows.map(row=>JSON.parse(row.payload) as Observation)):Promise.resolve([])]);
     return operations.length?[...cached,...operations]:cached;
   }
-  async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string},options?:{restoreMaterialization?:boolean}) {
+  async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string},options?:{restoreMaterialization?:boolean;publicationDeadline?:number}) {
+    // A fact page is replay-safe even when the database committed before its
+    // response timed out. Retry that exact page, not the entire large capture.
+    const publish=<T>(operation:string,work:()=>Promise<T>):Promise<T>=>{
+      if(options?.publicationDeadline===undefined)return work();
+      if(Date.now()>=options.publicationDeadline)throw Error('Source publication budget elapsed');
+      return retryPublication(operation,options.publicationDeadline,work);
+    };
     const id=`${org}:${batch.clientId}:${source}:${key}`;
-    const ready=await this.first('SELECT id,retrievedAt,coverageThrough,complete FROM snapshots WHERE id=? AND status=?',id,'ready');
-    const created=await this.run('INSERT INTO snapshots(id,organizationId,clientId,sourceId,retrievedAt,coverageThrough,complete,status,objectKey) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',id,org,batch.clientId,source,now,batch.coverageThrough,Number(batch.complete),'writing',`snapshots/${id}.json`);
+    const ready=await publish('source.snapshot.read',()=>this.first('SELECT id,retrievedAt,coverageThrough,complete FROM snapshots WHERE id=? AND status=?',id,'ready'));
+    const created=await publish('source.snapshot.create',()=>this.run('INSERT INTO snapshots(id,organizationId,clientId,sourceId,retrievedAt,coverageThrough,complete,status,objectKey) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',id,org,batch.clientId,source,now,batch.coverageThrough,Number(batch.complete),'writing',`snapshots/${id}.json`));
     const complete=ready?!!ready.complete:batch.complete;
     const rows=batch.rows.map(r=>({...r,channels:batch.channels,sourceId:source,retrievedAt:ready?.retrievedAt??now,coverageThrough:ready?ready.coverageThrough:batch.coverageThrough,quality:complete?(r.quality??'complete'):(r.quality==='historical'?'historical':'partial')}));
     const dates=window?(()=>{const d:string[]=[];for(let s=window.from;s<=window.to;s=shiftDate(s,1)){d.push(s);if(d.length>62)throw new Error('Window exceeds 62 days');}return d;})():[...new Set(rows.map(r=>r.date))];
@@ -218,7 +226,7 @@ export class Store {
     // unchanged historical dates. The complete original batch remains archived.
     const retained=new Map<string,string>();
     if([...dayHashes.values()].some(day=>day.dataHash)){
-      const current=await this.all<{date:string;snapshotId:string;dataHash:string|null;coverageThrough:string|null}>("SELECT c.date,c.snapshotId,c.dataHash,s.coverageThrough FROM current_snapshots c JOIN snapshots s ON s.id=c.snapshotId AND s.organizationId=c.organizationId AND s.clientId=c.clientId AND s.sourceId=c.sourceId AND s.status='ready' WHERE c.organizationId=? AND c.clientId=? AND c.sourceId=? AND c.date IN (SELECT value FROM json_each(?))",org,batch.clientId,source,JSON.stringify(dates));
+      const current=await publish('source.snapshot.current',()=>this.all<{date:string;snapshotId:string;dataHash:string|null;coverageThrough:string|null}>("SELECT c.date,c.snapshotId,c.dataHash,s.coverageThrough FROM current_snapshots c JOIN snapshots s ON s.id=c.snapshotId AND s.organizationId=c.organizationId AND s.clientId=c.clientId AND s.sourceId=c.sourceId AND s.status='ready' WHERE c.organizationId=? AND c.clientId=? AND c.sourceId=? AND c.date IN (SELECT value FROM json_each(?))",org,batch.clientId,source,JSON.stringify(dates)));
       for(const day of current){const hash=dayHashes.get(day.date);if(hash?.dataHash&&hash.dataHash===day.dataHash&&hash.coveredThrough&&day.coverageThrough&&Date.parse(day.coverageThrough)>=Date.parse(hash.coveredThrough))retained.set(day.date,day.snapshotId);}
     }
     // A replay can need a previously retained day after a later correction.
@@ -231,10 +239,10 @@ export class Store {
     // Archived copies can be only partly pruned when a bounded maintenance
     // run ends. Replay every original row for those captures; first-wins
     // inserts fill gaps while preserving the immutable capture metadata.
-    const archived=ready?await this.first("SELECT id FROM audit WHERE id=? AND organizationId=? AND clientId=? AND action='snapshot.materialization.archive_verified'",`archive-materialization:${id}`,org,batch.clientId):null;
-    const materialized=new Set<string>(ready&&!archived?(await this.all<{date:string}>("SELECT value AS date FROM json_each(?) d WHERE EXISTS (SELECT 1 FROM observations o WHERE o.snapshotId=? AND o.date=d.value LIMIT 1)",JSON.stringify(dates),id)).map(value=>value.date):[]);
+    const archived=ready?await publish('source.snapshot.archive',()=>this.first("SELECT id FROM audit WHERE id=? AND organizationId=? AND clientId=? AND action='snapshot.materialization.archive_verified'",`archive-materialization:${id}`,org,batch.clientId)):null;
+    const materialized=new Set<string>(ready&&!archived?(await publish('source.snapshot.materialized',()=>this.all<{date:string}>("SELECT value AS date FROM json_each(?) d WHERE EXISTS (SELECT 1 FROM observations o WHERE o.snapshotId=? AND o.date=d.value LIMIT 1)",JSON.stringify(dates),id))).map(value=>value.date):[]);
     const writeRows=options?.restoreMaterialization?rows:rows.filter(row=>!retained.has(row.date)&&!materialized.has(row.date));
-    for(let n=0;n<writeRows.length;n+=2000){const inserts=[];for(let start=n;start<Math.min(n+2000,writeRows.length);start+=500){const values=writeRows.slice(start,start+500).map(r=>({date:r.date,rowKey:JSON.stringify([r.dataset,r.metric,r.start,r.end,Object.entries(r.dimensions).sort()]),payload:JSON.stringify(r)}));inserts.push(this.db.prepare("INSERT INTO observations(snapshotId,date,rowKey,payload) SELECT ?,json_extract(value,'$.date'),json_extract(value,'$.rowKey'),json_extract(value,'$.payload') FROM json_each(?) WHERE 1 ON CONFLICT DO NOTHING").bind(id,JSON.stringify(values)));}await this.db.batch(inserts);}
+    for(let n=0;n<writeRows.length;n+=2000){const inserts:ReturnType<Db['prepare']>[]=[];for(let start=n;start<Math.min(n+2000,writeRows.length);start+=500){const values=writeRows.slice(start,start+500).map(r=>({date:r.date,rowKey:JSON.stringify([r.dataset,r.metric,r.start,r.end,Object.entries(r.dimensions).sort()]),payload:JSON.stringify(r)}));inserts.push(this.db.prepare("INSERT INTO observations(snapshotId,date,rowKey,payload) SELECT ?,json_extract(value,'$.date'),json_extract(value,'$.rowKey'),json_extract(value,'$.payload') FROM json_each(?) WHERE 1 ON CONFLICT DO NOTHING").bind(id,JSON.stringify(values)));}await publish('source.facts.page',()=>this.db.batch(inserts));}
     const pointers=[];
     for(const date of dates){const {dataHash,coveredThrough}=dayHashes.get(date)!;
       // Pin the retained immutable id, even if a concurrent older publication
@@ -243,14 +251,15 @@ export class Store {
       // delayed older data from replacing the retained immutable snapshot.
       pointers.push(this.db.prepare("INSERT INTO current_snapshots(organizationId,clientId,sourceId,date,snapshotId,publishedAt,dataHash) VALUES(?,?,?,?,?,?,?) ON CONFLICT(organizationId,clientId,sourceId,date) DO UPDATE SET snapshotId=CASE WHEN excluded.dataHash IS NOT NULL AND current_snapshots.dataHash=excluded.dataHash AND EXISTS (SELECT 1 FROM snapshots old WHERE old.id=current_snapshots.snapshotId AND old.status='ready' AND julianday(old.coverageThrough)>=julianday(?)) THEN current_snapshots.snapshotId ELSE excluded.snapshotId END,publishedAt=excluded.publishedAt,dataHash=excluded.dataHash WHERE excluded.publishedAt>=current_snapshots.publishedAt").bind(org,batch.clientId,source,date,retained.get(date)??id,now,dataHash,coveredThrough));
     }
-    await this.db.batch([...pointers,this.db.prepare('UPDATE snapshots SET status=? WHERE id=?').bind('ready',id)]);
+    const publication=[...pointers,this.db.prepare('UPDATE snapshots SET status=? WHERE id=?').bind('ready',id)];
+    await publish('source.snapshot.publish',()=>this.db.batch(publication));
     // Derived materialization happens after authoritative publication. A replay
     // must retain the raw snapshot's original retrieval/coverage metadata; only
     // the newly created immutable snapshot can use this in-memory batch. Closed
     // unchanged dates may still point at an older snapshot and need no duplicate.
     if(created.meta.changes)try{
-      const published=await this.all<{date:string}>('SELECT date FROM current_snapshots WHERE organizationId=? AND clientId=? AND sourceId=? AND snapshotId=?',org,batch.clientId,source,id);
-      for(const {date} of published){const day={snapshotId:id,date,sourceId:source};await writeSnapshotDayProjection(this.db,org,batch.clientId,day,snapshotDayPayload(grouped.get(date)??[],day));}
+      const published=await publish('source.projection.days',()=>this.all<{date:string}>('SELECT date FROM current_snapshots WHERE organizationId=? AND clientId=? AND sourceId=? AND snapshotId=?',org,batch.clientId,source,id));
+      for(const {date} of published){const day={snapshotId:id,date,sourceId:source};await writeSnapshotDayProjection(this.db,org,batch.clientId,day,snapshotDayPayload(grouped.get(date)??[],day),options?.publicationDeadline);}
     }catch{/* Optional projections must never fail a completed source job. */}
     return id;
   }

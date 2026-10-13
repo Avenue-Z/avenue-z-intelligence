@@ -27,7 +27,7 @@ const scope:AccessScope={organizationId:'o',actorId:'scheduler',role:'service',p
 beforeEach(async()=>{
  vi.useFakeTimers();vi.setSystemTime('2026-10-13T13:00:00Z');state.mode='tail';state.healthAtTail=null;state.puts=0;state.requests=[];
  const sqlite=state.sqlite=new DatabaseSync(':memory:');for(const file of readdirSync('drizzle').filter(file=>file.endsWith('.sql')))sqlite.exec(readFileSync(`drizzle/${file}`,'utf8'));
- const prepare=(sql:string)=>{let values:unknown[]=[];const statement={bind(...input:unknown[]){values=input;return statement;},async all(){return {results:sqlite.prepare(sql).all(...values as any[])};},async first(){return sqlite.prepare(sql).get(...values as any[])??null;},async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...values as any[]).changes)}};}};return statement;};
+ const prepare=(sql:string)=>{let values:unknown[]=[];const statement={sql,bind(...input:unknown[]){values=input;return statement;},async all(){return {results:sqlite.prepare(sql).all(...values as any[])};},async first(){return sqlite.prepare(sql).get(...values as any[])??null;},async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...values as any[]).changes)}};}};return statement;};
  const store=state.store=new Store({prepare,batch:async statements=>Promise.all(statements.map(statement=>statement.run()))}),client={...initial[0],version:1};
  await store.run('INSERT INTO clients(id,organizationId,name,slug,timezone,currency,color,config,version) VALUES(?,?,?,?,?,?,?,?,?)',client.id,'o',client.name,client.id,client.timezone,client.currency,client.color,JSON.stringify(client.config),1);
  await store.run("INSERT INTO connections(id,organizationId,clientId,name,provider,endpoint,secretRef,pollMinutes,enabled,version,lastSuccess,coverageThrough,error) VALUES('source','o','kind-patches','Source','kind-shopify-sales','https://bright-patches.myshopify.com/admin/api/2026-07/graphql.json','PRIVATE',60,1,1,'2026-10-13T11:00:00Z','2026-10-13T10:00:00Z','OLD_SOURCE_ERROR')");
@@ -78,9 +78,9 @@ it.each(['kind-shopify-sales','kind-shopify-products','kind-shopify-traffic','ki
  expect(state.requests).toEqual([]);expect(await store.first('SELECT lastSuccess,coverageThrough,error FROM connections')).toEqual(before);expect(await store.first('SELECT status,attempts,leaseUntil FROM jobs')).toEqual({status:'pending',attempts:0,leaseUntil:null});expect(await store.all('SELECT date FROM current_snapshots')).toEqual([]);
 });
 
-it('replays the identical durable capture after a database response timeout without refetching or duplicating facts',async()=>{
- state.mode='success';const store=state.store!,persist=store.persistBatch.bind(store);let calls=0;
- vi.spyOn(store,'persistBatch').mockImplementation(async(...args)=>{const id=await persist(...args);if(++calls===1)throw new DOMException('Database request timed out','TimeoutError');return id;});
+it('retries the identical fact page after a committed database timeout without refetching or duplicating facts',async()=>{
+ state.mode='success';const store=state.store!,write=store.db.batch.bind(store.db);let calls=0;
+ store.db.batch=async statements=>{const facts=statements[0]?.sql.startsWith('INSERT INTO observations'),result=await write(statements);if(facts&&++calls===1)throw new DOMException('Database request timed out','TimeoutError');return result;};
  const result=await settlePublication(runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000}));
  expect(result).toEqual({completed:['o:source:hourly-test'],failed:[]});expect(calls).toBe(2);expect(state.requests).toHaveLength(1);expect(state.puts).toBe(1);
  expect(await store.first('SELECT count(*) n FROM observations')).toEqual({n:1});expect(await store.first('SELECT count(*) n FROM snapshots')).toEqual({n:1});expect(await store.first('SELECT status,error FROM jobs')).toEqual({status:'complete',error:null});
@@ -93,11 +93,13 @@ it('retries only idempotent source freshness and completion acknowledgments afte
  expect(result).toEqual({completed:['o:source:hourly-test'],failed:[]});expect(state.requests).toHaveLength(1);expect(lost.size).toBe(2);expect(await store.first('SELECT status,error,attempts FROM jobs')).toEqual({status:'complete',error:null,attempts:1});expect((await store.first('SELECT error FROM connections'))?.error).toBeNull();
 });
 it('keeps failed durable storage visible after three database timeout attempts',async()=>{
- state.mode='success';const store=state.store!,persist=vi.spyOn(store,'persistBatch').mockRejectedValue(new DOMException('Database request timed out','TimeoutError'));
+ state.mode='success';const store=state.store!,write=store.db.batch.bind(store.db);let attempts=0;
+ store.db.batch=async statements=>{if(statements[0]?.sql.startsWith('INSERT INTO observations')){attempts++;throw new DOMException('Database request timed out','TimeoutError');}return write(statements);};
  const result=await settlePublication(runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000}));
- expect(persist).toHaveBeenCalledTimes(3);expect(result.failed).toEqual([{id:'o:source:hourly-test',error:'Database request timed out'}]);expect(state.requests).toHaveLength(1);expect(await store.all('SELECT * FROM snapshots')).toEqual([]);expect(await store.first('SELECT lastSuccess,error FROM connections')).toEqual({lastSuccess:'2026-10-13T11:00:00Z',error:'Database request timed out'});
+ expect(attempts).toBe(3);expect(result.failed).toEqual([{id:'o:source:hourly-test',error:'Database request timed out'}]);expect(state.requests).toHaveLength(1);expect(await store.first('SELECT status FROM snapshots')).toEqual({status:'writing'});expect(await store.all('SELECT * FROM current_snapshots')).toEqual([]);expect(await store.first('SELECT lastSuccess,error FROM connections')).toEqual({lastSuccess:'2026-10-13T11:00:00Z',error:'Database request timed out'});
 });
 it('does not start a publication retry when the native source-run budget is nearly exhausted',async()=>{
- state.mode='success';const started=Date.now(),store=state.store!,persist=vi.spyOn(store,'persistBatch').mockImplementation(async()=>{vi.setSystemTime(started+180000);throw new DOMException('Database request timed out','TimeoutError');});
- const result=await runSyncBatch(scope,{maxJobs:1,deadline:started+200000});expect(persist).toHaveBeenCalledTimes(1);expect(result.failed).toHaveLength(1);expect(state.requests).toHaveLength(1);
+ state.mode='success';const started=Date.now(),store=state.store!,write=store.db.batch.bind(store.db);let attempts=0;
+ store.db.batch=async statements=>{if(statements[0]?.sql.startsWith('INSERT INTO observations')){attempts++;vi.setSystemTime(started+180000);throw new DOMException('Database request timed out','TimeoutError');}return write(statements);};
+ const result=await runSyncBatch(scope,{maxJobs:1,deadline:started+200000});expect(attempts).toBe(1);expect(result.failed).toHaveLength(1);expect(state.requests).toHaveLength(1);
 });

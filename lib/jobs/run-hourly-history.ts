@@ -78,7 +78,7 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
     const hash=await fingerprint(batch),key=`snapshots/${scope.organizationId}:${client.id}:${source.id}:${hash}.json`;
     await env.BUCKET.put(key,JSON.stringify(batch),{httpMetadata:{contentType:'application/json'}});
     const capturedAt=new Date().toISOString();
-    await publish(()=>retryPublication('history.capture',budget.deadline,()=>store.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,window)));
+    await publish(()=>store.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,window,{publicationDeadline:budget.deadline}));
     await retryPublication('history.complete',budget.deadline,()=>store.finish(job.id));out.completed.push(job.id);
    }catch(error){
     const message=error instanceof Error?error.message:'Historical capture failed';
@@ -103,7 +103,9 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
 export async function hourlyHistoryTick():Promise<HistoryResult>{
  const store=getStore(),organizationId=serverSecret('APP_ORGANIZATION_ID')||'avenue-z';
  const organization=await store.first<{initialized:number}>('SELECT initialized FROM organizations WHERE id=?',organizationId);if(!organization?.initialized)throw Error('Workspace must be initialized before historical jobs run');
- const scope:AccessScope={organizationId,actorId:'application-history-scheduler',role:'service',permittedClientIds:['kind-patches']},scheduler=new DailyScheduler(store),id=`${organizationId}:hourly-history`,token=await scheduler.acquire(id,new Date().toISOString(),900000);
+ const scope:AccessScope={organizationId,actorId:'application-history-scheduler',role:'service',permittedClientIds:['kind-patches']};
+ if(await currentSourcesDue(store,scope))return {skipped:'current-source-work',completed:[],failed:[]};
+ const scheduler=new DailyScheduler(store),id=`${organizationId}:hourly-history`,token=await scheduler.acquire(id,new Date().toISOString(),900000);
  if(!token)return {skipped:'already-running',completed:[],failed:[]};
  try{
   if(await currentSourcesDue(store,scope))return {skipped:'current-source-work',completed:[],failed:[]};
