@@ -12,6 +12,7 @@ import {Temporal} from '@js-temporal/polyfill';
 import {serverSecret} from '../server/secrets';
 import {generateAIReview} from '../ai/server';
 import type {ScheduledReviewLease} from '../server/store';
+import {retryPublication} from './publication-retry';
 export {serverSecret} from '../server/secrets';
 // Leave enough of the shared source-run budget for a bounded provider request
 // (25 seconds) plus setup. Later jobs stay pending for the next native tick.
@@ -36,15 +37,19 @@ export async function runSyncBatch(scope:AccessScope,budget={maxJobs:7,deadline:
       const batches=historyDate?(async function*(){yield {batch:await fetchKindSource(source,client,window,secret,fetch,budget.deadline),window};})():source.provider==='gateway'?(async function*(){yield {batch:await fetchGateway(source,client,window,secret,fetch,budget.deadline),window};})():fetchKindBatches(source,client,window,secret,fetch,budget.deadline);
       for await(const {batch,window:actualWindow} of batches){
         validateRegisteredBatch(batch,qualified);const hash=await fingerprint(batch),key=`snapshots/${scope.organizationId}:${client.id}:${source.id}:${hash}.json`;
-        await env.BUCKET.put(key,JSON.stringify(batch),{httpMetadata:{contentType:'application/json'}});await s.persistBatch(scope.organizationId,source.id,batch,hash,new Date().toISOString(),actualWindow);
+        await env.BUCKET.put(key,JSON.stringify(batch),{httpMetadata:{contentType:'application/json'}});
+        const capturedAt=new Date().toISOString();
+        await retryPublication('source.capture',budget.deadline,()=>s.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,actualWindow));
         if(batch.coverageThrough&&(!coverage||Date.parse(batch.coverageThrough)>Date.parse(coverage)))coverage=batch.coverageThrough;
         // Once today's complete query is durably archived and published, its
         // freshness is independent of optional historical repairs that follow.
         if(!historyDate&&batch.complete&&actualWindow.to===date&&batch.coverageThrough&&Date.parse(batch.coverageThrough)>Date.parse(dayWindow(date,client.timezone).start)){
-          await s.run('UPDATE connections SET lastSuccess=?,coverageThrough=?,error=NULL WHERE id=? AND organizationId=?',new Date().toISOString(),batch.coverageThrough,source.id,scope.organizationId);currentPublished=true;
+          const publishedAt=new Date().toISOString();
+          await retryPublication('source.freshness',budget.deadline,()=>s.run('UPDATE connections SET lastSuccess=?,coverageThrough=?,error=NULL WHERE id=? AND organizationId=?',publishedAt,batch.coverageThrough,source.id,scope.organizationId));currentPublished=true;
         }
       }
-      if(!historyDate)await s.run('UPDATE connections SET lastSuccess=?,coverageThrough=?,error=NULL WHERE id=? AND organizationId=?',new Date().toISOString(),coverage,source.id,scope.organizationId);await s.finish(j.id);out.completed.push(j.id);
+      if(!historyDate){const publishedAt=new Date().toISOString();await retryPublication('source.freshness',budget.deadline,()=>s.run('UPDATE connections SET lastSuccess=?,coverageThrough=?,error=NULL WHERE id=? AND organizationId=?',publishedAt,coverage,source.id,scope.organizationId));}
+      await retryPublication('source.complete',budget.deadline,()=>s.finish(j.id));out.completed.push(j.id);
     }catch(e){const error=(e as Error).message;if(!historyDate&&!currentPublished)await s.run('UPDATE connections SET error=? WHERE id=? AND organizationId=?',error,j.sourceId,scope.organizationId);if(/HTTP (401|403)|not configured|disabled or unavailable|qualification|Unregistered|Registered/.test(error))await s.finish(j.id,error);else await s.retry(j.id,j.attempts,error,new Date().toISOString());out.failed.push({id:j.id,error});}
   }
   return out;

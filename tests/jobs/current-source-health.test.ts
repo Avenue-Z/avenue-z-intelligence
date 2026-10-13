@@ -36,6 +36,7 @@ beforeEach(async()=>{
  await store.enqueue('o',client.id,'source','hourly-test',new Date().toISOString());
 });
 afterEach(()=>{vi.restoreAllMocks();vi.useRealTimers();state.sqlite?.close();});
+async function settlePublication<T>(pending:Promise<T>){let settled=false;void pending.finally(()=>{settled=true;}).catch(()=>{});await vi.waitFor(()=>expect(settled).toBe(true));return pending;}
 
 it('publishes durable current freshness before the historical tail and retains its separate job failure',async()=>{
  const result=await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000});
@@ -75,4 +76,28 @@ it.each(['kind-shopify-sales','kind-shopify-products','kind-shopify-traffic','ki
  const result=await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+300000});
  expect(result.failed).toEqual([]);expect(result.completed).toEqual([]);
  expect(state.requests).toEqual([]);expect(await store.first('SELECT lastSuccess,coverageThrough,error FROM connections')).toEqual(before);expect(await store.first('SELECT status,attempts,leaseUntil FROM jobs')).toEqual({status:'pending',attempts:0,leaseUntil:null});expect(await store.all('SELECT date FROM current_snapshots')).toEqual([]);
+});
+
+it('replays the identical durable capture after a database response timeout without refetching or duplicating facts',async()=>{
+ state.mode='success';const store=state.store!,persist=store.persistBatch.bind(store);let calls=0;
+ vi.spyOn(store,'persistBatch').mockImplementation(async(...args)=>{const id=await persist(...args);if(++calls===1)throw new DOMException('Database request timed out','TimeoutError');return id;});
+ const result=await settlePublication(runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000}));
+ expect(result).toEqual({completed:['o:source:hourly-test'],failed:[]});expect(calls).toBe(2);expect(state.requests).toHaveLength(1);expect(state.puts).toBe(1);
+ expect(await store.first('SELECT count(*) n FROM observations')).toEqual({n:1});expect(await store.first('SELECT count(*) n FROM snapshots')).toEqual({n:1});expect(await store.first('SELECT status,error FROM jobs')).toEqual({status:'complete',error:null});
+ expect((await store.first('SELECT coverageThrough,error FROM connections'))).toEqual({coverageThrough:'2026-10-13T12:00:00Z',error:null});
+});
+it('retries only idempotent source freshness and completion acknowledgments after committed response timeouts',async()=>{
+ state.mode='success';const store=state.store!,run=store.run.bind(store),lost=new Set<string>();
+ vi.spyOn(store,'run').mockImplementation(async(sql,...values)=>{const result=await run(sql,...values);if((sql.startsWith('UPDATE connections SET lastSuccess=')||sql.startsWith('UPDATE jobs SET status=?'))&&!lost.has(sql)){lost.add(sql);throw new DOMException('Database request timed out','TimeoutError');}return result;});
+ const result=await settlePublication(runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000}));
+ expect(result).toEqual({completed:['o:source:hourly-test'],failed:[]});expect(state.requests).toHaveLength(1);expect(lost.size).toBe(2);expect(await store.first('SELECT status,error,attempts FROM jobs')).toEqual({status:'complete',error:null,attempts:1});expect((await store.first('SELECT error FROM connections'))?.error).toBeNull();
+});
+it('keeps failed durable storage visible after three database timeout attempts',async()=>{
+ state.mode='success';const store=state.store!,persist=vi.spyOn(store,'persistBatch').mockRejectedValue(new DOMException('Database request timed out','TimeoutError'));
+ const result=await settlePublication(runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000}));
+ expect(persist).toHaveBeenCalledTimes(3);expect(result.failed).toEqual([{id:'o:source:hourly-test',error:'Database request timed out'}]);expect(state.requests).toHaveLength(1);expect(await store.all('SELECT * FROM snapshots')).toEqual([]);expect(await store.first('SELECT lastSuccess,error FROM connections')).toEqual({lastSuccess:'2026-10-13T11:00:00Z',error:'Database request timed out'});
+});
+it('does not start a publication retry when the native source-run budget is nearly exhausted',async()=>{
+ state.mode='success';const started=Date.now(),store=state.store!,persist=vi.spyOn(store,'persistBatch').mockImplementation(async()=>{vi.setSystemTime(started+180000);throw new DOMException('Database request timed out','TimeoutError');});
+ const result=await runSyncBatch(scope,{maxJobs:1,deadline:started+200000});expect(persist).toHaveBeenCalledTimes(1);expect(result.failed).toHaveLength(1);expect(state.requests).toHaveLength(1);
 });

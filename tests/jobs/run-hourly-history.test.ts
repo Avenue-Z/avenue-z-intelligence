@@ -74,3 +74,9 @@ it('defers the shared Shopify budget without burning attempts or claiming its ot
  expect(result.completed).toEqual(['o:meta:hourly-history:2026-10-12']);expect(result.failed.length).toBeGreaterThanOrEqual(1);expect(result.failed.length).toBeLessThanOrEqual(2);
  const shopify=await store.all<{status:string;attempts:number}>('SELECT status,attempts FROM jobs WHERE sourceId IN (?,?) ORDER BY sourceId','sales','products');expect(shopify).toHaveLength(6);expect(shopify.every(job=>job.status==='pending'&&job.attempts===0)).toBe(true);expect(state.captures.filter(value=>value.provider.startsWith('kind-shopify-')).length).toBeLessThanOrEqual(2);expect(await store.all('SELECT * FROM connections')).toEqual(before);
 });
+it('replays a timed-out historical publication without refetching, duplicating facts or altering live health',async()=>{
+ await source('sales');const store=state.store!,before=await store.all('SELECT * FROM connections'),persist=store.persistBatch.bind(store);let attempts=0;
+ vi.spyOn(store,'persistBatch').mockImplementation(async(...args)=>{const id=await persist(...args);if(++attempts===1)throw new DOMException('Database request timed out','TimeoutError');return id;});
+ const pending=runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+700000});let settled=false;void pending.finally(()=>{settled=true;}).catch(()=>{});await vi.waitFor(()=>expect(settled).toBe(true));const result=await pending;
+ expect(result.completed).toEqual(['o:sales:hourly-history:2026-10-12']);expect(result.failed).toEqual([]);expect(attempts).toBe(2);expect(state.captures).toHaveLength(1);expect(state.archives).toHaveLength(1);expect(await store.first('SELECT count(*) n FROM observations')).toEqual({n:1});expect(await store.all('SELECT * FROM connections')).toEqual(before);expect(await store.first('SELECT status,attempts FROM jobs')).toEqual({status:'complete',attempts:1});
+});

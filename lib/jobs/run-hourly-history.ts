@@ -11,6 +11,7 @@ import {historicalHourlyProviders,planHistoricalHourlyJobs} from './hourly-histo
 import {DailyScheduler} from './scheduler';
 import {pruneArchivedMaterializations} from './archive-materialization-retention';
 import {ShopifyRateLimitError} from '../sources/shopify-graphql';
+import {retryPublication} from './publication-retry';
 
 const STORAGE_SAFETY_BYTES=22000000000;
 type HistoryBudget={maxJobs:number;deadline:number};
@@ -72,8 +73,9 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
     if(!batch.complete||!batch.coverageThrough||Date.parse(batch.coverageThrough)<Date.parse(dayWindow(date,client.timezone).end)||batch.rows.some(row=>row.date!==date))throw Error('Historical capture did not cover the complete store day');
     const hash=await fingerprint(batch),key=`snapshots/${scope.organizationId}:${client.id}:${source.id}:${hash}.json`;
     await env.BUCKET.put(key,JSON.stringify(batch),{httpMetadata:{contentType:'application/json'}});
-    await publish(()=>store.persistBatch(scope.organizationId,source.id,batch,hash,new Date().toISOString(),window));
-    await store.finish(job.id);out.completed.push(job.id);
+    const capturedAt=new Date().toISOString();
+    await publish(()=>retryPublication('history.capture',budget.deadline,()=>store.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,window)));
+    await retryPublication('history.complete',budget.deadline,()=>store.finish(job.id));out.completed.push(job.id);
    }catch(error){
     const message=error instanceof Error?error.message:'Historical capture failed';
     if(error instanceof ShopifyRateLimitError&&source.provider.startsWith('kind-shopify-')){
