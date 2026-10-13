@@ -13,3 +13,9 @@ it('does not render empty dated charts when only unmatched platform ad metrics e
  const html=renderToStaticMarkup(createElement(SpendWorkspace,{record,filters}));
  expect(html).toContain('Spend vs revenue');expect(html).toContain('Matched revenue and spend values are unavailable');expect(html).not.toContain('No chart data for this selection');expect(html).not.toContain('Spend efficiency over time');
 });
+it('colors measurable ad-spend cost declines favorably and increases unfavorably',()=>{
+ const base={...workspacePresentation(queryClient(client,[],[],filters),filters),reviews:[],findings:[],note:{body:'',version:0}};
+ for(const [spend,tone] of [[80,'favorable'],[120,'unfavorable']] as const){const record={...base,metrics:{...base.metrics,spend},prior:{...base.prior,spend:100}},html=renderToStaticMarkup(createElement(SpendWorkspace,{record,filters}));
+  const card=html.match(/<span>AD SPEND<\/span>[\s\S]*?<\/div>/)?.[0]??'';expect(card).toContain(`data-tone="${tone}"`);expect(card).toContain('vs yesterday');
+ }
+});

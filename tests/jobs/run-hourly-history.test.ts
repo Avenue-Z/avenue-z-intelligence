@@ -125,3 +125,9 @@ it('ignores future current jobs and disabled connections when reserving write ca
 it('skips archive maintenance and history planning before heavy writes when an enabled current source is due',async()=>{
  await source('sales');const store=state.store!;await store.enqueue('o',client.id,'sales','current','2026-10-13T17:00:00Z');const original=store.first.bind(store);vi.spyOn(store,'first').mockImplementation(async(sql,...args)=>sql==='PRAGMA page_count'?{page_count:Math.ceil(18000000000/4096)}:sql==='PRAGMA freelist_count'?{freelist_count:0}:original(sql,...args));const jobs=await store.all('SELECT * FROM jobs'),writes=vi.spyOn(store,'run');expect(await hourlyHistoryTick()).toMatchObject({skipped:'current-source-work',completed:[],failed:[]});expect(state.maintenance).toEqual([]);expect(state.captures).toEqual([]);expect(writes).not.toHaveBeenCalled();expect(await store.all('SELECT * FROM jobs')).toEqual(jobs);expect(await store.all('SELECT * FROM runner_leases')).toEqual([]);
 });
+it('plans and captures closed-day history through the independent cron when current ingestion is clear',async()=>{
+ await source('sales');const store=state.store!;await store.run('DELETE FROM jobs');const before=await store.all('SELECT * FROM connections');
+ const result=await hourlyHistoryTick();
+ expect(result.completed).toHaveLength(40);expect(result.failed).toEqual([]);expect(await store.first("SELECT count(*) n FROM jobs WHERE id LIKE '%:hourly-history:____-__-__'")).toEqual({n:61});
+ expect(state.captures).toHaveLength(40);expect(await store.all('SELECT * FROM connections')).toEqual(before);expect(await store.all('SELECT * FROM runner_leases')).toEqual([]);
+});

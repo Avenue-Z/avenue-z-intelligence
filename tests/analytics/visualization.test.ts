@@ -28,6 +28,11 @@ describe('dated visual comparisons',()=>{
 describe('store-day channel spend visualization',()=>{
  it('sums only the store-day spend metric and leaves UTC platform spend separate',()=>{
   const rows:{dimensions:Record<string,string>;metrics:Record<string,number|null>}[]=[{dimensions:{channel:'meta'},metrics:{spend:100,platform_spend:900}},{dimensions:{channel:'google'},metrics:{spend:50}},{dimensions:{channel:'meta',campaign:'extra'},metrics:{spend:10}},{dimensions:{channel:'applovin'},metrics:{platform_spend:1000}},{dimensions:{channel:'tiktok'},metrics:{spend:0}}];
-  expect(channelSpendRows(rows)).toEqual([{name:'meta',spend:110},{name:'google',spend:50},{name:'tiktok',spend:0}]);
+  expect(channelSpendRows(rows)).toEqual([{name:'Meta',spend:110},{name:'Google',spend:50},{name:'TikTok',spend:0}]);
+ });
+ it('labels verified paid-provider aliases consistently without rewriting raw dimensions or treating referrers as paid spend',()=>{
+  const rows:{dimensions:Record<string,string>;metrics:Record<string,number|null>}[]=[{dimensions:{channel:'Facebook'},metrics:{spend:100}},{dimensions:{channel:'meta'},metrics:{spend:20}},{dimensions:{channel:'instagram'},metrics:{spend:5}},{dimensions:{channel:'facebook organic'},metrics:{spend:2}},{dimensions:{source:'facebook',utm_source:'facebook'},metrics:{sessions:500}}];
+  expect(channelSpendRows(rows)).toEqual([{name:'Meta',spend:125},{name:'facebook organic',spend:2}]);
+  expect(rows.map(row=>row.dimensions.channel)).toEqual(['Facebook','meta','instagram','facebook organic',undefined]);
  });
 });

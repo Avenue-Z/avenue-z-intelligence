@@ -6,6 +6,7 @@ import type {AccessScope,Client} from '../analytics/contracts';
 import type {Store} from '../server/store';
 import {dayWindow} from '../analytics/windows';
 import {warmSuccessfulSourceJobs} from '../server/cache-warming';
+import {intradayConnections} from '../analytics/intraday-coverage';
 
 async function serviceScope(s:Store):Promise<AccessScope>{
  const organizationId=serverSecret('APP_ORGANIZATION_ID')||'avenue-z';
@@ -15,8 +16,9 @@ async function serviceScope(s:Store):Promise<AccessScope>{
 }
 async function freshCore(s:Store,scope:AccessScope,c:Client,now:Date,due:DueReview|null=dueReview(c,now)){
  const sources=(await s.connections(scope.organizationId,c.id)).filter(x=>x.enabled);
+ const financialContributors=new Set(intradayConnections(sources,'overview').filter(source=>['kind-shopify-sales','kind-triple-whale-diagnostics'].includes(source.provider)).map(source=>source.id));
  const core=[];let hasRevenue=false;if(!due)return false;
- for(const source of sources){const q=await s.qualification(scope.organizationId,source.id);const profiles=q?.payload?.profiles??[],revenue=profiles.some((p:any)=>p.dataset==='overview'&&p.metric==='revenue'),sessions=profiles.some((p:any)=>p.dataset==='overview'&&p.metric==='sessions'&&(due.mode==='closed'||p.hourly));if(revenue||sessions){if(q.connectionVersion!==source.version||q.clientVersion!==c.version)return false;hasRevenue ||= revenue;core.push(source);}}
+ for(const source of sources){const q=await s.qualification(scope.organizationId,source.id);const profiles=q?.payload?.profiles??[],revenue=profiles.some((p:any)=>p.dataset==='overview'&&p.metric==='revenue'),sessions=profiles.some((p:any)=>p.dataset==='overview'&&p.metric==='sessions'&&(due.mode==='closed'||p.hourly));if(revenue||sessions||financialContributors.has(source.id)){if(!q||!profiles.length||q.connectionVersion!==source.version||q.clientVersion!==c.version)return false;hasRevenue ||= revenue;core.push(source);}}
  const window=dayWindow(due.storeDate,c.timezone);
  if(due.mode==='partial'&&now.getTime()>=Date.parse(window.end))return false;
  return hasRevenue&&core.length>0&&core.every(x=>{

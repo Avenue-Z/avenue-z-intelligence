@@ -6,8 +6,8 @@ import initial from '../../data/initial-clients.json';
 import type {AccessScope,SourceBatch} from '../../lib/analytics/contracts';
 import {kindQualification,observation,sourceBatch} from '../../lib/sources/kind-patches';
 
-const state=vi.hoisted(()=>({store:null as Store|null,sqlite:null as DatabaseSync|null,batch:null as SourceBatch|null,mode:'tail' as 'tail'|'before'|'success',healthAtTail:null as any,puts:0,requests:[] as {kind:'current'|'history';provider:string;window:{from:string;to:string}}[]}));
-vi.mock('@avenue/runtime',()=>({env:{BUCKET:{put:async()=>{state.puts++;}}},runtimePlatform:'sites'}));
+const state=vi.hoisted(()=>({store:null as Store|null,sqlite:null as DatabaseSync|null,batch:null as SourceBatch|null,mode:'tail' as 'tail'|'before'|'success',platform:'sites',healthAtTail:null as any,puts:0,requests:[] as {kind:'current'|'history';provider:string;window:{from:string;to:string}}[]}));
+vi.mock('@avenue/runtime',()=>({env:{BUCKET:{put:async()=>{state.puts++;}}},get runtimePlatform(){return state.platform;}}));
 vi.mock('../../lib/server/access',()=>({getStore:()=>state.store}));
 vi.mock('../../lib/server/secrets',()=>({serverSecret:()=> 'server-only-test-secret'}));
 vi.mock('../../lib/ai/server',()=>({generateAIReview:vi.fn()}));
@@ -21,11 +21,11 @@ vi.mock('../../lib/sources/kind-fetch',()=>({
   if(state.mode==='tail')throw Error('Historical provider request failed');
  }
 }));
-import {runSyncBatch} from '../../lib/jobs/sync';
+import {enqueueDue,runSyncBatch} from '../../lib/jobs/sync';
 
 const scope:AccessScope={organizationId:'o',actorId:'scheduler',role:'service',permittedClientIds:['kind-patches']};
 beforeEach(async()=>{
- vi.useFakeTimers();vi.setSystemTime('2026-10-13T13:00:00Z');state.mode='tail';state.healthAtTail=null;state.puts=0;state.requests=[];
+ vi.useFakeTimers();vi.setSystemTime('2026-10-13T13:00:00Z');state.mode='tail';state.platform='sites';state.healthAtTail=null;state.puts=0;state.requests=[];
  const sqlite=state.sqlite=new DatabaseSync(':memory:');for(const file of readdirSync('drizzle').filter(file=>file.endsWith('.sql')))sqlite.exec(readFileSync(`drizzle/${file}`,'utf8'));
  const prepare=(sql:string)=>{let values:unknown[]=[];const statement={sql,bind(...input:unknown[]){values=input;return statement;},async all(){return {results:sqlite.prepare(sql).all(...values as any[])};},async first(){return sqlite.prepare(sql).get(...values as any[])??null;},async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...values as any[]).changes)}};}};return statement;};
  const store=state.store=new Store({prepare,batch:async statements=>Promise.all(statements.map(statement=>statement.run()))}),client={...initial[0],version:1};
@@ -58,6 +58,16 @@ it('leaves current health unchanged when archive or persistence fails before dur
 });
 it('marks a fully successful current capture complete and clears the former health error',async()=>{
  state.mode='success';const result=await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000});expect(result.failed).toEqual([]);expect(result.completed).toEqual(['o:source:hourly-test']);expect(await state.store!.first('SELECT status,error FROM jobs')).toEqual({status:'complete',error:null});expect(state.healthAtTail?.error).toBeNull();
+});
+it('publishes native current data without reading or planning historical facts before its source claim',async()=>{
+ state.platform='vercel';state.mode='success';const store=state.store!,read=store.all.bind(store);
+ vi.spyOn(store,'all').mockImplementation(async(sql,...args)=>{if(sql.startsWith('SELECT c.date'))throw Error('Historical fact reads unavailable');return read(sql,...args);});
+ await enqueueDue(scope);expect(await store.first("SELECT count(*) n FROM jobs WHERE id LIKE '%:hourly-history:____-__-__'")).toEqual({n:0});
+ const result=await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000});expect(result.failed).toEqual([]);expect(result.completed).toEqual(['o:source:hourly-test']);
+ expect(await store.first('SELECT status FROM snapshots')).toEqual({status:'ready'});expect(await store.first('SELECT coverageThrough,error FROM connections')).toEqual({coverageThrough:'2026-10-13T12:00:00Z',error:null});
+});
+it('retains bounded historical planning in the Sites scheduler fallback',async()=>{
+ await enqueueDue(scope);expect(await state.store!.first("SELECT count(*) n FROM jobs WHERE id LIKE '%:hourly-history:____-__-__'")).toEqual({n:61});
 });
 
 it.each(['kind-shopify-sales','kind-shopify-products','kind-shopify-traffic','kind-meta-performance','kind-applovin'])('keeps routine %s captures on today while independent history repairs remain separate',async provider=>{

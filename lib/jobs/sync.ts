@@ -1,4 +1,4 @@
-import {env} from '@avenue/runtime';
+import {env,runtimePlatform} from '@avenue/runtime';
 import {getStore} from '../server/access';
 import type {AccessScope,Client} from '../analytics/contracts';
 import {todayIn,shiftDate,dayWindow} from '../analytics/windows';
@@ -21,7 +21,9 @@ const MINIMUM_SOURCE_CLAIM_BUDGET_MS=30000;
 // Their routine captures must not re-download comparison days before other
 // current feeds get a turn in the shared native scheduler.
 const INDEPENDENT_HISTORY_PROVIDERS=new Set(['kind-shopify-sales','kind-shopify-products','kind-shopify-traffic','kind-meta-performance','kind-applovin']);
-export async function enqueueDue(scope:AccessScope,forceClient?:string){const s=getStore(),now=new Date();for(const c of await s.connections(scope.organizationId)){if(!c.enabled||!scope.permittedClientIds.includes(c.clientId)||forceClient&&forceClient!==c.clientId)continue;const last=c.lastSuccess?Date.parse(c.lastSuccess):0;if(forceClient||Math.floor(now.getTime()/(c.pollMinutes*60000))>Math.floor(last/(c.pollMinutes*60000))){const bucket=forceClient?`manual:${crypto.randomUUID()}`:String(Math.floor(now.getTime()/(c.pollMinutes*60000)));await s.enqueue(scope.organizationId,c.clientId,c.id,bucket,now.toISOString());}}if(!forceClient)await planHistoricalHourlyJobs(s,scope,now);}
+// Native history planning belongs to the independent history cron, after its
+// current-work guard. It must not delay or prevent a current source claim.
+export async function enqueueDue(scope:AccessScope,forceClient?:string){const s=getStore(),now=new Date();for(const c of await s.connections(scope.organizationId)){if(!c.enabled||!scope.permittedClientIds.includes(c.clientId)||forceClient&&forceClient!==c.clientId)continue;const last=c.lastSuccess?Date.parse(c.lastSuccess):0;if(forceClient||Math.floor(now.getTime()/(c.pollMinutes*60000))>Math.floor(last/(c.pollMinutes*60000))){const bucket=forceClient?`manual:${crypto.randomUUID()}`:String(Math.floor(now.getTime()/(c.pollMinutes*60000)));await s.enqueue(scope.organizationId,c.clientId,c.id,bucket,now.toISOString());}}if(!forceClient&&runtimePlatform!=='vercel')await planHistoricalHourlyJobs(s,scope,now);}
 export async function generateReview(scope:AccessScope,client:Client,date:string,job?:ScheduledReviewLease){return generateAIReview(scope,client.id,{from:date,to:date,mode:client.config.reviewMode,compare:'previous',view:'overview',market:'',stream:'',source:'',device:'',page:''},job);}
 export async function runSyncBatch(scope:AccessScope,budget={maxJobs:7,deadline:Date.now()+110000}){const s=getStore(),clients=await s.clients(scope.organizationId),out:{completed:string[];failed:{id:string;error:string}[]}={completed:[],failed:[]};
   for(let n=0;n<budget.maxJobs&&Date.now()<budget.deadline;n++){

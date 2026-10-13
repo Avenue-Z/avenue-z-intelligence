@@ -43,3 +43,11 @@ it('ships matched prior product metrics and dimension cohorts without repeating 
  expect(presented.comparisonViews?.products.details[0]).toMatchObject({dimensions:{product_id:'sku-1',product:'Patch'},metrics:{revenue:100,orders:5},evidence:[]});
  expect(presented.comparisonEvidence).toEqual([]);
 });
+
+it('ships matched landing-page baselines for the overview table without traffic leaf facts',()=>{
+ const filters={...f,view:'overview'},p=workspacePresentation(queryClient(c,facts(),[],filters,{preparedDatasets:['overview','traffic','funnels']}),filters);
+ expect(p.details[0]).toMatchObject({dimensions:{page:'/lp',market:'US'},metrics:{sessions:1000,converting_sessions:10},evidence:[]});
+ expect(p.comparisonViews?.funnels.details[0]).toMatchObject({dimensions:{page:'/lp',market:'US'},metrics:{sessions:1000,converting_sessions:30},evidence:[]});
+ expect(p.comparisonViews?.traffic.details).toEqual([]);
+ expect(p.comparisonEvidence).toEqual([]);
+});

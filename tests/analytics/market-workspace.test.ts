@@ -2,7 +2,7 @@ import {expect,it,vi} from 'vitest';
 vi.mock('@/lib/utils',async()=>await import('../../lib/utils'));
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {MarketWorkspace} from '../../components/analytics/market-workspace';
+import {MarketWorkspace,marketWorkspaceHref} from '../../components/analytics/market-workspace';
 import {ExplorerComparisonPicker} from '../../components/analytics/traffic-workspace';
 import {detailRows,queryClient} from '../../lib/analytics/query';
 import {workspacePresentation} from '../../lib/analytics/presentation';
@@ -28,9 +28,21 @@ it('shows market headline and per-market changes from the matching comparison co
  const analytics=workspacePresentation(queryClient(client,[...current,...prior],[],selected,{preparedDatasets:['markets']}),selected),record={...analytics,findings:[],reviews:[],note:{body:'',version:0}};
  const html=renderToStaticMarkup(createElement(MarketWorkspace,{record,filters:selected,update:()=>{}}));
  expect(html).toContain('<strong>$500</strong>');expect(html).toContain('vs yesterday · $200');expect(html).toContain('+150.0%');
- const us=html.match(/<tr><td><button[^>]*>US[\s\S]*?<\/tr>/)?.[0]??'',ca=html.match(/<tr><td><button[^>]*>CA[\s\S]*?<\/tr>/)?.[0]??'';
+ const us=html.match(/<tr><td><(?:button|a)[^>]*>US[\s\S]*?<\/tr>/)?.[0]??'',ca=html.match(/<tr><td><(?:button|a)[^>]*>CA[\s\S]*?<\/tr>/)?.[0]??'';
  expect(us).toContain('+50.0%');expect(us).toContain('vs yesterday · $20');expect(us).toContain('vs yesterday · 10');
  expect(us.match(/<td>\$20([\s\S]*?)<\/td>/)?.[1]).toContain('data-tone="unfavorable"');
  expect(ca).toContain('— vs yesterday');expect(ca).not.toContain('vs yesterday · $0');
  expect(html).not.toContain('Revenue / matching orders');
+});
+it('opens a shareable entire-market workspace with the exact dates and comparison and no unsupported leftover filters',()=>{
+ const href=marketWorkspaceHref('kind-patches',{...filters,market:'',source:'facebook',device:'mobile',page:'/lp',compare:'custom',compareFrom:'2026-10-06',compareTo:'2026-10-06'},'US'),url=new URL(href,'https://example.test');
+ expect(url.pathname).toBe('/clients/kind-patches');expect(url.searchParams.get('view')).toBe('markets');expect(url.searchParams.get('market')).toBe('US');expect(url.searchParams.get('period')).toBe('today');expect(url.searchParams.get('from')).toBe(filters.from);expect(url.searchParams.get('compareFrom')).toBe('2026-10-06');
+ for(const key of ['stream','source','device','page'])expect(url.searchParams.get(key)).toBe('');
+ expect(new URL(marketWorkspaceHref('kind-patches',filters,''),'https://example.test').searchParams.get('market')).toBe('');
+});
+it('renders market navigation links and market-scoped KPI totals, prior totals and chart evidence',()=>{
+ const selected={...filters,from:'2026-10-12',to:'2026-10-12',mode:'closed' as const,period:undefined,market:'US',compare:'previous' as const},observations=['2026-10-11','2026-10-12'].flatMap((date,index)=>['US','CA'].flatMap(market=>['revenue','orders'].map(metric=>({...rows[0],date,metric,value:metric==='revenue'?market==='US'?100+index*20:900:market==='US'?10:90,dimensions:{market}}))));
+ const analytics=workspacePresentation(queryClient(client,observations,[],selected,{preparedDatasets:['markets']}),selected),record={...analytics,findings:[],reviews:[],note:{body:'',version:0}},html=renderToStaticMarkup(createElement(MarketWorkspace,{record,filters:selected,update:()=>{}}));
+ expect(html).toContain('aria-label="View US market"');expect(html).toContain('market=US');expect(html).toContain('US market');expect(html).toContain('<strong>$120</strong>');expect(html).toContain('vs yesterday · $100');expect(html).not.toContain('<strong>$1,020</strong>');
+ expect(record.datasetSeries.markets[0].metrics.revenue).toBe(120);expect(record.comparisonDatasetSeries.markets[0].metrics.revenue).toBe(100);expect(record.trendDatasetSeries.markets.filter(day=>typeof day.metrics.revenue==='number').map(day=>day.metrics.revenue)).toEqual([100,120]);
 });

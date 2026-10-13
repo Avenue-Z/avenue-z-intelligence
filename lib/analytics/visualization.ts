@@ -1,4 +1,5 @@
 import {finiteMetric} from './display';
+import {paidChannelLabel} from './channel-label';
 
 export type ChartUnit='currency'|'count'|'percent'|'multiple';
 export type ChartMetric={key:string;label:string;unit:ChartUnit;color?:string};
@@ -31,6 +32,6 @@ export function formatChartMetric(value:number|null|undefined,unit:ChartUnit,cur
 }
 export function channelSpendRows(rows:{dimensions:Record<string,string>;metrics:Record<string,number|null>}[]){
  const channels=new Map<string,number>();
- for(const row of rows){const spend=row.metrics.spend;if(!finiteMetric(spend))continue;const name=row.dimensions.channel||'Reported channel';channels.set(name,(channels.get(name)??0)+spend);}
+ for(const row of rows){const spend=row.metrics.spend;if(!finiteMetric(spend))continue;const name=paidChannelLabel(row.dimensions.channel||'Reported channel');channels.set(name,(channels.get(name)??0)+spend);}
  return [...channels].map(([name,spend])=>({name,spend})).sort((a,b)=>b.spend-a.spend||a.name.localeCompare(b.name));
 }

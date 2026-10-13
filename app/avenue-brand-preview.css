@@ -82,6 +82,8 @@ body{background:var(--az-bg);color:var(--az-fg)}
 .workspace-main .recharts-default-tooltip{background:var(--az-surface-raised)!important;border-color:var(--az-border)!important;color:var(--az-fg)!important;font-family:Avenir,Helvetica,Arial,sans-serif;font-size:12px!important}
 .workspace-main .recharts-tooltip-label{color:var(--az-fg)}
 .workspace-main .recharts-legend-wrapper{font-family:Avenir,Helvetica,Arial,sans-serif;font-size:12px!important}
+.workspace-main .chart-controls i.revenue{background:var(--az-blue)}
+.workspace-main .chart-controls i.spend{background:var(--az-purple)}
 .workspace-main .recharts-brush rect{fill:var(--az-surface-raised);stroke:var(--az-border)}
 .workspace-main .recharts-brush text,.workspace-main .recharts-brush-texts text{fill:var(--az-muted)}
 .chart-controls,.chart-controls button,.chart-controls>span,.chart-caption,.chart-context{color:var(--az-muted);font-size:12px}

@@ -32,6 +32,25 @@ it('waits for the connected hourly human feed before generating an intraday repo
  const s=state.store;await s.run("INSERT INTO connections VALUES('sessions','o','kind-patches','Human sessions','kind-shopify-hourly','registered','secret-ref',60,1,'2026-10-12T13:04:00Z','2026-10-11T22:00:00Z',NULL,1)");await s.saveQualification('o','kind-patches','sessions',1,1,{profiles:[{dataset:'overview',metric:'sessions',hourly:true}]},'admin');
  expect((await reviewTick()).completed).toEqual([]);await s.run("UPDATE connections SET coverageThrough='2026-10-12T13:00:00Z' WHERE id='sessions'");expect((await reviewTick()).completed).toHaveLength(1);
 });
+it.each(['kind-shopify-sales','kind-triple-whale-diagnostics'])('waits for qualified current %s coverage before publishing the daily review',async provider=>{
+ const s=state.store;await s.run("INSERT INTO connections SELECT 'financial','o','kind-patches',name,?,endpoint,secretRef,pollMinutes,enabled,lastSuccess,'2026-10-11T22:00:00Z',error,version FROM connections WHERE id='s'",provider);
+ await s.saveQualification('o','kind-patches','financial',1,1,{profiles:[{dataset:provider==='kind-shopify-sales'?'revenue':'renewalDiagnostics',metric:'revenue',hourly:true}]},'admin');
+ expect((await reviewTick()).completed).toEqual([]);expect(await s.all('SELECT * FROM reviews')).toEqual([]);
+ await s.run("UPDATE connections SET coverageThrough='2026-10-12T13:00:00Z' WHERE id='financial'");
+ expect((await reviewTick()).completed).toHaveLength(1);
+});
+it.each(['missing','connection-version','client-version'])('waits for visible financial qualification when it is %s',async kind=>{
+ const s=state.store;await s.run("INSERT INTO connections SELECT 'financial','o','kind-patches',name,'kind-shopify-sales',endpoint,secretRef,pollMinutes,enabled,lastSuccess,coverageThrough,error,version FROM connections WHERE id='s'");
+ if(kind!=='missing')await s.saveQualification('o','kind-patches','financial',kind==='connection-version'?2:1,kind==='client-version'?2:1,{profiles:[{dataset:'revenue',metric:'revenue',hourly:true}]},'admin');
+ expect((await reviewTick()).completed).toEqual([]);expect(await s.all('SELECT * FROM reviews')).toEqual([]);
+});
+it('ignores unrelated stale Meta reporting while retaining the required overview revenue gate',async()=>{
+ const s=state.store;await s.run("INSERT INTO connections SELECT 'meta','o','kind-patches',name,'kind-meta-performance',endpoint,secretRef,pollMinutes,enabled,'2026-10-11T13:00:00Z','2026-10-11T13:00:00Z','Old platform report',2 FROM connections WHERE id='s'");
+ await s.saveQualification('o','kind-patches','meta',1,1,{profiles:[{dataset:'creatives',metric:'revenue',hourly:true}]},'admin');
+ expect((await reviewTick()).completed).toHaveLength(1);
+ await s.run('DELETE FROM scheduled_reviews');await s.run('DELETE FROM reviews');await s.run("DELETE FROM qualifications WHERE sourceId='s'");
+ expect((await reviewTick()).completed).toEqual([]);
+});
 it('refuses stale qualifications after a connection or client changes',async()=>{
  await state.store.run('UPDATE connections SET version=2');expect((await reviewTick()).completed).toEqual([]);
 });

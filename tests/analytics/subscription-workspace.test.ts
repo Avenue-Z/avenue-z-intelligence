@@ -66,3 +66,8 @@ it('prominently shows creation-day cancellation rate with cohort counts and a fa
  const html=renderToStaticMarkup(createElement(SubscriptionWorkspace,{record:{...base,datasetSeries:{subscriptions:commerce,subscriptionEvents:[{date:'2026-10-11',metrics:{new_subscriptions:100,same_day_subscription_cancellations:5,subscription_cancellations:12}}]},comparisonDatasetSeries:{subscriptions:prior,subscriptionEvents:[{date:'2026-10-10',metrics:{new_subscriptions:80,same_day_subscription_cancellations:8,subscription_cancellations:14}}]}},filters,update:()=>{}}));
  expect(html).toMatch(/SAME-DAY CANCELLATION RATE<\/span><strong>5.00%<\/strong>/);expect(html).toContain('5 cancellations · 100 new subscriptions');expect(html).toContain('Same-day cancellation rate: Decreased -5.00 pp; favorable');expect(html).toContain('yesterday: 10.00%');expect(html).toContain('About these numbers');expect(html).not.toContain('Counts and revenue sum captured days.');expect(html).not.toContain('Recurring revenue divided by matching recurring orders');
 });
+it('shows favorable and unfavorable percentage-point changes for the matched weekly renewal rates',()=>{
+ const record={...base,subscriptions:{...base.subscriptions,current:{...base.subscriptions.current,refundRate:.05,cancellationRate:.08},comparison:{...base.subscriptions.comparison,refundRate:.10,cancellationRate:.04}}};
+ const html=renderToStaticMarkup(createElement(SubscriptionWorkspace,{record,filters,update:()=>{}}));
+ expect(html).toContain('Refunded-order rate: Decreased -5.00 pp; favorable');expect(html).toContain('Renewal-order cancellation rate: Increased +4.00 pp; unfavorable');
+});

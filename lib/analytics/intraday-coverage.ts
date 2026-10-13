@@ -2,12 +2,12 @@ import type {Connection} from './contracts';
 import {Temporal} from '@js-temporal/polyfill';
 import {dayWindow,matchedCutoff} from './windows';
 
-/** The reporting cutoff belongs to the primary feed of the selected view.
- * Auxiliary reports with different populations retain their own timestamps.
+/** A view's hourly financial panels share their contributing feeds' cutoff.
+ * Operational snapshots and unrelated platform reports keep their own scope.
  */
 export function intradayConnections(connections:Connection[],view:string):Connection[]{
  const enabled=connections.filter(source=>source.enabled),traffic=enabled.some(source=>source.provider==='kind-shopify-traffic');
- const providers=view==='revenue'?['kind-shopify-sales']:view==='products'?['kind-shopify-products']:view==='markets'?['kind-triple-whale']:view==='subscriptions'?['kind-triple-whale','kind-recharge-cancellations']:view==='traffic'?traffic?['kind-shopify-traffic']:['kind-triple-whale','kind-shopify-hourly']:view==='funnels'?['kind-shopify-hourly']:['kind-triple-whale','kind-shopify-hourly'];
+ const providers=view==='overview'?['kind-triple-whale','kind-shopify-hourly','kind-shopify-sales','kind-triple-whale-diagnostics']:view==='revenue'?['kind-shopify-sales','kind-triple-whale-diagnostics']:view==='products'?['kind-shopify-products']:view==='markets'?['kind-triple-whale']:view==='subscriptions'?['kind-triple-whale','kind-recharge-cancellations','kind-triple-whale-diagnostics']:view==='traffic'?traffic?['kind-shopify-traffic']:['kind-triple-whale','kind-shopify-hourly']:view==='funnels'?['kind-shopify-hourly']:['kind-triple-whale','kind-shopify-hourly'];
  return enabled.filter(source=>!source.provider||source.provider==='gateway'||providers.includes(source.provider));
 }
 export function confirmedIntradayCutoff(connections:Connection[],view:string,timezone:string,date:string):string|null{
