@@ -37,6 +37,13 @@ it('uses the hosted warmer frame for a resolved Today shortcut and still isolate
  await preparedWorkspaceFrame({...input,filters:{...input.filters,from:'2026-10-12',to:'2026-10-12'}},load);
  expect(load).toHaveBeenCalledTimes(2);
 });
+it('freezes shared comparison and evidence navigation while leaving the caller Today shortcut intact',async()=>{
+ const {input}=fixture();input.filters={...input.filters,from:'2026-10-13',to:'2026-10-13',mode:'partial',period:'today'};
+ const load=vi.fn(async(connections:Connection[],canonicalFilters:QueryFilters)=>workspacePresentation(queryClient(input.client,[],connections,canonicalFilters,{preparedDatasets:input.preparedDatasets}),canonicalFilters));
+ const first=await preparedWorkspaceFrame(input,load);
+ expect(load.mock.calls[0][1]).not.toHaveProperty('period');expect(first.comparison).not.toHaveProperty('period');expect(input.filters.period).toBe('today');
+ const {period:_period,...fixed}=input.filters;await preparedWorkspaceFrame({...input,filters:fixed},load);expect(load).toHaveBeenCalledTimes(1);
+});
 it('serves financial scopes while the dimensional traffic memory lease is occupied',async()=>{
  const {input,load}=fixture();let release!:()=>void;
  state.gate.mockImplementationOnce(async work=>{await new Promise<void>(resolve=>{release=resolve;});return work();});

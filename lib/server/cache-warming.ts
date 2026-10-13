@@ -38,10 +38,10 @@ export async function warmSuccessfulSourceJobs(store:Store,scope:AccessScope,job
    if(Date.now()+40000>=deadline)break;
    result.attempted++;
    const selection=workspaceObservationSelection(filters.view);
-   if(native){const preparedDatasets=workspaceDatasets(filters.view);await preparedWorkspaceFrame({store,organizationId:scope.organizationId,client,filters,preparedDatasets,selection,deadline},async connections=>{
-    const rows=await store.observations(scope.organizationId,client.id,filters,false,{deadline},selection);
+   if(native){const preparedDatasets=workspaceDatasets(filters.view);await preparedWorkspaceFrame({store,organizationId:scope.organizationId,client,filters,preparedDatasets,selection,deadline},async(connections,canonicalFilters)=>{
+    const rows=await store.observations(scope.organizationId,client.id,canonicalFilters,false,{deadline},selection);
     if(Date.now()>=deadline)throw Error('Prepared frame warm budget elapsed');
-    const frame=workspacePresentation(queryClient(client,rows,connections,filters,{preparedDatasets}),filters);
+    const frame=workspacePresentation(queryClient(client,rows,connections,canonicalFilters,{preparedDatasets}),canonicalFilters);
     if(Date.now()>=deadline)throw Error('Prepared frame warm budget elapsed');return frame;
    });}
    else await store.observations(scope.organizationId,client.id,filters,false,{deadline},selection);

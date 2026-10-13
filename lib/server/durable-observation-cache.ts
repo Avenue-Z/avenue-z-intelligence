@@ -9,7 +9,8 @@ function chunks(payload:string){const output:string[]=[];for(let start=0;start<p
  * Every lookup is tenant-scoped and uses the caller's freshly captured source
  * version. A generation is readable only after all bounded chunks publish.
  */
-export async function durableObservationPayload(db:Store['db'],org:string,client:string,key:string,load:()=>Promise<string>,deadline?:number):Promise<string>{
+export async function durableObservationPayload(db:Store['db'],org:string,client:string,key:string,load:()=>Promise<string>,deadline?:number,options:{publish?:boolean}={}):Promise<string>{
+ const publish=options.publish!==false;
  const cacheKey=await digest(`observation-codec-v1:${key}`),scope=[org,client,cacheKey];
  const checkBudget=()=>{if(deadline!==undefined&&Date.now()>=deadline)throw Error('Observation cache warm budget elapsed');};
  const first=async<T>(sql:string,...values:unknown[]):Promise<T|null>=>{checkBudget();const row=await db.prepare(sql).bind(...values).first();checkBudget();return row;};
@@ -36,12 +37,12 @@ export async function durableObservationPayload(db:Store['db'],org:string,client
    if(!observationCodec.valid(payload))throw Error('Invalid cache codec');
    // Native warming refreshes ready-entry recency so advancing intraday keys
    // cannot evict repeatedly warmed closed scopes. Foreground hits stay read-only.
-   if(deadline!==undefined){checkBudget();try{await db.prepare("UPDATE observation_cache_entries SET createdAt=? WHERE organizationId=? AND clientId=? AND cacheKey=? AND generation=? AND status='ready'").bind(new Date().toISOString(),...scope,manifest.generation).run();}catch{/* Optional recency cannot invalidate correct cached evidence. */}checkBudget();}
+   if(deadline!==undefined&&publish){checkBudget();try{await db.prepare("UPDATE observation_cache_entries SET createdAt=? WHERE organizationId=? AND clientId=? AND cacheKey=? AND generation=? AND status='ready'").bind(new Date().toISOString(),...scope,manifest.generation).run();}catch{/* Optional recency cannot invalidate correct cached evidence. */}checkBudget();}
    return payload;
   }
- }catch(error){if(deadline!==undefined&&Date.now()>=deadline)throw error;if(manifest)await discard(manifest.generation);}
+ }catch(error){if(deadline!==undefined&&Date.now()>=deadline)throw error;if(manifest&&publish)await discard(manifest.generation);}
  const payload=await load();
- if(payload.length>maxCharacters||deadline!==undefined&&Date.now()>=deadline)return payload;
+ if(!publish||payload.length>maxCharacters||deadline!==undefined&&Date.now()>=deadline)return payload;
  const generation=crypto.randomUUID(),createdAt=new Date().toISOString(),expired=new Date(Date.now()-300000).toISOString(),pieces=chunks(payload);
  try{
   const claim=await db.batch([

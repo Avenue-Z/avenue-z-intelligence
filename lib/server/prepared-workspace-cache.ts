@@ -134,13 +134,14 @@ class CanonicalFailure extends Error {constructor(public cause:unknown){super('C
  * Source headers are read fresh and never serialized. Only a native miss takes
  * the expensive analytics memory lease; warm hits do not queue behind it.
  */
-export async function preparedWorkspaceFrame(input:PreparedWorkspaceInput,load:(freshConnections:Connection[])=>Promise<Presentation>):Promise<Presentation>{
+export async function preparedWorkspaceFrame(input:PreparedWorkspaceInput,load:(freshConnections:Connection[],canonicalFilters:QueryFilters)=>Promise<Presentation>):Promise<Presentation>{
  checkBudget(input);
  const connections=await input.store.connections(input.organizationId,input.client.id);
  const canonical=()=>{
   // Small financial/market frames must not queue behind a monthly traffic
   // warmer. Only dimensional detail needs the large-allocation memory lease.
-  const compute=()=>{checkBudget(input);return load(connections);};
+  const {period:_period,...canonicalFilters}=input.filters;
+  const compute=()=>{checkBudget(input);return load(connections,canonicalFilters);};
   const work=input.selection.datasets.some(dataset=>['funnels','traffic','products','creatives','experiments'].includes(dataset))?withAnalyticsMemory(compute):Promise.resolve().then(compute);
   if(input.deadline===undefined)return work;
   let timer:ReturnType<typeof setTimeout>;

@@ -53,9 +53,9 @@ async function loadWorkspaceWithinBudget(p:URLSearchParams,scope:AccessScope){
   const clientFilters=filters.period==='today'?{...filters,from:todayIn(client.timezone),to:todayIn(client.timezone)}:filters;
   const preparedDatasets=focusedClientId?(client.id===focusedClientId?workspaceDatasets(filters.view):['overview']):['overview','subscriptions','subscriptionEvents'];
   const selection={...workspaceObservationSelection(preparedDatasets),...(p.get('drill')==='traffic-page'&&client.id===focusedClientId?{dimensions:true}:{})};
-  const [frame,findings,reviews,note,lastJob]=await Promise.all([preparedWorkspaceFrame({store:s,organizationId:scope.organizationId,client,filters:clientFilters,preparedDatasets,selection},async freshConnections=>{
-   const rows=await s.observations(scope.organizationId,client.id,clientFilters,false,undefined,selection);
-   return workspacePresentation(queryClient(client,rows,freshConnections,clientFilters,{preparedDatasets}),clientFilters);
+  const [frame,findings,reviews,note,lastJob]=await Promise.all([preparedWorkspaceFrame({store:s,organizationId:scope.organizationId,client,filters:clientFilters,preparedDatasets,selection},async(freshConnections,canonicalFilters)=>{
+   const rows=await s.observations(scope.organizationId,client.id,canonicalFilters,false,undefined,selection);
+   return workspacePresentation(queryClient(client,rows,freshConnections,canonicalFilters,{preparedDatasets}),canonicalFilters);
   }),s.findings(scope.organizationId,client.id),s.reviews(scope.organizationId,client.id),s.note(scope.organizationId,client.id),s.first('SELECT storeDate,mode,status,completedAt,error FROM scheduled_reviews WHERE organizationId=? AND clientId=? ORDER BY dueAt DESC LIMIT 1',scope.organizationId,client.id)]);
   return {...frame,...({browserScopeKey:JSON.stringify([scope.organizationId,scope.actorId,scope.role,[...scope.permittedClientIds].sort()])} as {browserScopeKey?:string}),...({reviewsIndexOnly:!fullReviews} as {reviewsIndexOnly?:boolean}),findings,reviews:fullReviews?reviews:reviews.map(workspaceReviewIndex),note,scheduleState:{active:serverSecret('APP_SCHEDULER_ACTIVE')==='true',waitingForSources:!connections[i].some(c=>c.enabled),lastJob:lastJob??undefined}};
  }));

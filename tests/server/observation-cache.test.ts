@@ -42,7 +42,7 @@ it('does not reuse another database or allow a caller to mutate cached evidence'
 it('expires cached observations and coalesces concurrent reads for one captured source version',async()=>{
  const {db,queries}=database(),store=new Store(db);await store.persistBatch('o','source',batch(),'one','2026-10-08T00:00:00Z');let now=1000;vi.spyOn(Date,'now').mockImplementation(()=>now);
  const [one,two]=await Promise.all([store.observations('o','a',filters),new Store(db).observations('o','a',filters)]);expect(one).toEqual(two);expect(observationReads(queries)).toBe(1);
- const durableReads=queries.filter(sql=>sql.startsWith('SELECT generation,chunkCount')).length;now+=60001;await store.observations('o','a',filters);expect(observationReads(queries)).toBe(1);expect(queries.filter(sql=>sql.startsWith('SELECT generation,chunkCount')).length).toBe(durableReads+1);
+ const durableReads=queries.filter(sql=>sql.startsWith('SELECT generation,chunkCount')).length;now+=60001;const refreshed=await Promise.all([store.observations('o','a',filters),new Store(db).observations('o','a',filters)]);expect(refreshed[0]).toEqual(one);expect(refreshed[1]).toEqual(one);expect(observationReads(queries)).toBe(2);expect(queries.filter(sql=>sql.startsWith('SELECT generation,chunkCount')).length).toBe(durableReads+1);
 });
 it('updates partial rollups when source coverage changes without republishing observations',async()=>{
  const {db}=database(),store=new Store(db);await store.run("INSERT INTO clients(id,organizationId,name,slug,timezone,currency,color,config,version) VALUES('a','o','A','a','UTC','USD','blue','{}',1)");

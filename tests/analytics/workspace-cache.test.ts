@@ -46,6 +46,13 @@ it('reuses the exact filter selection across views while refusing every changed 
  const different:Partial<QueryFilters>[]=[{from:'2026-10-06'},{to:'2026-10-08'},{compare:'weekday'},{mode:'partial'},{market:'US'},{stream:'subscriptions'},{source:'Meta'},{device:'mobile'},{page:'/landing'}];
  for(const changes of different)expect(cache.read({...filters,...changes})).toBeNull();
 });
+it('keeps a pending comparison authoritative when the user switches to another prepared tab',()=>{
+ const initial=workspace({view:'overview',compare:'previous'}),cache=new navigation.WorkspaceCache(initial),requested={...initial.filters,view:'revenue',compare:'weekday' as const};
+ expect(cache.read(requested)).toBeNull();
+ const confirmed=workspace({compare:'weekday'});cache.remember(confirmed);
+ const revenue=cache.read(requested,Date.parse('2026-10-08T12:00:05Z'))!.workspace;
+ expect(revenue.filters).toMatchObject({view:'revenue',compare:'weekday'});expect(revenue.clients[0].comparison.from).toBe('2026-09-30');expect(initial.filters.compare).toBe('previous');
+});
 it('does not reuse intraday aggregates across views with different source cutoffs',()=>{
  const initial=workspace({mode:'partial',view:'revenue'});initial.focusedClientId=client.id;
  initial.clients[0].connections=[{id:'sales',provider:'kind-shopify-sales',enabled:true,coverageThrough:'2026-10-07T16:00:00Z'},{id:'tw',provider:'kind-triple-whale',enabled:true,coverageThrough:'2026-10-07T14:00:00Z'}] as any;

@@ -171,7 +171,9 @@ export class Store {
     await Promise.all(Array.from({length:Math.min(4,groups.length)},()=>read()));
     const stable=(accumulator?accumulator.finish():rows).map(row=>({row,key:JSON.stringify([row.sourceId,row.date,row.dataset,row.metric,row.definition,row.population,row.currency,row.start,row.end,Object.entries(row.dimensions).sort(),row.retrievedAt,row.quality])})).sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0).map(x=>x.row);
     checkBudget();return observationCodec.encode(preferredObservations(stable));
-    },options?.deadline);
+    // Foreground reads reuse ready shared data but do not wait for multi-chunk
+    // range-cache writes. Only bounded hosted warming publishes those entries.
+    },options?.deadline,{publish:!!options});
     // A warming deadline must never cancel a browser request coalesced on the
     // same key. Warming populates durable storage without joining that promise.
     const [cached,operations]=await Promise.all([pointers.length?(options?load().then(payload=>observationCodec.decode(payload)):observationCache(this.db).getEncoded(key,load)):Promise.resolve([]),
