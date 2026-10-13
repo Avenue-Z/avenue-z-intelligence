@@ -17,7 +17,10 @@ async function privateArchive(key:string,deadline:number):Promise<ArchiveContent
  const signal=AbortSignal.timeout(Math.max(1,Math.min(45000,deadline-Date.now()))),metadata=await head(key,{token,abortSignal:signal});
  if(metadata.pathname!==key||metadata.size<1||metadata.size>MAX_ARCHIVE_BYTES)throw Error('Archive metadata is invalid');
  const result=await get(key,{token,access:'private',useCache:false,abortSignal:signal});
- if(!result||result.statusCode!==200||result.blob.pathname!==key||result.blob.size!==metadata.size||result.blob.etag!==metadata.etag)throw Error('Archive changed during verification');
+ // GET size describes the HTTP transfer and can be zero for chunked responses.
+ // Compression can use a weak ETag for the same decoded entity as HEAD.
+ // Verify exact decoded bytes below and the immutable snapshot hash afterward.
+ if(!result||result.statusCode!==200||result.blob.pathname!==key||!result.blob.etag||!metadata.etag||result.blob.etag.replace(/^W\//,'')!==metadata.etag.replace(/^W\//,''))throw Error('Archive changed during verification');
  const reader=result.stream.getReader(),decoder=new TextDecoder(),parts:string[]=[];let bytes=0;
  try{for(;;){const next=await reader.read();if(next.done)break;bytes+=next.value.byteLength;if(bytes>metadata.size||Date.now()>=deadline)throw Error('Archive verification budget exceeded');parts.push(decoder.decode(next.value,{stream:true}));}parts.push(decoder.decode());}
  catch(error){await reader.cancel().catch(()=>{});throw error;}
@@ -57,18 +60,25 @@ export async function pruneArchivedMaterializations(store:Store,scope:AccessScop
  if(!token)return {...result,skipped:1};
  try{
   const cutoff=new Date(Date.now()-2*3600000).toISOString(),now=new Date().toISOString();
-  const limit=Math.max(0,Math.min(8,options.maxSnapshots)),pageSize=Math.max(16,limit*4),candidates:ArchivedSnapshot[]=[],order="CASE WHEN c.provider='kind-shopify-traffic' THEN 0 WHEN c.provider='kind-meta-performance' THEN 1 WHEN c.provider IN ('kind-shopify-hourly','kind-shopify-funnels') THEN 2 ELSE 3 END,s.retrievedAt,s.id";
+  const limit=Math.max(0,Math.min(8,options.maxSnapshots)),pageSize=Math.max(16,limit*4),priority="CASE WHEN c.provider='kind-shopify-traffic' THEN 0 WHEN c.provider='kind-meta-performance' THEN 1 WHEN c.provider IN ('kind-shopify-hourly','kind-shopify-funnels') THEN 2 ELSE 3 END",order=`${priority},s.retrievedAt,s.id`;
   // Bound expensive review/AI payload checks before evaluating protection.
   // A LIMIT after those correlated checks scans every old capture first.
-  // Page past protected captures so they cannot starve a later valid archive.
-  for(let offset=0;candidates.length<limit&&Date.now()<options.deadline;){
-   const page=await store.all<ArchivedSnapshot>(`SELECT s.*,c.provider FROM snapshots s LEFT JOIN connections c ON c.id=s.sourceId AND c.organizationId=s.organizationId WHERE s.organizationId=? AND s.clientId='kind-patches' AND s.status='ready' AND s.retrievedAt<? AND NOT EXISTS(SELECT 1 FROM current_snapshots p WHERE p.snapshotId=s.id) AND EXISTS(SELECT 1 FROM observations o WHERE o.snapshotId=s.id LIMIT 1) ORDER BY ${order} LIMIT ? OFFSET ?`,scope.organizationId,cutoff,pageSize,offset);
-   if(!page.length||Date.now()>=options.deadline)break;offset+=page.length;
-   candidates.push(...await store.all<ArchivedSnapshot>(`SELECT s.*,c.provider FROM snapshots s LEFT JOIN connections c ON c.id=s.sourceId AND c.organizationId=s.organizationId WHERE s.id IN (SELECT value FROM json_each(?)) AND ${protection} AND EXISTS(SELECT 1 FROM observations o WHERE o.snapshotId=s.id LIMIT 1) ORDER BY ${order} LIMIT ?`,JSON.stringify(page.map(snapshot=>snapshot.id)),scope.organizationId,cutoff,now,now,limit-candidates.length));
-   if(page.length<pageSize)break;
+  // Protected or unverifiable captures cannot starve a later valid archive.
+  // A stable cursor also avoids skipping rows as earlier pages are pruned.
+  async function* candidates(){
+   let cursor:{priority:number;retrievedAt:string;id:string}|null=null;
+   while(limit&&result.verifiedSnapshots<limit&&result.rowsDeleted<options.maxRows&&Date.now()<options.deadline){
+    const after:string=cursor?` AND (${priority},s.retrievedAt,s.id)>(?,?,?)`:'',values:(number|string)[]=cursor?[cursor.priority,cursor.retrievedAt,cursor.id]:[];
+    const page:ArchivedSnapshot[]=await store.all<ArchivedSnapshot>(`SELECT s.*,c.provider FROM snapshots s LEFT JOIN connections c ON c.id=s.sourceId AND c.organizationId=s.organizationId WHERE s.organizationId=? AND s.clientId='kind-patches' AND s.status='ready' AND s.retrievedAt<? AND NOT EXISTS(SELECT 1 FROM current_snapshots p WHERE p.snapshotId=s.id) AND EXISTS(SELECT 1 FROM observations o WHERE o.snapshotId=s.id LIMIT 1)${after} ORDER BY ${order} LIMIT ?`,scope.organizationId,cutoff,...values,pageSize);
+    if(!page.length||Date.now()>=options.deadline)return;
+    const last:ArchivedSnapshot=page.at(-1)!;cursor={priority:last.provider==='kind-shopify-traffic'?0:last.provider==='kind-meta-performance'?1:['kind-shopify-hourly','kind-shopify-funnels'].includes(last.provider??'')?2:3,retrievedAt:last.retrievedAt,id:last.id};
+    const eligible=await store.all<ArchivedSnapshot>(`SELECT s.*,c.provider FROM snapshots s LEFT JOIN connections c ON c.id=s.sourceId AND c.organizationId=s.organizationId WHERE s.id IN (SELECT value FROM json_each(?)) AND ${protection} AND EXISTS(SELECT 1 FROM observations o WHERE o.snapshotId=s.id LIMIT 1) ORDER BY ${order} LIMIT ?`,JSON.stringify(page.map(snapshot=>snapshot.id)),scope.organizationId,cutoff,now,now,pageSize);
+    for(const snapshot of eligible)yield snapshot;
+    if(page.length<pageSize)return;
+   }
   }
-  for(const snapshot of candidates){
-   if(Date.now()>=options.deadline||result.rowsDeleted>=options.maxRows)break;
+  for await(const snapshot of candidates()){
+   if(Date.now()>=options.deadline||result.rowsDeleted>=options.maxRows||result.verifiedSnapshots>=limit)break;
    let verified;try{verified=await verifiedArchive(store,snapshot,options.readArchive??privateArchive,options.deadline);result.verifiedSnapshots++;}catch{result.skipped++;continue;}
    let removed=0,characters=0,projectionChunks=0;
    const guard=()=>({sql:`EXISTS(SELECT 1 FROM snapshots s WHERE s.id=? AND s.objectKey=? AND s.retrievedAt=? AND s.sourceId=? AND s.complete=? AND s.coverageThrough IS ? AND ${protection}) AND EXISTS(SELECT 1 FROM runner_leases WHERE id=? AND token=? AND leaseUntil>=?)`,args:[snapshot.id,snapshot.objectKey,snapshot.retrievedAt,snapshot.sourceId,snapshot.complete,snapshot.coverageThrough,scope.organizationId,cutoff,new Date().toISOString(),new Date().toISOString(),leaseId,token,new Date().toISOString()]});

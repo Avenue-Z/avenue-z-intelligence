@@ -55,6 +55,58 @@ it('continues through protected candidate pages without starving a later recover
  expect(result.rowsDeleted).toBe(3);expect(read).toHaveBeenCalledOnce();
  expect(await store.first("SELECT COUNT(*) AS n FROM observations WHERE snapshotId LIKE 'review-protected-%'")).toEqual({n:22});
 });
+it('continues after eight missing archives to prune a later verified capture',async()=>{
+ const sample=await store.first<{date:string;rowKey:string;payload:string}>('SELECT date,rowKey,payload FROM observations WHERE snapshotId=? LIMIT 1',oldId);
+ for(let index=0;index<8;index++){
+  const id=`missing-archive-${index}`;
+  await store.run("INSERT INTO snapshots SELECT ?,organizationId,clientId,sourceId,'2026-10-13T09:00:00Z',coverageThrough,complete,status,? FROM snapshots WHERE id=?",id,`snapshots/${id}.json`,oldId);
+  await store.run('INSERT INTO observations VALUES(?,?,?,?)',id,sample!.date,sample!.rowKey,sample!.payload);
+ }
+ const current=await store.all('SELECT * FROM observations WHERE snapshotId=?',currentId),metadata=await store.all('SELECT * FROM snapshots ORDER BY id');
+ const result=await pruneArchivedMaterializations(store,scope,{...options(),maxSnapshots:8});
+ expect(result).toMatchObject({verifiedSnapshots:1,prunedSnapshots:1,rowsDeleted:3,skipped:8});
+ expect(await store.all('SELECT * FROM observations WHERE snapshotId=?',oldId)).toEqual([]);
+ expect(await store.first("SELECT COUNT(*) AS n FROM observations WHERE snapshotId LIKE 'missing-archive-%'")).toEqual({n:8});
+ expect(await store.all('SELECT * FROM observations WHERE snapshotId=?',currentId)).toEqual(current);
+ expect(await store.all('SELECT * FROM snapshots ORDER BY id')).toEqual(metadata);
+});
+it('continues across pages after pruning earlier candidates and stops at the verified snapshot limit',async()=>{
+ const sample=await store.first<{date:string;rowKey:string;payload:string}>('SELECT date,rowKey,payload FROM observations WHERE snapshotId=? LIMIT 1',oldId);
+ for(let index=0;index<15;index++){
+  const id=`missing-archive-${index}`;
+  await store.run("INSERT INTO snapshots SELECT ?,organizationId,clientId,sourceId,'2026-10-13T09:00:00Z',coverageThrough,complete,status,? FROM snapshots WHERE id=?",id,`snapshots/${id}.json`,oldId);
+  await store.run('INSERT INTO observations VALUES(?,?,?,?)',id,sample!.date,sample!.rowKey,sample!.payload);
+ }
+ const pointer=await store.first<{snapshotId:string;publishedAt:string;dataHash:string|null}>('SELECT snapshotId,publishedAt,dataHash FROM current_snapshots'),laterIds:string[]=[];
+ for(let index=0;index<2;index++){
+  const batch={...oldBatch,rows:oldBatch.rows.map(row=>({...row,value:row.value!+100+index}))},hash=await fingerprint(batch);
+  const id=await store.persistBatch('o','source',batch,hash,`2026-10-13T${12+index}:00:00Z`,undefined,{restoreMaterialization:true});
+  laterIds.push(id);archives.set(`snapshots/${id}.json`,JSON.stringify(batch));
+ }
+ await store.run('UPDATE current_snapshots SET snapshotId=?,publishedAt=?,dataHash=?',pointer!.snapshotId,pointer!.publishedAt,pointer!.dataHash);
+ const pointers=await store.all('SELECT * FROM current_snapshots'),current=await store.all('SELECT * FROM observations WHERE snapshotId=?',currentId);
+ const result=await pruneArchivedMaterializations(store,scope,{...options(),maxSnapshots:2});
+ expect(result).toMatchObject({verifiedSnapshots:2,prunedSnapshots:2,rowsDeleted:6,skipped:15});
+ expect(await store.all('SELECT * FROM observations WHERE snapshotId=?',oldId)).toEqual([]);
+ expect(await store.all('SELECT * FROM observations WHERE snapshotId=?',laterIds[0])).toEqual([]);
+ expect(await store.first('SELECT COUNT(*) AS n FROM observations WHERE snapshotId=?',laterIds[1])).toEqual({n:3});
+ expect(await store.first("SELECT COUNT(*) AS n FROM observations WHERE snapshotId LIKE 'missing-archive-%'")).toEqual({n:15});
+ expect(await store.all('SELECT * FROM observations WHERE snapshotId=?',currentId)).toEqual(current);
+ expect(await store.all('SELECT * FROM current_snapshots')).toEqual(pointers);
+});
+it('stops verification failures at the original maintenance deadline',async()=>{
+ const sample=await store.first<{date:string;rowKey:string;payload:string}>('SELECT date,rowKey,payload FROM observations WHERE snapshotId=? LIMIT 1',oldId);
+ for(let index=0;index<8;index++){
+  const id=`missing-archive-${index}`;
+  await store.run("INSERT INTO snapshots SELECT ?,organizationId,clientId,sourceId,'2026-10-13T09:00:00Z',coverageThrough,complete,status,? FROM snapshots WHERE id=?",id,`snapshots/${id}.json`,oldId);
+  await store.run('INSERT INTO observations VALUES(?,?,?,?)',id,sample!.date,sample!.rowKey,sample!.payload);
+ }
+ const result=await pruneArchivedMaterializations(store,scope,{...options(),maxSnapshots:8,readArchive:async(key,deadline)=>{vi.advanceTimersByTime(20000);return reader(key,deadline);}});
+ expect(result).toMatchObject({verifiedSnapshots:0,prunedSnapshots:0,rowsDeleted:0,skipped:3});
+ expect(await store.first('SELECT COUNT(*) AS n FROM observations WHERE snapshotId=?',oldId)).toEqual({n:3});
+ expect(await store.first("SELECT COUNT(*) AS n FROM observations WHERE snapshotId LIKE 'missing-archive-%'")).toEqual({n:8});
+ expect(await store.all('SELECT * FROM runner_leases')).toEqual([]);
+});
 it('restores exactly the original values and retrieval provenance from the verified archive without moving the current pointer',async()=>{
  const facts=await store.all('SELECT * FROM observations WHERE snapshotId=? ORDER BY date,rowKey',oldId),metadata=await store.first('SELECT * FROM snapshots WHERE id=?',oldId),pointer=await store.all('SELECT * FROM current_snapshots');
  await pruneArchivedMaterializations(store,scope,options());await restoreArchivedMaterialization(store,scope,oldId,{readArchive:reader,deadline:Date.now()+60000});
