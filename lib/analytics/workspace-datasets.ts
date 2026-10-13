@@ -14,5 +14,5 @@ export function workspaceDatasets(view:string):string[]{
 export function workspaceObservationSelection(viewOrDatasets:string|string[]){
  const datasets=(Array.isArray(viewOrDatasets)?viewOrDatasets:workspaceDatasets(viewOrDatasets)).filter(dataset=>dataset!=='reviews'&&dataset!=='settings');
  const includeOperations=datasets.includes('renewalDiagnostics')||datasets.includes('media')&&datasets.includes('revenue');
- return {datasets,includePriorWeek:false,includeOperations,...datasets.includes('revenue')?{trendDatasets:['revenue']}:{}};
+ return {datasets,includePriorWeek:false,includeOperations,trendDatasets:datasets.filter(dataset=>['overview','revenue','traffic','markets','products','subscriptions','subscriptionEvents',...!datasets.includes('traffic')&&!datasets.includes('revenue')?['funnels']:[]].includes(dataset))};
 }

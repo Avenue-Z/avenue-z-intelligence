@@ -8,6 +8,9 @@ import {QueryCache} from './query-cache';
 import {observationCodec} from './observation-codec';
 import {durableObservationPayload} from './durable-observation-cache';
 import {snapshotDayManifests,snapshotDayManifest,readSnapshotDayProjection,readSmallSnapshotDayProjections,discardSnapshotDayProjection,writeSnapshotDayProjection,snapshotDayPayload} from './snapshot-day-projections';
+import {trendContextWindows} from '../analytics/trend-context';
+import {TrendRollupAccumulator} from '../analytics/trend-rollup';
+import {readTrendObservations} from './trend-observations';
 type Db={prepare:(sql:string)=>any;batch:(statements:any[])=>Promise<any[]>;allowCrossRequestCoalescing?:boolean};
 // Vercel reuses a warm adapter; Sites owns a fresh adapter per Store. This
 // optional memory cache stays isolated while the durable cache is shared.
@@ -36,7 +39,7 @@ export class Store {
     let clause='',values:unknown[]=[],overviewWindow:[string,string]|undefined,marketWindow:[string,string]|undefined;
     const detailWindows:[string,string][]=[];let subscriptionTo:string|undefined;
     const trendDatasets=[...new Set(selection?.trendDatasets??[])].filter(dataset=>selection?.datasets.includes(dataset));
-    const trendWindow: [string,string]|undefined=filters&&trendDatasets.length?[shiftDate(filters.to,-29),filters.to]:undefined;
+    const trendWindows: [string,string][]=filters&&trendDatasets.length?trendContextWindows(filters):[];
     if(filters){const comparison=comparisonPeriod(filters),priorFrom=comparison.from,priorTo=comparison.to,trendFrom=shiftDate(filters.to,-29),overviewFrom=priorFrom<trendFrom?priorFrom:trendFrom;
       // Keep headline history and renewal benchmarks; load bulky detail exports
       // only for the selected, comparison and prior-week periods.
@@ -49,7 +52,7 @@ export class Store {
       subscriptionTo=[filters.to,priorTo].sort().at(-1);
       values.push(overviewFrom,filters.to,subscriptionTo,shiftDate(filters.from,-1),filters.to,...detailWindows.flat());
     }
-    if(trendWindow){clause=clause.slice(0,-1)+` OR (json_extract(o.payload,'$.dataset') IN (${trendDatasets.map(()=>'?').join(',')}) AND o.date BETWEEN ? AND ?))`;values.push(...trendDatasets,...trendWindow);}
+    if(trendWindows.length){clause=clause.slice(0,-1)+` OR (json_extract(o.payload,'$.dataset') IN (${trendDatasets.map(()=>'?').join(',')}) AND (${trendWindows.map(()=>'(o.date BETWEEN ? AND ?)').join(' OR ')})))`;values.push(...trendDatasets,...trendWindows.flat());}
     if(headlinesOnly)clause+=" AND json_extract(o.payload,'$.dataset')='overview'";
     const dateClause=clause,dateValues=[...values];
     const selectedDatasets=selection?[...new Set(selection.datasets)].sort():null,dimensionSelection:Record<string,string>={},dimensionAliases=new Map<string,string[]>();let selectionClause='',selectionValues:unknown[]=[];
@@ -85,7 +88,7 @@ export class Store {
         return (profile.dataset==='subscriptions'&&(!subscriptionTo||pointer.date<=subscriptionTo))||['active_ads','active_creatives'].includes(profile.metric)||
           (profile.dataset==='overview'&&!!overviewWindow&&inWindow(pointer.date,overviewWindow))||
           (profile.dataset==='markets'&&!!marketWindow&&inWindow(pointer.date,marketWindow))||
-          (trendDatasets.includes(profile.dataset)&&!!trendWindow&&inWindow(pointer.date,trendWindow))||detailWindows.some(window=>inWindow(pointer.date,window));
+          (trendDatasets.includes(profile.dataset)&&trendWindows.some(window=>inWindow(pointer.date,window)))||detailWindows.some(window=>inWindow(pointer.date,window));
       });
     });
     const operationalMetrics=new Set(['active_customers','active_ads','active_creatives']);
@@ -102,19 +105,26 @@ export class Store {
     // and fresh metadata are part of the key. Published pointers invalidate
     // across refreshes, including refreshes performed by another instance.
     const version=pointers.map(p=>[p.sourceId,p.snapshotId,p.date]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
-    const key=JSON.stringify(['chart-series-v4',org,client,filters?[filters.from,filters.to,filters.compare,filters.compareFrom??null,filters.compareTo??null,filters.mode]:null,headlinesOnly,clientRow?.timezone??null,cutoffClock??null,...selection?[{datasets:selectedDatasets,dimensions:!!selection.dimensions,includePriorWeek:selection.includePriorWeek!==false,trendDatasets:[...trendDatasets].sort(),filters:dimensionSelection}]:[],version]);
+    const key=JSON.stringify(['chart-series-v5',org,client,filters?[filters.from,filters.to,filters.compare,filters.compareFrom??null,filters.compareTo??null,filters.mode]:null,headlinesOnly,clientRow?.timezone??null,cutoffClock??null,...selection?[{datasets:selectedDatasets,dimensions:!!selection.dimensions,includePriorWeek:selection.includePriorWeek!==false,trendDatasets:[...trendDatasets].sort(),filters:dimensionSelection}]:[],version]);
     const load=()=>durableObservationPayload(this.db,org,client,key,async()=>{
     checkBudget();
     // Missing partial coverage must retain raw hourly rows so queryClient can
     // decline the comparison; it must never turn a full day into a partial day.
-    const accumulator=clientRow&&(!filters||filters.mode==='closed'||cutoffClock)?new FunnelRollupAccumulator({timezone:clientRow.timezone,cutoffClock,...filters?.mode==='partial'?{cutoffDates:new Set([filters.to,comparisonPeriod(filters).to,shiftDate(filters.to,-7)])}:{}}):null;
+    const cutoffDates=new Set(filters?[filters.to,comparisonPeriod(filters).to,shiftDate(filters.to,-7)]:[]);
+    const accumulator=clientRow&&(!filters||filters.mode==='closed'||cutoffClock)?new FunnelRollupAccumulator({timezone:clientRow.timezone,cutoffClock,...filters?.mode==='partial'?{cutoffDates}:{}}):null;
+    const fullDayContext=clientRow&&filters?.mode==='partial'&&trendDatasets.length?new TrendRollupAccumulator(filters):null;
+    const contextualDatasets=trendDatasets.filter(dataset=>['traffic','funnels','products','markets'].includes(dataset));
+    const contextualPointers=filters&&contextualDatasets.length?pointers.filter(pointer=>!detailWindows.some(window=>inWindow(pointer.date,window))&&trendWindows.some(window=>inWindow(pointer.date,window))&&(!profiles.get(pointer.sourceId)||profiles.get(pointer.sourceId)!.some(profile=>contextualDatasets.includes(profile.dataset)))):[];
+    const contextKeys=new Set(contextualPointers.map(pointer=>JSON.stringify([pointer.snapshotId,pointer.date])));
+    const contextRows=filters?await readTrendObservations(this,contextualPointers,contextualDatasets,filters,{organizationId:org,clientId:client}):[];
     const rows:Observation[]=[];
-    const addRow=(row:Observation)=>{if(accumulator)accumulator.add(row);else rows.push(row);};
+    const addRow=(row:Observation)=>{if(fullDayContext&&row.date!==filters!.to&&cutoffDates.has(row.date)&&trendDatasets.includes(row.dataset)&&['traffic','funnels'].includes(row.dataset))fullDayContext.add(row);if(accumulator)accumulator.add(row);else rows.push(row);};
     const add=(page:{payload:string}[])=>{for(const r of page)addRow(JSON.parse(r.payload));};
     // Mirror the SQL predicate on complete day projections. Missing dimensions
     // remain in the evidence for queryClient's unsupported-filter checks.
     const accepts=(row:Observation,date:string)=>{
-      if(filters&&!((row.dataset==='overview'&&!!overviewWindow&&inWindow(date,overviewWindow))||(row.dataset==='subscriptions'&&!!subscriptionTo&&date<=subscriptionTo)||(row.dataset==='markets'&&!!marketWindow&&inWindow(date,marketWindow))||(trendDatasets.includes(row.dataset)&&!!trendWindow&&inWindow(date,trendWindow))||['active_ads','active_creatives'].includes(row.metric)||detailWindows.some(window=>inWindow(date,window))))return false;
+      if(filters&&!((row.dataset==='overview'&&!!overviewWindow&&inWindow(date,overviewWindow))||(row.dataset==='subscriptions'&&!!subscriptionTo&&date<=subscriptionTo)||(row.dataset==='markets'&&!!marketWindow&&inWindow(date,marketWindow))||(trendDatasets.includes(row.dataset)&&trendWindows.some(window=>inWindow(date,window)))||['active_ads','active_creatives'].includes(row.metric)||detailWindows.some(window=>inWindow(date,window))))return false;
+      if(contextualDatasets.includes(row.dataset)&&contextualPointers.some(pointer=>pointer.date===date&&pointer.sourceId===row.sourceId))return false;
       if(headlinesOnly&&row.dataset!=='overview'||selectedDatasets&&!selectedDatasets.includes(row.dataset))return false;
       for(const [dimension,aliases] of dimensionAliases){if(Object.hasOwn(row.dimensions,dimension)&&!aliases.includes(row.dimensions[dimension]))return false;}return true;
     };
@@ -123,9 +133,10 @@ export class Store {
     // otherwise preserve the SQL seek that transfers only the chosen datasets.
     const denseDatasets=new Set(['funnels','traffic','products','creatives']);
     const projectionPointers=pointers.filter(pointer=>{
+      const registeredContext=profiles.get(pointer.sourceId);if(contextKeys.has(JSON.stringify([pointer.snapshotId,pointer.date]))&&registeredContext?.every(profile=>contextualDatasets.includes(profile.dataset)))return false;
       if(!filters&&!selectedDatasets&&!headlinesOnly)return true;
       const detailRequested=!filters||detailWindows.some(window=>inWindow(pointer.date,window));
-      const requested=(dataset:string)=>detailRequested&&!headlinesOnly&&(!selectedDatasets||selectedDatasets.includes(dataset));
+      const requested=(dataset:string)=>(detailRequested||trendDatasets.includes(dataset)&&trendWindows.some(window=>inWindow(pointer.date,window)))&&!headlinesOnly&&(!selectedDatasets||selectedDatasets.includes(dataset));
       const registered=profiles.get(pointer.sourceId);
       if(!registered)return [...denseDatasets].some(requested);
       const dense=registered.filter(profile=>denseDatasets.has(profile.dataset));return !dense.length||dense.some(profile=>requested(profile.dataset));
@@ -147,7 +158,7 @@ export class Store {
       // Outside detail windows only headline/renewal/market history and global
       // inventory metrics can qualify. Narrow the indexed dataset seek before
       // decoding payloads, rather than scanning every historical funnel row.
-      const datasets=[...new Set(registered.filter(profile=>(profile.dataset==='overview'&&!!overviewWindow&&inWindow(pointer.date,overviewWindow))||(profile.dataset==='subscriptions'&&!!subscriptionTo&&pointer.date<=subscriptionTo)||(profile.dataset==='markets'&&!!marketWindow&&inWindow(pointer.date,marketWindow))||(trendDatasets.includes(profile.dataset)&&!!trendWindow&&inWindow(pointer.date,trendWindow))||['active_ads','active_creatives'].includes(profile.metric)).map(profile=>profile.dataset))].filter(dataset=>(!selectedDatasets||selectedDatasets.includes(dataset))&&(!headlinesOnly||dataset==='overview')).sort();
+      const datasets=[...new Set(registered.filter(profile=>(profile.dataset==='overview'&&!!overviewWindow&&inWindow(pointer.date,overviewWindow))||(profile.dataset==='subscriptions'&&!!subscriptionTo&&pointer.date<=subscriptionTo)||(profile.dataset==='markets'&&!!marketWindow&&inWindow(pointer.date,marketWindow))||(trendDatasets.includes(profile.dataset)&&trendWindows.some(window=>inWindow(pointer.date,window)))||['active_ads','active_creatives'].includes(profile.metric)).map(profile=>profile.dataset))].filter(dataset=>(!selectedDatasets||selectedDatasets.includes(dataset))&&(!headlinesOnly||dataset==='overview')&&(!contextKeys.has(JSON.stringify([pointer.snapshotId,pointer.date]))||!contextualDatasets.includes(dataset))).sort();
       let localClause=dateClause+(datasets.length?` AND json_extract(o.payload,'$.dataset') IN (${datasets.map(()=>'?').join(',')})`:' AND 0');const localValues:unknown[]=[...dateValues,...datasets];
       for(const [dimension,aliases] of dimensionAliases){localClause+=` AND (json_extract(o.payload,'$.dimensions.${dimension}') IN (${aliases.map(()=>'?').join(',')}) OR json_type(o.payload,'$.dimensions.${dimension}') IS NULL)`;localValues.push(...aliases);}
       return {clause:localClause,values:localValues,index:datasets.length?' INDEXED BY idx_observations_snapshot_date_dataset_rowkey':selectionIndex,datasets};
@@ -170,7 +181,7 @@ export class Store {
     }};
     await Promise.all(Array.from({length:Math.min(4,groups.length)},()=>read()));
     const stable=(accumulator?accumulator.finish():rows).map(row=>({row,key:JSON.stringify([row.sourceId,row.date,row.dataset,row.metric,row.definition,row.population,row.currency,row.start,row.end,Object.entries(row.dimensions).sort(),row.retrievedAt,row.quality])})).sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0).map(x=>x.row);
-    checkBudget();return observationCodec.encode(preferredObservations(stable));
+    checkBudget();return observationCodec.encode([...preferredObservations(stable),...contextRows,...fullDayContext?fullDayContext.finish():[]]);
     // Foreground reads reuse ready shared data but do not wait for multi-chunk
     // range-cache writes. Only bounded hosted warming publishes those entries.
     },options?.deadline,{publish:!!options});
@@ -274,7 +285,7 @@ export class Store {
     else r=await this.run('UPDATE findings SET payload=?,version=version+1,updatedAt=? WHERE id=? AND organizationId=? AND clientId=? AND version=?',payload,now,id,org,client,expected);
     if(!r.meta.changes)throw new Error('Changed by another teammate');await this.audit(org,client,actor,'finding.updated',input);return id;}
   async enqueue(org:string,client:string,source:string,bucket:string,now:string){await this.run('INSERT INTO jobs(id,organizationId,clientId,sourceId,status,attempts,dueAt) VALUES(?,?,?,?,?,0,?) ON CONFLICT DO NOTHING',`${org}:${source}:${bucket}`,org,client,source,'pending',now);}
-  async claim(now:string,org:string,permittedClientIds?:string[],leaseMs=300000){if(permittedClientIds?.length===0)return null;const clause=permittedClientIds?' AND clientId IN ('+permittedClientIds.map(()=>'?').join(',')+')':'';const r=await this.first(`SELECT * FROM jobs WHERE organizationId=?${clause} AND ((status='pending' AND dueAt<=?) OR (status='running' AND leaseUntil<?)) ORDER BY CASE WHEN id LIKE '%:hourly-history:____-__-__' THEN 1 ELSE 0 END,dueAt LIMIT 1`,org,...permittedClientIds??[],now,now);if(!r)return null;const leaseUntil=new Date(Date.parse(now)+leaseMs).toISOString();const result=await this.run(`UPDATE jobs SET status='running',leaseUntil=?,attempts=attempts+1 WHERE id=? AND organizationId=? AND ((status='pending' AND dueAt<=?) OR (status='running' AND leaseUntil<?))`,leaseUntil,r.id,org,now,now);return result.meta.changes?{...r,leaseUntil,attempts:r.attempts+1}:null;}
+  async claim(now:string,org:string,permittedClientIds?:string[],leaseMs=300000,currentOnly=false){if(permittedClientIds?.length===0)return null;const clause=(permittedClientIds?' AND clientId IN ('+permittedClientIds.map(()=>'?').join(',')+')':'')+(currentOnly?" AND id NOT LIKE '%:hourly-history:____-__-__'":'');const r=await this.first(`SELECT * FROM jobs WHERE organizationId=?${clause} AND ((status='pending' AND dueAt<=?) OR (status='running' AND leaseUntil<?)) ORDER BY CASE WHEN id LIKE '%:hourly-history:____-__-__' THEN 1 ELSE 0 END,dueAt LIMIT 1`,org,...permittedClientIds??[],now,now);if(!r)return null;const leaseUntil=new Date(Date.parse(now)+leaseMs).toISOString();const result=await this.run(`UPDATE jobs SET status='running',leaseUntil=?,attempts=attempts+1 WHERE id=? AND organizationId=? AND ((status='pending' AND dueAt<=?) OR (status='running' AND leaseUntil<?))`,leaseUntil,r.id,org,now,now);return result.meta.changes?{...r,leaseUntil,attempts:r.attempts+1}:null;}
   async retry(id:string,attempts:number,error:string,now:string){const dueAt=new Date(Date.parse(now)+Math.min(30,2**attempts)*60000).toISOString();await this.run('UPDATE jobs SET status=?,dueAt=?,error=?,leaseUntil=NULL WHERE id=?',attempts>=3?'failed':'pending',dueAt,error,id);}
   async finish(id:string,error?:string){await this.run('UPDATE jobs SET status=?,error=?,leaseUntil=NULL WHERE id=?',error?'failed':'complete',error??null,id);}
   async jobs(org:string){return this.all('SELECT * FROM jobs WHERE organizationId=? ORDER BY dueAt DESC LIMIT 30',org);}

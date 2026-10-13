@@ -18,7 +18,7 @@ beforeEach(()=>{state.platform='sites';vi.useFakeTimers();vi.setSystemTime('2026
 it('warms the exact scoped Traffic and Overview keys used by foreground reads',async()=>{
  const {store,queries}=await fixture();const result=await warmSuccessfulSourceJobs(store,scope,['o:source:warm'],Date.now()+270000);expect(result).toEqual({attempted:21,completed:21});const before=queries.filter(sql=>sql.startsWith('SELECT o.payload')).length;
  for(const view of ['traffic','overview'])for(const compare of ['previous','fourWeeks','weekday','thirtyDays'] as const)for(const mode of ['closed','partial'] as const){const date=mode==='closed'?base.to:'2026-10-12';await store.observations('o',client.id,{...base,view,compare,mode,from:date,to:date},false,undefined,workspaceObservationSelection(view));}
- expect(queries.filter(sql=>sql.startsWith('SELECT o.payload'))).toHaveLength(before);expect(await store.all('SELECT status FROM observation_cache_entries')).toHaveLength(21);
+ expect(queries.filter(sql=>sql.startsWith('SELECT o.payload'))).toHaveLength(before);expect(await store.all('SELECT status FROM observation_cache_entries')).toHaveLength(22);
 });
 it('independently warms every live tab before historical Traffic and secondary scopes',async()=>{
  state.platform='vercel';vi.stubGlobal('fetch',()=>{throw Error('Provider or browser work is forbidden');});const {store}=await fixture(),observations=store.observations.bind(store),seen:{view:string;from:string;to:string}[]=[];

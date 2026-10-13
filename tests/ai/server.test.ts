@@ -43,6 +43,19 @@ it('answers chat from one shared detail read rather than a second overlapping mo
  const spy=vi.spyOn(state.store,'observations');await answerAI({clientId:'beam',filters,question:'What is shown?'});
  expect(spy.mock.calls.filter(call=>call[3]!==true)).toHaveLength(1);expect(spy.mock.calls.filter(call=>call[3]===true)).toHaveLength(1);
 });
+it('answers the default seven-day chart from loaded daily history and the latest selected values',async()=>{
+ const dates=['2026-09-30','2026-10-01','2026-10-02','2026-10-03','2026-10-04','2026-10-05','2026-10-06','2026-10-07'];
+ const rows=dates.flatMap((date,index)=>[{date,dataset:'products',metric:'revenue',value:index===7?200:100+index*10,definition:'net_sales',population:'product_sales',currency:'USD',dimensions:{product:'Daily product'}},{date,dataset:'products',metric:'orders',value:10,definition:'product_orders',population:'product_sales',currency:null,dimensions:{product:'Daily product'}}]);
+ await state.store.persistBatch('o','qualified',{clientId:'beam',timezone:'America/New_York',currency:'USD',channels:[],dimensions:['product'],grain:'daily',complete:true,coverageThrough:'2026-10-08T04:00:00Z',rows:rows.map(row=>({...row,sourceId:'qualified',retrievedAt:'2026-10-08T10:00:00Z',coverageThrough:'2026-10-08T04:00:00Z',quality:'complete' as const}))},'chart-history','2026-10-08T10:00:00Z');
+ state.model.mockResolvedValue({answer:'The seven-day sales trend ends at $200.',sourceIds:['selection:beam'],followUps:[],caveats:[]});
+ const reads=vi.spyOn(state.store,'observations');await answerAI({clientId:'beam',filters:{...filters,view:'products'},question:'Explain the default seven-day Product performance over time chart.'});
+ const input=JSON.parse(state.model.mock.calls[0][2]),view=input.context.clients[0].selectedView;
+ expect(view.current.summary.revenue).toBe(200);expect(view.dailyChart.defaultRange).toMatchObject({from:'2026-10-01',to:'2026-10-07',comparisonFrom:'2026-09-30',comparisonTo:'2026-10-06'});
+ expect(view.dailyChart.current.filter((day:{date:string})=>day.date>='2026-10-01').map((day:{metrics:Record<string,number|null>})=>day.metrics.revenue)).toEqual([110,120,130,140,150,160,200]);
+ expect(view.dailyChart.comparison.filter((day:{date:string})=>day.date>='2026-09-30').map((day:{metrics:Record<string,number|null>})=>day.metrics.revenue)).toEqual([100,110,120,130,140,150,160]);
+ expect(view.dailyChart.scope.sourceId).toBe('selection:beam');expect(Buffer.byteLength(state.model.mock.calls[0][2])).toBeLessThanOrEqual(80000);
+ expect(reads.mock.calls.find(call=>call[3]!==true)?.[5]).toMatchObject({trendDatasets:expect.arrayContaining(['products'])});
+});
 it('builds weekday and previous-day headline references without preparing dense Traffic tables',async()=>{
  const query=await import('../../lib/analytics/query'),spy=vi.spyOn(query,'queryClient');
  try{

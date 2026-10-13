@@ -5,6 +5,7 @@
   "outputDirectory":".next-vercel",
   "crons":[
     {"path":"/api/cron/sync","schedule":"*/5 * * * *"},
-    {"path":"/api/cron/reviews","schedule":"2-59/5 * * * *"}
+    {"path":"/api/cron/reviews","schedule":"2-59/5 * * * *"},
+    {"path":"/api/cron/history","schedule":"1-59/5 * * * *"}
   ]
 }

@@ -69,11 +69,10 @@ it.each(['kind-shopify-hourly','kind-shopify-funnels','kind-triple-whale','kind-
  await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+300000});
  expect(state.requests).toEqual([{kind:'current',provider,window:{from:provider==='kind-shopify-hourly'?'2026-10-12':'2026-10-07',to:'2026-10-13'}}]);
 });
-it.each(['kind-shopify-sales','kind-shopify-products','kind-shopify-traffic','kind-meta-performance','kind-applovin'])('retains the requested closed day and source freshness for a %s history job',async provider=>{
+it.each(['kind-shopify-sales','kind-shopify-products','kind-shopify-traffic','kind-meta-performance','kind-applovin'])('leaves a %s closed-day repair unclaimed for the dedicated history worker',async provider=>{
  const store=state.store!,before=await store.first('SELECT lastSuccess,coverageThrough,error FROM connections');
  await store.run('UPDATE connections SET provider=?',provider);await store.run('DELETE FROM jobs');await store.enqueue('o','kind-patches','source','hourly-history:2026-10-12',new Date().toISOString());
- state.batch={...state.batch!,coverageThrough:'2026-10-12T22:00:00Z',rows:state.batch!.rows.map(row=>({...row,date:'2026-10-12',start:'2026-10-12T20:00:00Z',end:'2026-10-12T21:00:00Z'}))};
  const result=await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+300000});
- expect(result.failed).toEqual([]);expect(result.completed).toEqual(['o:source:hourly-history:2026-10-12']);
- expect(state.requests).toEqual([{kind:'history',provider,window:{from:'2026-10-12',to:'2026-10-12'}}]);expect(await store.first('SELECT lastSuccess,coverageThrough,error FROM connections')).toEqual(before);expect(await store.first('SELECT date FROM current_snapshots')).toEqual({date:'2026-10-12'});
+ expect(result.failed).toEqual([]);expect(result.completed).toEqual([]);
+ expect(state.requests).toEqual([]);expect(await store.first('SELECT lastSuccess,coverageThrough,error FROM connections')).toEqual(before);expect(await store.first('SELECT status,attempts,leaseUntil FROM jobs')).toEqual({status:'pending',attempts:0,leaseUntil:null});expect(await store.all('SELECT date FROM current_snapshots')).toEqual([]);
 });

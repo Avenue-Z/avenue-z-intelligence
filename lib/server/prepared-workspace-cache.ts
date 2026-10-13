@@ -6,6 +6,7 @@ import {withAnalyticsMemory} from './analytics-memory';
 import {QueryCache} from './query-cache';
 import type {Store} from './store';
 import {intradayConnections} from '../analytics/intraday-coverage';
+import {trendContextWindows} from '../analytics/trend-context';
 
 type Presentation=ReturnType<typeof workspacePresentation>;
 type Frame=Omit<Presentation,'connections'>;
@@ -22,7 +23,7 @@ const databaseNamespaces=new WeakMap<Store['db'],number>();let nextDatabaseNames
 function databaseNamespace(db:Store['db']){let namespace=databaseNamespaces.get(db);if(namespace===undefined){namespace=++nextDatabaseNamespace;databaseNamespaces.set(db,namespace);}return namespace;}
 // Deliberately enumerate the analytics contract. A caller's workspace fields,
 // browser scope, member records and private notes cannot enter the cache.
-const frameFields=['client','metrics','prior','comparison','verdict','series','datasetSeries','comparisonDatasetSeries','datasetHourlySeries','comparisonDatasetHourlySeries','datasetHistorySeries','details','actions','opportunities','views','preparedDatasets','datasetMetrics','activeIncidents','warnings','cutoff','availableDimensions','evidence','comparisonEvidence','selectedCount','liveOperations','subscriptions','viewMetrics','experimentDetails','comparisonViews','qualifiedPageAlerts','trafficExplorer','sourceQuality','efficiencyEvidence'] as const satisfies readonly (keyof Frame)[];
+const frameFields=['client','metrics','prior','comparison','verdict','series','datasetSeries','comparisonDatasetSeries','trendDatasetSeries','trendComparisonDatasetSeries','datasetHourlySeries','comparisonDatasetHourlySeries','datasetHistorySeries','details','actions','opportunities','views','preparedDatasets','datasetMetrics','activeIncidents','warnings','cutoff','availableDimensions','evidence','comparisonEvidence','selectedCount','liveOperations','subscriptions','viewMetrics','experimentDetails','comparisonViews','qualifiedPageAlerts','trafficExplorer','sourceQuality','efficiencyEvidence'] as const satisfies readonly (keyof Frame)[];
 function analyticsFrame(value:Presentation):Frame{
  // New presentation fields require an explicit decision about cache contents.
  const completeFields:Exclude<keyof Frame,typeof frameFields[number]> extends never?typeof frameFields:never=frameFields;
@@ -52,7 +53,7 @@ function validFrame(frame:unknown,input:PreparedWorkspaceInput):frame is Frame{
  if(JSON.stringify([...(value.preparedDatasets as string[])].sort())!==JSON.stringify([...new Set(input.preparedDatasets)].sort()))return false;
  if(!Number.isSafeInteger(value.selectedCount)||(value.selectedCount as number)<0||value.cutoff!==null&&typeof value.cutoff!=='string')return false;
  for(const key of ['metrics','prior','datasetMetrics','viewMetrics']){const summary=value[key];if(!summary||typeof summary!=='object'||Array.isArray(summary)||Object.values(summary).some(metric=>metric!==null&&(typeof metric!=='number'||!Number.isFinite(metric))))return false;}
- for(const key of ['views','datasetSeries','comparisonDatasetSeries','datasetHourlySeries','comparisonDatasetHourlySeries','datasetHistorySeries','availableDimensions','subscriptions','comparison','verdict'])if(!value[key]||typeof value[key]!=='object'||Array.isArray(value[key]))return false;
+ for(const key of ['views','datasetSeries','comparisonDatasetSeries','trendDatasetSeries','trendComparisonDatasetSeries','datasetHourlySeries','comparisonDatasetHourlySeries','datasetHistorySeries','availableDimensions','subscriptions','comparison','verdict'])if(!value[key]||typeof value[key]!=='object'||Array.isArray(value[key]))return false;
  return true;
 }
 function stable(value:unknown):unknown{
@@ -85,7 +86,7 @@ async function token(input:PreparedWorkspaceInput,connections:Connection[]){
   return registered.some(profile=>selectedDatasets.has(profile.dataset)&&(date===undefined||
    profile.dataset==='subscriptions'&&date<=subscriptionTo||operationalMetrics.has(profile.metric)||
    profile.dataset==='overview'&&inWindow(date,overviewFrom,input.filters.to)||
-   input.selection.trendDatasets?.includes(profile.dataset)&&inWindow(date,shiftDate(input.filters.to,-29),input.filters.to)||
+   input.selection.trendDatasets?.includes(profile.dataset)&&trendContextWindows(input.filters).some(([from,to])=>inWindow(date,from,to))||
    profile.dataset==='markets'&&inWindow(date,shiftDate(input.filters.from,-1),input.filters.to)||
    detailWindows.some(([from,to])=>inWindow(date,from,to))));
  };
@@ -101,7 +102,7 @@ async function token(input:PreparedWorkspaceInput,connections:Connection[]){
  // The Today shortcut is resolved to exact store dates before this call. It
  // changes navigation, not these analytics; share the hosted warmer's frame.
  const {period:_period,...resolvedFilters}=input.filters;
- return JSON.stringify(stable(['prepared-workspace-v5',organizationId,client,todayIn(client.timezone),resolvedFilters,[...new Set(input.preparedDatasets)].sort(),{...input.selection,datasets:[...new Set(input.selection.datasets)].sort(),dimensions:!!input.selection.dimensions,includePriorWeek:input.selection.includePriorWeek!==false},sources,selectedPointers,qualifications.filter(qualification=>relevantSources.has(qualification.sourceId)),partialKindCaveat]));
+ return JSON.stringify(stable(['prepared-workspace-v6',organizationId,client,todayIn(client.timezone),resolvedFilters,[...new Set(input.preparedDatasets)].sort(),{...input.selection,datasets:[...new Set(input.selection.datasets)].sort(),dimensions:!!input.selection.dimensions,includePriorWeek:input.selection.includePriorWeek!==false},sources,selectedPointers,qualifications.filter(qualification=>relevantSources.has(qualification.sourceId)),partialKindCaveat]));
 }
 async function digest(value:string){return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))),byte=>byte.toString(16).padStart(2,'0')).join('');}
 type DurableFrame={payload:string;payloadHash:string};

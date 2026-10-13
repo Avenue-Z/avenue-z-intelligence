@@ -79,3 +79,17 @@ it('requires the latest qualification to match both versions and every hourly me
  await store.saveQualification('o','kind-patches',sourceId,1,1,contract,'scheduler');await store.run('UPDATE connections SET version=2');expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(0);
  await store.run('UPDATE connections SET version=1');await store.run('UPDATE clients SET version=2');expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(0);
 });
+
+it('finishes only pending repairs whose qualified closed-day hourly capture already exists',async()=>{
+ const {store,sourceId,profile}=await setup(),date='2026-10-12';
+ await store.enqueue('o','kind-patches',sourceId,`hourly-history:${date}`,now.toISOString());
+ await pointer(store,sourceId,date,{...profile,start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'});
+ await planHistoricalHourlyJobs(store,scope,now);
+ expect(await store.first('SELECT status,attempts,error FROM jobs WHERE id=?',`o:${sourceId}:hourly-history:${date}`)).toEqual({status:'complete',attempts:0,error:null});
+});
+it('keeps a pending repair when the first captured fact does not match its qualified measurement',async()=>{
+ const {store,sourceId,profile}=await setup(),date='2026-10-12';
+ await store.enqueue('o','kind-patches',sourceId,`hourly-history:${date}`,now.toISOString());
+ await pointer(store,sourceId,date,{...profile,definition:'unregistered',start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'});
+ await planHistoricalHourlyJobs(store,scope,now);expect(await store.first('SELECT status FROM jobs WHERE id=?',`o:${sourceId}:hourly-history:${date}`)).toEqual({status:'pending'});
+});

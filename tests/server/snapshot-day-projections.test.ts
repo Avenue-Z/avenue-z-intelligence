@@ -127,3 +127,16 @@ it('preserves qualified Revenue context, stream filtering and exact comparisons 
  }
  expect(projected.queries.some(sql=>sql.includes('snapshot_day_projection_chunks'))).toBe(true);expect(rawReads(projected.queries)).toBeGreaterThan(0);
 });
+
+it('keeps a complete previous-day trend while retaining its separate matched hourly comparison',async()=>{
+ const {connect}=database(),store=new Store(connect()),client={...(clients[0] as Client),id:'a',timezone:'UTC'};
+ await store.run("INSERT INTO clients(id,organizationId,name,slug,timezone,currency,color,config) VALUES('a','o','A','a','UTC','USD','blue',?)",JSON.stringify(client.config));
+ await store.run("INSERT INTO connections(id,organizationId,clientId,name,provider,endpoint,secretRef,pollMinutes,enabled,version,coverageThrough) VALUES('source','o','a','Traffic','kind-shopify-traffic','','',60,1,1,'2026-10-12T01:00:00Z')");
+ const rows:Observation[]=['2026-10-11','2026-10-12'].flatMap(date=>[0,1].map(hour=>({...batch().rows[0],date,metric:'sessions',dataset:'traffic',currency:null,definition:'shopify_human_public_landing_page_traffic',population:'human_public_landing_page_sessions',value:hour?90:10,dimensions:{page:'/lp',market:'US',device:'mobile',source:'social',utm_source:'meta',utm_medium:'paid',utm_campaign:'c'},start:`${date}T0${hour}:00:00Z`,end:`${date}T0${hour+1}:00:00Z`})));
+ await store.persistBatch('o','source',{...batch(),rows,grain:'hourly',coverageThrough:'2026-10-12T02:00:00Z'},'full-and-matched','2026-10-12T03:00:00Z');
+ const filters:QueryFilters={from:'2026-10-12',to:'2026-10-12',mode:'partial',compare:'previous',view:'traffic',market:'',device:'',page:'',source:'',stream:''};
+ const observations=await store.observations('o','a',filters,false,undefined,{datasets:['traffic'],trendDatasets:['traffic'],includePriorWeek:false});
+ const result=queryClient(client,observations,await store.connections('o','a'),filters,{preparedDatasets:['traffic']});
+ expect(result.datasetSeries.traffic[0].summary.sessions).toBe(10);expect(result.comparisonDatasetSeries.traffic[0].summary.sessions).toBe(10);
+ expect(result.trendDatasetSeries.traffic.find(point=>point.date==='2026-10-11')?.summary.sessions).toBe(100);
+});

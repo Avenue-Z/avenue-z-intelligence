@@ -18,6 +18,7 @@ import {buildChatModelContext} from './chat-input';
 import {withAnalyticsMemory} from '../server/analytics-memory';
 import {chatDatasets} from './chat-scope';
 import {monthToDateSummary} from '../analytics/month-to-date';
+import {workspaceObservationSelection} from '../analytics/workspace-datasets';
 const reviewHistoryDatasets=['overview','subscriptions','subscriptionEvents','revenue','markets','media','orderStreams','renewalDiagnostics','orderHygiene'];
 const reviewDetailDatasets=['funnels','traffic','products','discounts','creatives','experiments'];
 export async function aiContext(clientId:string|undefined,filters:QueryFilters,reviewId?:string,existingScope?:AccessScope,sourceOnly=false,fastChat=false,question=''){
@@ -41,8 +42,9 @@ async function aiContextWithinBudget(clientId:string|undefined,filters:QueryFilt
   }
  }
  const records=await Promise.all(clients.map(async client=>{
+  const preparedDatasets=fastChat?chatDatasets(filters.view,question):undefined;
   const [rows,closedRows,connections,note,findings,allReviews]=await Promise.all([
-   s.observations(scope.organizationId,client.id,filters,false,undefined,fastChat?{datasets:chatDatasets(filters.view,question),dimensions:true,...filters.view==='revenue'?{trendDatasets:['revenue'],includeOperations:false}: {}}:sourceOnly?{datasets:[...reviewHistoryDatasets,...reviewDetailDatasets],includePriorWeek:false}:undefined),
+   s.observations(scope.organizationId,client.id,filters,false,undefined,fastChat?{...workspaceObservationSelection(preparedDatasets!),dimensions:true}:sourceOnly?{datasets:[...reviewHistoryDatasets,...reviewDetailDatasets],includePriorWeek:false}:undefined),
    fastChat?Promise.resolve([]):sourceOnly?Promise.all([
     s.observations(scope.organizationId,client.id,{...filters,from:[filters.to.slice(0,8)+'01',shiftDate(filters.to,-7)].sort()[0],mode:'closed',compare:'weekday'},false,undefined,{datasets:reviewHistoryDatasets,includePriorWeek:false}),
     s.observations(scope.organizationId,client.id,{...filters,from:filters.mode==='partial'?shiftDate(filters.to,-1):filters.to,to:filters.mode==='partial'?shiftDate(filters.to,-1):filters.to,mode:'closed',compare:'previous',compareFrom:undefined,compareTo:undefined},false,undefined,{datasets:reviewDetailDatasets,includePriorWeek:false})
@@ -55,7 +57,7 @@ async function aiContextWithinBudget(clientId:string|undefined,filters:QueryFilt
   const referenceRows=rows.filter(row=>row.dataset==='overview');
   const weekday=queryClient(client,referenceRows,connections,{...filters,view:'overview',compare:'weekday'},{preparedDatasets:['overview']}),previousDay=queryClient(client,referenceRows,connections,{...filters,view:'overview',compare:'previous'},{preparedDatasets:['overview']});
   const mtFrom=filters.to.slice(0,8)+'01',priorDate=Temporal.PlainDate.from(filters.to).subtract({months:1}).toString(),priorFrom=priorDate.slice(0,8)+'01';
-  const selected=queryClient(client,rows,connections,filters,fastChat&&filters.view==='revenue'?{preparedDatasets:['revenue']}:undefined);
+  const selected=queryClient(client,rows,connections,filters,fastChat?{preparedDatasets}:undefined);
   const mt=monthToDateSummary(client,monthRows,{...filters,from:mtFrom},selected.cutoff),priorMt=monthToDateSummary(client,monthRows,{...filters,from:priorFrom,to:priorDate},selected.cutoff);
   if(fastChat)selected.warnings.push(`This chat checked numeric detail for ${chatDatasets(filters.view,question).join(', ')}. Other datasets were not loaded for this question.`);
   return {...selected,note,findings,reviews:allReviews,

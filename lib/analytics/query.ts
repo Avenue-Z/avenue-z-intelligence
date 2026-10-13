@@ -9,6 +9,8 @@ import {preferredObservations} from './source-precedence';
 import {sanitizePage,sourceMarket} from '../sources/kind-patches';
 import {compatibleZeroDenominatorRates} from './rate-qualification';
 import {confirmedIntradayCutoff} from './intraday-coverage';
+import {trendContextRange} from './trend-context';
+import type {FunnelRollupObservation} from './funnel-rollup';
 export function filtered(rows:Observation[],f:Partial<QueryFilters>) {return rows.filter(r=>(!f.from||r.date>=f.from)&&(!f.to||r.date<=f.to)&&['market','stream','source','device','page'].every(k=>!(f as any)[k]||r.dimensions[k]===(f as any)[k]));}
 export function sumMetric(rows:Observation[],metric:string) {const r=rows.filter(x=>x.metric===metric);if(metric.endsWith('_rate')&&r.length>1)return null;if(new Set(r.map(x=>x.population)).size>1||new Set(r.map(x=>JSON.stringify(Object.keys(x.dimensions??{}).sort()))).size>1)return null;const seen=new Set<string>();for(const x of r){const key=JSON.stringify([x.date,x.start,x.end,Object.entries(x.dimensions??{}).sort()]);if(seen.has(key))return null;seen.add(key);}return compatibleTotal(r);}
 type MetricTotal=(metric:string)=>number|null;
@@ -43,6 +45,8 @@ function byDataset(rows:Observation[]){const groups=new Map<string,Observation[]
 export function queryClient(client:Client,all:Observation[],connections:Connection[],f:QueryFilters,options:{prepareAllViews?:boolean;preparedDatasets?:string[]}={}) {
   if(f.market){const market=sourceMarket(f.market);if(market!==f.market)f={...f,market};}
   const comparison=comparisonPeriod(f);
+  const fullDayContext=all.filter(row=>(row as FunnelRollupObservation).contextOnly);
+  all=all.filter(row=>!(row as FunnelRollupObservation).contextOnly);
   all=preferredObservations(all.map(r=>{if(!r.dimensions.page)return r;const page=sanitizePage(r.dimensions.page);return page===r.dimensions.page?r:{...r,dimensions:{...r.dimensions,page}};}),{timezone:client.timezone,partial:f.mode==='partial',partialDates:[f.to,comparison.to]});
   // Legacy country aliases must be normalized after authority selection:
   // overlapping same-grain observations remain visible to duplicate guards.
@@ -107,6 +111,18 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
     return result;
   }
   const datasetSeries=prepareSeries?qualifiedDailySeries(current,f.from,f.to,currentEnd):{},comparisonDatasetSeries=prepareSeries?qualifiedDailySeries(previous,comparison.from,comparison.to,previousEnd):{};
+  const trendRange=trendContextRange(f,'30d',comparison.from);
+  const contextDates=new Set(fullDayContext.map(row=>`${row.dataset}:${row.date}`));
+  const contextualEvidence:Observation[]=[...capable.filter(row=>!contextDates.has(`${row.dataset}:${row.date}`)),...preferredObservations(fullDayContext,{timezone:client.timezone}).map(row=>({...row,dimensions:{...row.dimensions,...row.dimensions.market?{market:sourceMarket(row.dimensions.market)}:{},...row.dimensions.page?{page:sanitizePage(row.dimensions.page)}:{}}}))];
+  const unsupportedContext=new Set(contextualEvidence.filter(row=>activeFilters.some(dimension=>row.dimensions[dimension]===undefined)).map(row=>`${row.date}:${row.dataset}:${row.metric}`));
+  const contextualRows=(from:string,to:string,lastEnd:number)=>filtered(contextualEvidence,{...f,from,to}).filter(row=>{
+    if(unsupportedContext.has(`${row.date}:${row.dataset}:${row.metric}`))return false;
+    if(f.mode==='closed')return row.date<today;
+    if(row.date<to)return !row.end||Date.parse(row.end)<=Date.parse(dayWindow(row.date,client.timezone).end);
+    return !!cutoff&&!!row.end&&Date.parse(row.end)<=lastEnd;
+  });
+  const trendDatasetSeries=prepareSeries?qualifiedDailySeries(contextualRows(trendRange.from,trendRange.to,currentEnd),trendRange.from,trendRange.to,currentEnd):{};
+  const trendComparisonDatasetSeries=prepareSeries?qualifiedDailySeries(contextualRows(trendRange.comparisonFrom,trendRange.comparisonTo,previousEnd),trendRange.comparisonFrom,trendRange.comparisonTo,previousEnd):{};
   const datasetHourlySeries=prepareSeries&&f.from===f.to?buildDatasetHourlySeries(current,f.to,client.timezone,dailyDatasets,new Date(currentEnd).toISOString()):{},comparisonDatasetHourlySeries=prepareSeries&&comparison.from===comparison.to?buildDatasetHourlySeries(previous,comparison.to,client.timezone,dailyDatasets,new Date(previousEnd).toISOString()):{};
   const historyClock=f.mode==='partial'&&cutoff?Temporal.Instant.from(cutoff).toZonedDateTimeISO(client.timezone).toPlainTime():null;
   const marketHistory=prepareSeries&&dailyDatasets.includes('markets')?filtered(capable,{...f,from:shiftDate(f.from,-1)}).filter(row=>{
@@ -126,6 +142,6 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
     return Date.parse(row.end)<=Number(end.epochMilliseconds);
   }):[];
   const datasetHistorySeries={...prepareSeries&&dailyDatasets.includes('markets')?buildDatasetSeries(marketHistory,shiftDate(f.from,-1),f.to,['markets']):{},...prepareSeries&&dailyDatasets.includes('revenue')?buildDatasetSeries(revenueHistory,shiftDate(f.to,-29),f.to,['revenue']):{}};
-  return {client,metrics,prior,comparison,verdict,series,datasetSeries,comparisonDatasetSeries,datasetHourlySeries,comparisonDatasetHourlySeries,datasetHistorySeries,details,actions,opportunities,views,preparedDatasets:[...new Set(datasets)],datasetMetrics:views[dataset]?.viewMetrics??summarize([]),activeIncidents,warnings,cutoff,availableDimensions,evidence:current,comparisonEvidence:previous,connections,selectedCount:current.length,liveOperations,subscriptions:subscriptionComparison(filtered(all,{...f,from:undefined,to:undefined}),f.to,client.config.incidents,f.mode==='partial'?{timezone:client.timezone,cutoff}:undefined)};
+  return {client,metrics,prior,comparison,verdict,series,datasetSeries,comparisonDatasetSeries,trendDatasetSeries,trendComparisonDatasetSeries,datasetHourlySeries,comparisonDatasetHourlySeries,datasetHistorySeries,details,actions,opportunities,views,preparedDatasets:[...new Set(datasets)],datasetMetrics:views[dataset]?.viewMetrics??summarize([]),activeIncidents,warnings,cutoff,availableDimensions,evidence:current,comparisonEvidence:previous,connections,selectedCount:current.length,liveOperations,subscriptions:subscriptionComparison(filtered(all,{...f,from:undefined,to:undefined}),f.to,client.config.incidents,f.mode==='partial'?{timezone:client.timezone,cutoff}:undefined)};
 }
 export type ClientAnalytics=ReturnType<typeof queryClient>;
