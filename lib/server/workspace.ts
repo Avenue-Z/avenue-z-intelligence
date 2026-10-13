@@ -21,10 +21,13 @@ export function parseFilters(p:URLSearchParams):QueryFilters {
  if(compare==='custom'){f.compareFrom=date('compareFrom',shiftDate(from,-(Math.round((Date.parse(to)-Date.parse(from))/86400000)+1)));if(p.get('compareTo'))f.compareTo=date('compareTo');const c=comparisonPeriod(f);f.compareTo=c.to;}return f;
 }
 export async function loadWorkspace(p:URLSearchParams):Promise<Awaited<ReturnType<typeof loadWorkspaceForScope>>>{
+ const started=Date.now();console.info('Workspace read phase',{phase:'access-start',drill:p.get('drill')==='traffic-page'});
  const scope=await requireClientAccess(p.get('clientId')||undefined);
+ console.info('Workspace read phase',{phase:'access-complete',ms:Date.now()-started});
  validateWorkspaceQuery(p);
  const remote=await bridgedWorkspace(scope,p);
- return remote??loadWorkspaceForScope(p,scope);
+ const result=remote??await loadWorkspaceForScope(p,scope);
+ console.info('Workspace read phase',{phase:'analytics-complete',ms:Date.now()-started});return result;
 }
 function validateWorkspaceQuery(p:URLSearchParams){
  const filters=parseFilters(p);
@@ -55,12 +58,14 @@ async function loadWorkspaceWithinBudget(p:URLSearchParams,scope:AccessScope){
   // The drawer renders this page's selected/comparison funnel only. Keep the
   // main workspace's thirty-day chart context outside this scoped drill read.
   const selection=pageDrill?{datasets:preparedDatasets,dimensions:true,includePriorWeek:false,includeOperations:false,trendDatasets:[]}:workspaceObservationSelection(preparedDatasets);
+  // Drawer consumers use only the scoped analytics frame. Avoid fetching the
+  // saved-review archive or operations that are not rendered in that drawer.
   const [frame,findings,reviews,note,lastJob]=await Promise.all([preparedWorkspaceFrame({store:s,organizationId:scope.organizationId,client,filters:clientFilters,preparedDatasets,selection},async(freshConnections,canonicalFilters)=>{
    const rows=await s.observations(scope.organizationId,client.id,canonicalFilters,false,undefined,selection);
    return workspacePresentation(queryClient(client,rows,freshConnections,canonicalFilters,{preparedDatasets}),canonicalFilters);
-  }),s.findings(scope.organizationId,client.id),s.reviews(scope.organizationId,client.id),s.note(scope.organizationId,client.id),s.first('SELECT storeDate,mode,status,completedAt,error FROM scheduled_reviews WHERE organizationId=? AND clientId=? ORDER BY dueAt DESC LIMIT 1',scope.organizationId,client.id)]);
+  }),pageDrill?Promise.resolve([]):s.findings(scope.organizationId,client.id),pageDrill?Promise.resolve([]):s.reviews(scope.organizationId,client.id),pageDrill?Promise.resolve({body:''}):s.note(scope.organizationId,client.id),pageDrill?Promise.resolve(null):s.first('SELECT storeDate,mode,status,completedAt,error FROM scheduled_reviews WHERE organizationId=? AND clientId=? ORDER BY dueAt DESC LIMIT 1',scope.organizationId,client.id)]);
   return {...frame,...({browserScopeKey:JSON.stringify([scope.organizationId,scope.actorId,scope.role,[...scope.permittedClientIds].sort()])} as {browserScopeKey?:string}),...({reviewsIndexOnly:!fullReviews} as {reviewsIndexOnly?:boolean}),findings,reviews:fullReviews?reviews:reviews.map(workspaceReviewIndex),note,scheduleState:{active:serverSecret('APP_SCHEDULER_ACTIVE')==='true',waitingForSources:!connections[i].some(c=>c.enabled),lastJob:lastJob??undefined}};
  }));
- return {scope,filters,...focusedClientId?{focusedClientId}:{},clients:all,reportingDateNote:reportingDate?`Latest available closed reporting day · ${reportingDate}`:null,jobs:(await s.jobs(scope.organizationId)).filter(j=>scope.permittedClientIds.includes(j.clientId)),loadedAt:new Date().toISOString()};
+ return {scope,filters,...focusedClientId?{focusedClientId}:{},clients:all,reportingDateNote:reportingDate?`Latest available closed reporting day · ${reportingDate}`:null,jobs:pageDrill?[]:(await s.jobs(scope.organizationId)).filter(j=>scope.permittedClientIds.includes(j.clientId)),loadedAt:new Date().toISOString()};
 }
 export type Workspace=Awaited<ReturnType<typeof loadWorkspaceForScope>>;
