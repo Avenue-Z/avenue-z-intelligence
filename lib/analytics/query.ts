@@ -59,6 +59,7 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
   const capable=all.filter(r=>!blocked.has(`${r.dataset}:${r.metric}`));
   let current=filtered(capable,f),previous=filtered(capable,comparison),peers=filtered(capable,{...f,market:''});
   let currentEnd=Date.parse(dayWindow(f.to,client.timezone).end),previousEnd=Date.parse(dayWindow(comparison.to,client.timezone).end);
+  const withinMatchedPeriod=(row:Observation,finalDate:string,matchedEnd:number)=>row.date<finalDate?(!row.end||Date.parse(row.end)<=Date.parse(dayWindow(row.date,client.timezone).end)):!!row.end&&Date.parse(row.end)<=matchedEnd;
   if(f.mode==='partial') {
     if(connections.some(c=>c.enabled&&c.provider?.startsWith('kind-')&&c.provider!=='kind-triple-whale'))warnings.push('Selected and comparison periods use the same confirmed store-hour cutoff. Platform-attributed reports and current operational snapshots retain their separate reporting populations and timestamps.');
     cutoff=confirmedIntradayCutoff(connections,f.view,client.timezone,f.to);
@@ -70,7 +71,6 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
       const priorDate=selectedEnd.toPlainDate().toString()>f.to?shiftDate(comparison.to,1):comparison.to;
       const priorEnd=Temporal.PlainDate.from(priorDate).toZonedDateTime({timeZone:client.timezone,plainTime:clock});
       currentEnd=Number(selectedEnd.epochMilliseconds);previousEnd=Number(priorEnd.epochMilliseconds);cutoff=selectedEnd.toInstant().toString();
-      const withinMatchedPeriod=(row:Observation,finalDate:string,matchedEnd:number)=>row.date<finalDate?(!row.end||Date.parse(row.end)<=Date.parse(dayWindow(row.date,client.timezone).end)):!!row.end&&Date.parse(row.end)<=matchedEnd;
       current=current.filter(row=>withinMatchedPeriod(row,f.to,currentEnd));previous=previous.filter(row=>withinMatchedPeriod(row,comparison.to,previousEnd));peers=peers.filter(row=>withinMatchedPeriod(row,f.to,currentEnd));
       if(!current.length)warnings.push('Daily aggregates cannot supply a same-hour comparison.');
     }
@@ -98,7 +98,11 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
   const details=views[dataset]?.details??[],actions=views[dataset]?.actions??[],opportunities=views[dataset]?.opportunities??[];
   const operationalIds=['active_customers','active_ads','active_creatives'];
   const liveOperations=operationalIds.flatMap(metric=>{const rows=all.filter(r=>r.metric===metric&&r.quality==='complete').sort((a,b)=>b.date.localeCompare(a.date)||b.retrievedAt.localeCompare(a.retrievedAt));return rows[0]?[rows[0]]:[];});
-  const dimensionRows=all.filter(row=>!operationalIds.includes(row.metric));
+  // Options describe the selected and comparison periods, not unrelated rows
+  // loaded for chart history. Ignore active dimension filters so another market
+  // remains selectable; preserve genuine historical groups on their own dates.
+  const inDimensionPeriod=(row:Observation,from:string,to:string,end:number)=>row.date>=from&&row.date<=to&&(f.mode==='partial'?cutoff!==null&&withinMatchedPeriod(row,to,end):row.date<today);
+  const dimensionRows=all.filter(row=>!operationalIds.includes(row.metric)&&(inDimensionPeriod(row,f.from,f.to,currentEnd)||inDimensionPeriod(row,comparison.from,comparison.to,previousEnd)));
   const availableDimensions=Object.fromEntries(['market','stream','source','device','page'].map(k=>[k,[...new Set(dimensionRows.flatMap(r=>r.dimensions[k]?[r.dimensions[k]]:[]))].sort()]));
   const dailyDatasetNames=['overview','funnels','traffic','revenue','markets','products','subscriptions','subscriptionEvents','media'],dailyDatasets=options.preparedDatasets?dailyDatasetNames.filter(name=>options.preparedDatasets!.includes(name)):dailyDatasetNames;
   const prepareSeries=options.prepareAllViews||options.preparedDatasets!==undefined;

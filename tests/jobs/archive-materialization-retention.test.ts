@@ -30,6 +30,31 @@ it('prunes only superseded materializations while preserving current facts, immu
  expect(await store.all('SELECT * FROM observations WHERE snapshotId=?',oldId)).toEqual([]);expect(await store.all('SELECT * FROM observations WHERE snapshotId=?',currentId)).toEqual(current);expect(await store.all('SELECT * FROM snapshots ORDER BY id')).toEqual(metadata);expect([...archives.entries()]).toEqual(archiveBefore);
  expect(await store.all('SELECT * FROM snapshot_day_projection_entries WHERE snapshotId=?',oldId)).toEqual([]);expect(await store.all('SELECT * FROM snapshot_day_projection_chunks WHERE snapshotId=?',oldId)).toEqual([]);expect(await store.first('SELECT COUNT(*) AS n FROM audit')).toEqual({n:2});
 });
+it('bounds payload protection scans before selecting a small maintenance batch',async()=>{
+ const sample=await store.first<{date:string;rowKey:string;payload:string}>('SELECT date,rowKey,payload FROM observations WHERE snapshotId=? LIMIT 1',oldId);
+ for(let index=0;index<100;index++){
+  const id=`unreferenced-${index}`;
+  await store.run("INSERT INTO snapshots SELECT ?,organizationId,clientId,sourceId,'2026-10-13T12:00:00Z',coverageThrough,complete,status,objectKey FROM snapshots WHERE id=?",id,oldId);
+  await store.run('INSERT INTO observations VALUES(?,?,?,?)',id,sample!.date,sample!.rowKey,sample!.payload);
+ }
+ await store.saveReview('o',client.id,'2026-10-13','unrelated',{evidence:'unrelated capture'},'2026-10-13T13:00:00Z');
+ let payloadChecks=0;sqlite.function('instr',(value,needle)=>{payloadChecks++;return String(value).indexOf(String(needle))+1;});
+ const result=await pruneArchivedMaterializations(store,scope,{...options(),maxSnapshots:1});
+ expect(result.rowsDeleted).toBe(3);expect(result.prunedSnapshots).toBe(1);expect(payloadChecks).toBeLessThan(80);
+ expect(await store.first('SELECT COUNT(*) AS n FROM observations WHERE snapshotId=?',currentId)).toEqual({n:3});
+});
+it('continues through protected candidate pages without starving a later recoverable capture',async()=>{
+ const sample=await store.first<{date:string;rowKey:string;payload:string}>('SELECT date,rowKey,payload FROM observations WHERE snapshotId=? LIMIT 1',oldId),protectedIds:string[]=[];
+ for(let index=0;index<22;index++){
+  const id=`review-protected-${index}`;protectedIds.push(id);
+  await store.run("INSERT INTO snapshots SELECT ?,organizationId,clientId,sourceId,'2026-10-13T09:00:00Z',coverageThrough,complete,status,objectKey FROM snapshots WHERE id=?",id,oldId);
+  await store.run('INSERT INTO observations VALUES(?,?,?,?)',id,sample!.date,sample!.rowKey,sample!.payload);
+ }
+ await store.saveReview('o',client.id,'2026-10-13','protected',{snapshotIds:protectedIds},'2026-10-13T13:00:00Z');
+ const read=vi.fn(reader),result=await pruneArchivedMaterializations(store,scope,{...options(),maxSnapshots:1,readArchive:read});
+ expect(result.rowsDeleted).toBe(3);expect(read).toHaveBeenCalledOnce();
+ expect(await store.first("SELECT COUNT(*) AS n FROM observations WHERE snapshotId LIKE 'review-protected-%'")).toEqual({n:22});
+});
 it('restores exactly the original values and retrieval provenance from the verified archive without moving the current pointer',async()=>{
  const facts=await store.all('SELECT * FROM observations WHERE snapshotId=? ORDER BY date,rowKey',oldId),metadata=await store.first('SELECT * FROM snapshots WHERE id=?',oldId),pointer=await store.all('SELECT * FROM current_snapshots');
  await pruneArchivedMaterializations(store,scope,options());await restoreArchivedMaterialization(store,scope,oldId,{readArchive:reader,deadline:Date.now()+60000});

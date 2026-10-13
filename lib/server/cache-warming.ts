@@ -38,6 +38,10 @@ export async function warmSuccessfulSourceJobs(store:Store,scope:AccessScope,job
   for(const filters of selections){
    const key=JSON.stringify(filters);if(seen.has(key))continue;seen.add(key);
    if(Date.now()+40000>=deadline)break;
+   // Current-hour publication owns database capacity. A separate cache cron
+   // can outlive the idle window in which it started, so recheck before every
+   // optional frame and let the next normal tick resume warming after ingestion.
+   if(native&&await store.first("SELECT j.id FROM jobs j JOIN connections c ON c.id=j.sourceId AND c.organizationId=j.organizationId AND c.clientId=j.clientId WHERE j.organizationId=? AND j.clientId=? AND c.enabled=1 AND j.id NOT LIKE '%:hourly-history:____-__-__' AND j.status IN ('pending','running') AND j.dueAt<=? LIMIT 1",scope.organizationId,client.id,new Date().toISOString()))break;
    result.attempted++;
    const selection=workspaceObservationSelection(filters.view);
    if(native){const preparedDatasets=workspaceDatasets(filters.view);await preparedWorkspaceFrame({store,organizationId:scope.organizationId,client,filters,preparedDatasets,selection,deadline},async(connections,canonicalFilters)=>{
