@@ -11,6 +11,7 @@ import {snapshotDayManifests,snapshotDayManifest,readSnapshotDayProjection,readS
 import {trendContextWindows} from '../analytics/trend-context';
 import {TrendRollupAccumulator} from '../analytics/trend-rollup';
 import {readTrendObservations} from './trend-observations';
+import {reviewIndexFields} from '../reviews/index';
 type Db={prepare:(sql:string)=>any;batch:(statements:any[])=>Promise<any[]>;allowCrossRequestCoalescing?:boolean};
 // Vercel reuses a warm adapter; Sites owns a fresh adapter per Store. This
 // optional memory cache stays isolated while the durable cache is shared.
@@ -277,7 +278,12 @@ export class Store {
   }
   async saveQualification(org:string,client:string,source:string,connectionVersion:number,clientVersion:number,payload:unknown,actor:string){await this.run('INSERT INTO qualifications(organizationId,clientId,sourceId,connectionVersion,clientVersion,version,payload,actorId,createdAt) SELECT ?,?,?,?,?,COALESCE(MAX(version),0)+1,?,?,? FROM qualifications WHERE organizationId=? AND sourceId=?',org,client,source,connectionVersion,clientVersion,JSON.stringify(payload),actor,new Date().toISOString(),org,source);}
   async qualification(org:string,source:string){const r=await this.first('SELECT * FROM qualifications WHERE organizationId=? AND sourceId=? ORDER BY version DESC LIMIT 1',org,source);return r?{...r,payload:JSON.parse(r.payload)}:null;}
-  async reviews(org:string,client:string):Promise<Review[]>{return (await this.all("SELECT id,organizationId,clientId,storeDate,revision,fingerprint,createdAt,current,json_remove(payload,'$.evidence') AS payload FROM reviews WHERE organizationId=? AND clientId=? ORDER BY storeDate DESC,revision DESC LIMIT 365",org,client)).map(r=>({...r,current:!!r.current,payload:JSON.parse(r.payload)}));}
+  async reviews(org:string,client:string,indexOnly=false):Promise<Review[]>{
+    // Normal dashboard tabs need summaries, never the full report sections.
+    // Project before transport while preserving missing keys and JSON types.
+    const payload=indexOnly?"(SELECT json_group_object(j.key,json(CASE j.type WHEN 'object' THEN j.value WHEN 'array' THEN j.value WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' ELSE json_quote(j.value) END)) FROM json_each(r.payload) j WHERE j.key IN (SELECT value FROM json_each(?)))":"json_remove(r.payload,'$.evidence')";
+    return (await this.all(`SELECT r.id,r.organizationId,r.clientId,r.storeDate,r.revision,r.fingerprint,r.createdAt,r.current,${payload} AS payload FROM reviews r WHERE r.organizationId=? AND r.clientId=? ORDER BY r.storeDate DESC,r.revision DESC LIMIT 365`,...indexOnly?[JSON.stringify(reviewIndexFields),org,client]:[org,client])).map(r=>({...r,current:!!r.current,payload:JSON.parse(r.payload)}));
+  }
   async findings(org:string,client:string):Promise<Finding[]>{
     const findings:Finding[]=(await this.all('SELECT * FROM findings WHERE organizationId=? AND clientId=? ORDER BY updatedAt DESC',org,client)).map(r=>({...JSON.parse(r.payload),id:r.id,clientId:r.clientId,version:r.version,updatedAt:r.updatedAt}));
     const checks=await this.all("SELECT r.id,r.storeDate,r.createdAt,a.value AS action FROM reviews r,json_each(r.payload,'$.actions') a WHERE r.organizationId=? AND r.clientId=? AND r.current=1 AND json_extract(r.payload,'$.type')='ai' AND json_extract(a.value,'$.existingFindingId') IS NOT NULL ORDER BY r.storeDate DESC,r.createdAt DESC",org,client);

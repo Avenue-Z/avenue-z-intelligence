@@ -31,6 +31,30 @@ it('ignores forged platform headers and rejects tampered app sessions',async()=>
 it('retains the SDK CSRF and secure-cookie protections',()=>{
  const config=standaloneAuthConfig();expect(config.skipCSRFCheck).toBeUndefined();expect(config.useSecureCookies).toBe(true);expect(config.session?.strategy).toBe('jwt');
 });
+it('routes provider-list and auth errors through the shared branded sign-in page',async()=>{
+ expect(standaloneAuthConfig().pages).toMatchObject({signIn:'/signin',error:'/signin'});
+ const response=await standaloneAuth(new Request('https://app.example/api/auth/signin?callbackUrl=%2Fclients%2Fkind-patches%3Fview%3Dtraffic'));
+ expect(response.status).toBe(302);const destination=new URL(response.headers.get('location')!,'https://app.example');
+ expect(destination.pathname).toBe('/signin');expect(destination.searchParams.get('callbackUrl')).toBe('https://app.example/clients/kind-patches?view=traffic');
+});
+it('rejects a direct Google sign-in POST without the SDK CSRF cookie',async()=>{
+ const response=await standaloneAuth(new Request('https://app.example/api/auth/signin/google',{method:'POST',headers:{origin:'https://app.example','content-type':'application/x-www-form-urlencoded','X-Auth-Return-Redirect':'1'},body:new URLSearchParams({csrfToken:'forged-token',callbackUrl:'/clients/kind-patches'})}));
+ const payload=await response.json() as {url:string};expect(payload.url).toContain('/signin?error=MissingCSRF');
+});
+it('starts Google OAuth directly with a valid SDK CSRF token and secure PKCE cookies',async()=>{
+ const csrfResponse=await standaloneAuth(new Request('https://app.example/api/auth/csrf'));
+ const {csrfToken}=await csrfResponse.json() as {csrfToken:string};
+ const cookie=csrfResponse.headers.getSetCookie().map(value=>value.split(';')[0]).join('; ');
+ const fetchMock=vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({issuer:'https://accounts.google.com',authorization_endpoint:'https://accounts.google.com/o/oauth2/v2/auth',token_endpoint:'https://oauth2.googleapis.com/token',jwks_uri:'https://www.googleapis.com/oauth2/v3/certs',userinfo_endpoint:'https://openidconnect.googleapis.com/v1/userinfo',response_types_supported:['code'],subject_types_supported:['public'],id_token_signing_alg_values_supported:['RS256']}));
+ try{
+  const response=await standaloneAuth(new Request('https://app.example/api/auth/signin/google',{method:'POST',headers:{origin:'https://app.example',cookie,'content-type':'application/x-www-form-urlencoded','X-Auth-Return-Redirect':'1'},body:new URLSearchParams({csrfToken,callbackUrl:'/clients/kind-patches?view=traffic'})}));
+  expect(response.status).toBe(200);const destination=new URL((await response.json() as {url:string}).url);
+  expect(destination.origin).toBe('https://accounts.google.com');expect(destination.pathname).toBe('/o/oauth2/v2/auth');expect(destination.searchParams.get('redirect_uri')).toBe('https://app.example/api/auth/callback/google');
+  expect(destination.searchParams.get('code_challenge_method')).toBe('S256');expect(destination.searchParams.get('code_challenge')).toBeTruthy();
+  expect(response.headers.getSetCookie().some(value=>value.includes('__Secure-authjs.pkce.code_verifier=')&&value.includes('HttpOnly')&&value.includes('Secure'))).toBe(true);
+  expect(response.headers.getSetCookie().some(value=>value.includes('authjs.callback-url=')&&decodeURIComponent(value).includes('/clients/kind-patches?view=traffic'))).toBe(true);
+ }finally{fetchMock.mockRestore();}
+});
 it('fails closed when company OAuth credentials are missing',()=>{
  delete state.env.AUTH_GOOGLE_SECRET;expect(()=>standaloneAuthConfig()).toThrow('Google application sign-in is not configured');
 });

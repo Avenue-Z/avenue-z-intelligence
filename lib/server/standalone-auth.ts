@@ -47,6 +47,7 @@ export function standaloneAuthConfig():AuthConfig{
  if(!clientId||!clientSecret)throw new Error('Google application sign-in is not configured');
  return {
   basePath:'/api/auth',secret:key,trustHost:true,useSecureCookies:base.startsWith('https:'),
+  pages:{signIn:'/signin',error:'/signin'},
   providers:[Google({clientId,clientSecret,authorization:{params:{scope:'openid email profile',...(domainPolicy?{hd:domainPolicy.domain}:{})}}})],
   session:{strategy:'jwt',maxAge:8*60*60},
   callbacks:{

@@ -13,6 +13,7 @@ type Frame=Omit<Presentation,'connections'>;
 const codecVersion='gzip-frame-v3',maximumExpandedBytes=4*1024*1024,maximumCompressedCharacters=512*1024;
 export type PreparedWorkspaceInput={
  store:Store;organizationId:string;client:Client;filters:QueryFilters;preparedDatasets:string[];
+ freshConnections?:Connection[];
  selection:{datasets:string[];dimensions?:boolean;includePriorWeek?:boolean;includeOperations?:boolean;trendDatasets?:string[]};
  deadline?:number;
 };
@@ -21,6 +22,11 @@ export type PreparedWorkspaceInput={
 const cache=new QueryCache<string>({ttlMs:180000,maxEntries:32,maxBytes:16*1024*1024,maxEntryBytes:1024*1024,coalesce:true},{encode:value=>value,decode:value=>value});
 const databaseNamespaces=new WeakMap<Store['db'],number>();let nextDatabaseNamespace=0;
 function databaseNamespace(db:Store['db']){let namespace=databaseNamespaces.get(db);if(namespace===undefined){namespace=++nextDatabaseNamespace;databaseNamespaces.set(db,namespace);}return namespace;}
+// These aliases retain only bounded existing cache keys, never another frame.
+// Recovery is allowed after current authorization, source configuration and
+// qualifications have been read successfully for this exact analytics scope.
+const lastGoodFrames=new Map<string,string>();
+function transientDatabaseFailure(error:unknown):boolean{return error instanceof Error&&(error.name==='TimeoutError'||error.message.includes('Database request timed out')||transientDatabaseFailure(error.cause));}
 // Deliberately enumerate the analytics contract. A caller's workspace fields,
 // browser scope, member records and private notes cannot enter the cache.
 const frameFields=['client','metrics','prior','comparison','verdict','series','datasetSeries','comparisonDatasetSeries','trendDatasetSeries','trendComparisonDatasetSeries','datasetHourlySeries','comparisonDatasetHourlySeries','datasetHistorySeries','details','actions','opportunities','views','preparedDatasets','datasetMetrics','activeIncidents','warnings','cutoff','availableDimensions','evidence','comparisonEvidence','selectedCount','liveOperations','subscriptions','viewMetrics','experimentDetails','comparisonViews','qualifiedPageAlerts','trafficExplorer','sourceQuality','efficiencyEvidence'] as const satisfies readonly (keyof Frame)[];
@@ -61,12 +67,13 @@ function stable(value:unknown):unknown{
  if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).sort(([a],[b])=>a.localeCompare(b)).map(([key,item])=>[key,stable(item)]));
  return value;
 }
-async function token(input:PreparedWorkspaceInput,connections:Connection[]){
+async function token(input:PreparedWorkspaceInput,connections:Connection[],configuration?:(key:string)=>void){
  const {store,organizationId,client}=input;
- const [pointers,qualifications]=await Promise.all([
-  store.all<{sourceId:string;snapshotId:string;date:string}>("SELECT c.sourceId,c.snapshotId,c.date FROM current_snapshots c JOIN snapshots s ON s.id=c.snapshotId AND s.organizationId=c.organizationId AND s.clientId=c.clientId WHERE c.organizationId=? AND c.clientId=? AND s.status='ready' ORDER BY c.sourceId,c.date,c.snapshotId",organizationId,client.id),
-  store.all<{sourceId:string;connectionVersion:number;clientVersion:number;version:number;profiles:string|null}>("SELECT sourceId,connectionVersion,clientVersion,version,json_extract(payload,'$.profiles') AS profiles FROM qualifications WHERE organizationId=? AND clientId=? ORDER BY sourceId,version",organizationId,client.id)
- ]);
+ const pointerRead=store.all<{sourceId:string;snapshotId:string;date:string}>("SELECT c.sourceId,c.snapshotId,c.date FROM current_snapshots c JOIN snapshots s ON s.id=c.snapshotId AND s.organizationId=c.organizationId AND s.clientId=c.clientId WHERE c.organizationId=? AND c.clientId=? AND s.status='ready' ORDER BY c.sourceId,c.date,c.snapshotId",organizationId,client.id).then(value=>({value}),error=>({error}));
+ const qualifications=await store.all<{sourceId:string;connectionVersion:number;clientVersion:number;version:number;profiles:string|null}>("SELECT sourceId,connectionVersion,clientVersion,version,json_extract(payload,'$.profiles') AS profiles FROM qualifications WHERE organizationId=? AND clientId=? ORDER BY sourceId,version",organizationId,client.id);
+ const {period:_shortcut,...fixedFilters}=input.filters;
+ configuration?.(JSON.stringify(stable([databaseNamespace(store.db),organizationId,client,todayIn(client.timezone),fixedFilters,[...new Set(input.preparedDatasets)].sort(),input.selection,connections.map(source=>[source.id,source.version,source.provider,source.enabled]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))),qualifications])));
+ const captured=await pointerRead;if('error' in captured)throw captured.error;const pointers=captured.value;
  // Match Store.observations' union of historical source contracts. An unknown
  // or incomplete qualification stays conservative rather than hiding data.
  const profiles=new Map<string,{dataset:string;metric:string}[]|null>();
@@ -110,7 +117,7 @@ function checkBudget(input:PreparedWorkspaceInput){if(input.deadline!==undefined
 async function durableFrame(input:PreparedWorkspaceInput,cacheKey:string):Promise<{payload:string;frame:Frame}|null>{
  let saved:DurableFrame|null=null;
  try{checkBudget(input);saved=await input.store.first<DurableFrame>('SELECT payload,payloadHash FROM prepared_workspace_cache WHERE organizationId=? AND clientId=? AND cacheKey=? AND codecVersion=? AND expiresAt>?',input.organizationId,input.client.id,cacheKey,codecVersion,Date.now());checkBudget(input);}
- catch{checkBudget(input);return null;}
+ catch(error){checkBudget(input);if(transientDatabaseFailure(error))throw error;return null;}
  if(!saved)return null;
  try{if(typeof saved.payload!=='string'||saved.payload.length>maximumCompressedCharacters||await digest(saved.payload)!==saved.payloadHash)throw Error('Invalid prepared cache integrity');return {payload:saved.payload,frame:await decodeFrame(saved.payload,input)};}
  catch{try{await input.store.run('DELETE FROM prepared_workspace_cache WHERE organizationId=? AND clientId=? AND cacheKey=? AND payloadHash=?',input.organizationId,input.client.id,cacheKey,saved.payloadHash);}catch{/* Optional derived-cache repair. */}return null;}
@@ -129,6 +136,11 @@ async function publishFrame(input:PreparedWorkspaceInput,cacheKey:string,payload
 class UncachedFrame extends Error {constructor(public payload:string){super('Prepared frame source metadata changed');}}
 class UncachedValue extends Error {constructor(public frame:Frame){super('Prepared frame encoding unavailable');}}
 class CanonicalFailure extends Error {constructor(public cause:unknown){super('Canonical analytics computation failed');}}
+async function lastGoodFrame(input:PreparedWorkspaceInput,configurationKey:string|undefined,connections:Connection[]):Promise<Presentation|null>{
+ if(input.deadline!==undefined||!configurationKey)return null;const key=lastGoodFrames.get(configurationKey);if(!key)return null;
+ try{const payload=await cache.getEncoded(key,async()=>{throw Error('Saved frame expired');});return {...await decodeFrame(payload,input),connections};}
+ catch{lastGoodFrames.delete(configurationKey);return null;}
+}
 
 /** Call only after authorizing this client. The shared frame contains no user
  * context; callers attach current scope/findings/reviews/notes independently.
@@ -137,7 +149,7 @@ class CanonicalFailure extends Error {constructor(public cause:unknown){super('C
  */
 export async function preparedWorkspaceFrame(input:PreparedWorkspaceInput,load:(freshConnections:Connection[],canonicalFilters:QueryFilters)=>Promise<Presentation>):Promise<Presentation>{
  checkBudget(input);
- const connections=await input.store.connections(input.organizationId,input.client.id);
+ const connections=input.freshConnections??await input.store.connections(input.organizationId,input.client.id);
  const canonical=()=>{
   // Small financial/market frames must not queue behind a monthly traffic
   // warmer. Only dimensional detail needs the large-allocation memory lease.
@@ -152,8 +164,10 @@ export async function preparedWorkspaceFrame(input:PreparedWorkspaceInput,load:(
   return Promise.race([work,new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(Error('Prepared frame warm budget elapsed')),Math.max(0,input.deadline!-Date.now()));})]).finally(()=>clearTimeout(timer));
  };
  if(runtimePlatform!=='vercel')return canonical();
+ let configurationKey:string|undefined;
+ const prepare=async()=>{
  let sourceToken:string,cacheKey:string;
- try{sourceToken=await token(input,connections);cacheKey=await digest(sourceToken);}catch{checkBudget(input);return canonical();}
+ try{sourceToken=await token(input,connections,key=>{configurationKey=key;});cacheKey=await digest(sourceToken);}catch(error){checkBudget(input);if(transientDatabaseFailure(error)){const saved=await lastGoodFrame(input,configurationKey,connections);if(saved)return saved;}return canonical();}
  // Dedicated warming deadlines cannot cancel a foreground caller that joined
  // the same miss. Both namespaces share the ready durable frame after publish.
  const key=`${databaseNamespace(input.store.db)}:${input.deadline===undefined?'request':'warm'}:${cacheKey}`;
@@ -171,8 +185,12 @@ export async function preparedWorkspaceFrame(input:PreparedWorkspaceInput,load:(
    await publishFrame(input,cacheKey,payload);
    return payload;
   });
-  return {...decoded??await decodeFrame(payload,input),connections};
+  const frame={...decoded??await decodeFrame(payload,input),connections};
+  if(configurationKey){lastGoodFrames.delete(configurationKey);while(lastGoodFrames.size>=32){const oldest=lastGoodFrames.keys().next().value;if(oldest===undefined)break;lastGoodFrames.delete(oldest);}lastGoodFrames.set(configurationKey,key);}
+  return frame;
  }catch(error){
+  const failure=error instanceof CanonicalFailure?error.cause:error;
+  if(transientDatabaseFailure(failure)){const saved=await lastGoodFrame(input,configurationKey,connections);if(saved)return saved;}
   if(error instanceof CanonicalFailure)throw error.cause;
   if(error instanceof UncachedFrame)return {...await decodeFrame(error.payload,input),connections};
   if(error instanceof UncachedValue)return {...structuredClone(error.frame),connections};
@@ -182,4 +200,11 @@ export async function preparedWorkspaceFrame(input:PreparedWorkspaceInput,load:(
   if(started)throw error;
   return canonical();
  }
+ };
+ const work=prepare();if(input.deadline!==undefined)return work;
+ let timer:ReturnType<typeof setTimeout>;
+ const recovery=new Promise<Presentation>(resolve=>{timer=setTimeout(()=>{void lastGoodFrame(input,configurationKey,connections).then(saved=>{if(saved){console.warn('Prepared workspace reused validated saved frame',{reason:'foreground-deadline'});resolve(saved);}});},8000);});
+ // The one existing computation may finish and warm the frame afterwards.
+ // A slow optional metadata/cache read must never start a second full rebuild.
+ return Promise.race([work,recovery]).finally(()=>clearTimeout(timer));
 }

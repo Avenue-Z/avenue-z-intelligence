@@ -4,6 +4,7 @@ import {it,expect} from 'vitest';
 import { Store } from '../../lib/server/store';
 import {buildAlertQueue} from '../../lib/analytics/alerts';
 import {queryClient} from '../../lib/analytics/query';
+import {workspaceReviewIndex} from '../../lib/reviews/index';
 function database(){const sqlite=new DatabaseSync(':memory:');for(const f of readdirSync('drizzle').filter(f=>f.endsWith('.sql')&&!f.startsWith('0008_')))sqlite.exec(readFileSync(`drizzle/${f}`,'utf8'));
  const prepare=(sql:string)=>{let values:unknown[]=[];const api={bind(...v:unknown[]){values=v;return api;},async all(){return {results:sqlite.prepare(sql).all(...values as any[])};},async first(){return sqlite.prepare(sql).get(...values as any[])??null;},async run(){const r=sqlite.prepare(sql).run(...values as any[]);return {meta:{changes:Number(r.changes)}};}};return api;};let queue=Promise.resolve();return {prepare,batch(stmts:any[]){const work=queue.then(async()=>{sqlite.exec('BEGIN');try{const out=[];for(const s of stmts)out.push(await s.run());sqlite.exec('COMMIT');return out;}catch(e){sqlite.exec('ROLLBACK');throw e;}});queue=work.catch(()=>{}) as Promise<void>;return work;}} as any;}
 it('persists shared notes and rejects stale versions',async()=>{const store=new Store(database());await store.saveNote('a','client','hello','u',0);expect((await store.note('a','client')).body).toBe('hello');await expect(store.saveNote('a','client','lost','v',0)).rejects.toThrow('Changed');});
@@ -41,6 +42,17 @@ it('retries transient jobs with backoff and then stops',async()=>{const store=ne
 it('publishes content reversions without letting an earlier replay overwrite them',async()=>{const s=new Store(database());const batch={clientId:'a',timezone:'UTC',currency:'USD',channels:[],dimensions:[],grain:'daily',complete:true,coverageThrough:null,rows:[{date:'2026-10-07',metric:'revenue',value:42,definition:'web',currency:'USD',dimensions:{},dataset:'overview'}]} as any;await s.persistBatch('o','src',batch,'a','2026-10-08T00:00:00Z');await s.persistBatch('o','src',{...batch,rows:[{...batch.rows[0],value:50}]},'b','2026-10-08T01:00:00Z');await s.persistBatch('o','src',batch,'a','2026-10-08T02:00:00Z');expect((await s.observations('o','a'))[0].value).toBe(42);await s.persistBatch('o','src',{...batch,rows:[{...batch.rows[0],value:50}]},'b','2026-10-08T01:00:00Z');expect((await s.observations('o','a'))[0].value).toBe(42);});
 it('preserves batch incompleteness despite a complete row claim',async()=>{const s=new Store(database());await s.persistBatch('o','src',{clientId:'a',complete:false,coverageThrough:null,rows:[{date:'2026-10-07',metric:'revenue',value:42,definition:'web',currency:'USD',dimensions:{},dataset:'overview',quality:'complete'}]} as any,'a','2026-10-08T00:00:00Z');expect((await s.observations('o','a'))[0].quality).toBe('partial');});
 it('republishes later review content reversions as revisions',async()=>{const s=new Store(database());await s.saveReview('o','a','2026-10-07','a',{revenue:10},'2026-10-08T00:00:00Z');await s.saveReview('o','a','2026-10-07','b',{revenue:20},'2026-10-08T01:00:00Z');await s.saveReview('o','a','2026-10-07','a',{revenue:10},'2026-10-08T02:00:00Z');const reviews=await s.reviews('o','a');expect(reviews).toHaveLength(3);expect(reviews.find(r=>r.current)?.payload.revenue).toBe(10);});
+it('reads the exact review index without transferring report bodies or changing JSON value types',async()=>{
+ const s=new Store(database()),payload={type:'ai',title:'Today',headlines:['Revenue improved'],summary:{verdict:'Hold'},actions:[{detail:'Review spend'}],presentationCorrection:false,sourceUrl:null,sections:[{body:'x'.repeat(100000)}],evidence:{private:'source facts'},unknown:'omit'};
+ await s.saveReview('o','a','2026-10-07','first',payload,'2026-10-08T00:00:00Z');
+ await s.saveReview('o','a','2026-10-07','second',{...payload,title:'Corrected'},'2026-10-08T01:00:00Z');
+ await s.saveReview('other','a','2026-10-07','hidden',{title:'Other organization'},'2026-10-08T00:00:00Z');
+ const full=await s.reviews('o','a'),index=await s.reviews('o','a',true);
+ expect(index).toEqual(full.map(workspaceReviewIndex));expect(index).toHaveLength(2);
+ expect(index[0].payload.presentationCorrection).toBe(false);expect(index[0].payload).toHaveProperty('sourceUrl',null);
+ expect(index[0].payload).not.toHaveProperty('model');expect(index[0].payload).not.toHaveProperty('sections');expect(index[0].payload).not.toHaveProperty('unknown');
+ expect(JSON.stringify(index).length).toBeLessThan(2000);expect(full[0].payload.sections).toEqual(payload.sections);
+});
 
 it('tracks a qualified conversion once and keeps it resolved after closing',async()=>{
  const s=new Store(database()),f={from:'2026-10-07',to:'2026-10-07',mode:'closed',compare:'previous',view:'overview',market:'',stream:'',source:'',device:'',page:''} as const;

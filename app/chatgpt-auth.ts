@@ -52,7 +52,7 @@ export async function requireChatGPTUser(
 
 export function chatGPTSignInPath(returnTo: string): string {
   const safeReturnTo = safeRelativeReturnPath(returnTo);
-  if(runtimePlatform==='vercel')return `/api/auth/signin?callbackUrl=${encodeURIComponent(safeReturnTo)}`;
+  if(runtimePlatform==='vercel')return `/signin?callbackUrl=${encodeURIComponent(safeReturnTo)}`;
   return `${SIGN_IN_PATH}?return_to=${encodeURIComponent(safeReturnTo)}`;
 }
 
@@ -78,10 +78,14 @@ function safeRelativeReturnPath(value: string): string {
 }
 
 function isReservedAuthPath(pathname: string): boolean {
+  const route=pathname.replace(/\/+$/,'')||'/';
   return (
-    pathname === SIGN_IN_PATH ||
-    pathname === SIGN_OUT_PATH ||
-    pathname === CALLBACK_PATH
+    route === SIGN_IN_PATH ||
+    route === SIGN_OUT_PATH ||
+    route === CALLBACK_PATH ||
+    route === '/signin' ||
+    route === '/api/auth' ||
+    route.startsWith('/api/auth/')
   );
 }
 

@@ -29,6 +29,36 @@ function addPointer(sqlite:DatabaseSync,sourceId:string,date:string,key:string){
  sqlite.prepare('INSERT INTO current_snapshots(organizationId,clientId,sourceId,date,snapshotId) VALUES(?,?,?,?,?) ON CONFLICT(organizationId,clientId,sourceId,date) DO UPDATE SET snapshotId=excluded.snapshotId').run('o','a',sourceId,date,key);
 }
 function canonicalLoad(input:PreparedWorkspaceInput){return vi.fn(async(connections:Connection[])=>workspacePresentation(queryClient(input.client,await input.store.observations(input.organizationId,input.client.id,input.filters,false,undefined,input.selection),connections,input.filters,{preparedDatasets:input.preparedDatasets}),input.filters));}
+it('reuses the last validated exact frame promptly when pointer metadata stalls after fresh source qualification',async()=>{
+ const {store,input,load}=fixture();const first=await preparedWorkspaceFrame(input,load),all=store.all.bind(store);
+ store.all=async(sql,...args)=>sql.startsWith('SELECT c.sourceId,c.snapshotId,c.date')?new Promise(()=>{}):all(sql,...args);
+ vi.useFakeTimers();const work=preparedWorkspaceFrame(input,load);await vi.advanceTimersByTimeAsync(8001);
+ expect(await work).toEqual(first);expect(load).toHaveBeenCalledTimes(1);
+});
+it('never falls back across another date, filter, client configuration or source qualification',async()=>{
+ for(const changed of ['date','filter','config','qualification']){
+  const {sqlite,store,input,load}=fixture();await preparedWorkspaceFrame(input,load);
+  if(changed==='date')input.filters={...input.filters,from:'2026-10-12',to:'2026-10-12'};
+  if(changed==='filter')input.filters={...input.filters,market:'US'};
+  if(changed==='config')input.client={...input.client,version:(input.client.version??0)+1};
+  if(changed==='qualification')await store.saveQualification('o','a','source',1,1,{profiles:[{dataset:'traffic',metric:'sessions'}]},'admin');
+  const all=store.all.bind(store);store.all=async(sql,...args)=>{if(sql.startsWith('SELECT c.sourceId,c.snapshotId,c.date'))throw new DOMException('Database request timed out','TimeoutError');return all(sql,...args);};
+  load.mockImplementation(async()=>{throw new DOMException('Database request timed out','TimeoutError');});
+  await expect(preparedWorkspaceFrame(input,load)).rejects.toMatchObject({name:'TimeoutError'});
+ }
+});
+it('does not rebuild canonical analytics when an exact cached frame exists and a derived-cache read times out',async()=>{
+ const {sqlite,store,input,load}=fixture();const first=await preparedWorkspaceFrame(input,load);
+ addPointer(sqlite,'source','2026-10-11','new-pointer');const read=store.first.bind(store);
+ store.first=async(sql,...args)=>{if(sql.startsWith('SELECT payload,payloadHash FROM prepared_workspace_cache'))throw new DOMException('Database request timed out','TimeoutError');return read(sql,...args);};
+ expect(await preparedWorkspaceFrame(input,load)).toEqual(first);expect(load).toHaveBeenCalledTimes(1);
+});
+it('does not reuse a last validated frame after its bounded cache lifetime expires',async()=>{
+ const {store,input,load}=fixture();await preparedWorkspaceFrame(input,load);vi.useFakeTimers();await vi.advanceTimersByTimeAsync(180001);
+ const all=store.all.bind(store);store.all=async(sql,...args)=>{if(sql.startsWith('SELECT c.sourceId,c.snapshotId,c.date'))throw new DOMException('Database request timed out','TimeoutError');return all(sql,...args);};
+ load.mockImplementation(async()=>{throw new DOMException('Database request timed out','TimeoutError');});
+ await expect(preparedWorkspaceFrame(input,load)).rejects.toMatchObject({name:'TimeoutError'});
+});
 it('uses the hosted warmer frame for a resolved Today shortcut and still isolates another date',async()=>{
  const {input,load}=fixture();input.filters={...input.filters,from:'2026-10-13',to:'2026-10-13',mode:'partial'};
  await preparedWorkspaceFrame(input,load);
