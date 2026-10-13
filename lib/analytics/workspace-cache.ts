@@ -13,6 +13,7 @@ export function selectWorkspaceView(workspace:Workspace,view:string,focusedClien
  const clients:Workspace['clients']=[];
  for(const record of workspace.clients){
   if(focusedClientId&&record.client.id!==focusedClientId){clients.push(record);continue;}
+  if(view==='reviews'&&record.reviewsIndexOnly)return null;
   if(workspace.filters.mode==='partial'&&view!==workspace.filters.view){const nextCutoff=confirmedIntradayCutoff(record.connections,view,record.client.timezone,workspace.filters.to);if(!nextCutoff||nextCutoff!==record.cutoff)return null;}
   const prepared=record.preparedDatasets??[previousDataset,...Object.keys(record.views??{})];
   if(!required(view,!!focusedClientId).every(name=>prepared.includes(name)))return null;

@@ -11,6 +11,7 @@ import {bridgedWorkspace} from './company-workspace-bridge';
 import {authorize} from './policy';
 import {preparedWorkspaceFrame} from './prepared-workspace-cache';
 import {workspaceDatasets,workspaceObservationSelection} from '../analytics/workspace-datasets';
+import {workspaceReviewIndex} from '../reviews/index';
 export {workspaceDatasets} from '../analytics/workspace-datasets';
 export function workspaceSearchParams(input:Record<string,string|string[]|undefined>){const p=new URLSearchParams();for(const [key,value]of Object.entries(input))if(value!==undefined)p.set(key,Array.isArray(value)?value[0]:value);return p;}
 export function parseFilters(p:URLSearchParams):QueryFilters {
@@ -48,6 +49,7 @@ async function loadWorkspaceWithinBudget(p:URLSearchParams,scope:AccessScope){
   reportingDate=initialReportingDate(p,history.map((rows,i)=>({rows,connections:connections[i]})),filters.to);if(reportingDate){filters.from=reportingDate;filters.to=reportingDate;}
  }
  const all=await Promise.all(clients.map(async(client,i)=>{
+  const fullReviews=p.get('section')==='reviews'||filters.view==='reviews'&&focusedClientId===client.id;
   const clientFilters=filters.period==='today'?{...filters,from:todayIn(client.timezone),to:todayIn(client.timezone)}:filters;
   const preparedDatasets=focusedClientId?(client.id===focusedClientId?workspaceDatasets(filters.view):['overview']):['overview','subscriptions','subscriptionEvents'];
   const selection={...workspaceObservationSelection(preparedDatasets),...(p.get('drill')==='traffic-page'&&client.id===focusedClientId?{dimensions:true}:{})};
@@ -55,7 +57,7 @@ async function loadWorkspaceWithinBudget(p:URLSearchParams,scope:AccessScope){
    const rows=await s.observations(scope.organizationId,client.id,clientFilters,false,undefined,selection);
    return workspacePresentation(queryClient(client,rows,freshConnections,clientFilters,{preparedDatasets}),clientFilters);
   }),s.findings(scope.organizationId,client.id),s.reviews(scope.organizationId,client.id),s.note(scope.organizationId,client.id),s.first('SELECT storeDate,mode,status,completedAt,error FROM scheduled_reviews WHERE organizationId=? AND clientId=? ORDER BY dueAt DESC LIMIT 1',scope.organizationId,client.id)]);
-  return {...frame,...({browserScopeKey:JSON.stringify([scope.organizationId,scope.actorId,scope.role,[...scope.permittedClientIds].sort()])} as {browserScopeKey?:string}),findings,reviews,note,scheduleState:{active:serverSecret('APP_SCHEDULER_ACTIVE')==='true',waitingForSources:!connections[i].some(c=>c.enabled),lastJob:lastJob??undefined}};
+  return {...frame,...({browserScopeKey:JSON.stringify([scope.organizationId,scope.actorId,scope.role,[...scope.permittedClientIds].sort()])} as {browserScopeKey?:string}),...({reviewsIndexOnly:!fullReviews} as {reviewsIndexOnly?:boolean}),findings,reviews:fullReviews?reviews:reviews.map(workspaceReviewIndex),note,scheduleState:{active:serverSecret('APP_SCHEDULER_ACTIVE')==='true',waitingForSources:!connections[i].some(c=>c.enabled),lastJob:lastJob??undefined}};
  }));
  return {scope,filters,...focusedClientId?{focusedClientId}:{},clients:all,reportingDateNote:reportingDate?`Latest available closed reporting day · ${reportingDate}`:null,jobs:(await s.jobs(scope.organizationId)).filter(j=>scope.permittedClientIds.includes(j.clientId)),loadedAt:new Date().toISOString()};
 }

@@ -5,6 +5,7 @@ import {datasetSeries,datasetHourlySeries} from '../../lib/analytics/dataset-ser
 import {comparisonPeriod} from '../../lib/analytics/windows';
 import {parseFilters} from '../../lib/server/workspace';
 import type {Observation,QueryFilters} from '../../lib/analytics/contracts';
+import type {FunnelRollupObservation} from '../../lib/analytics/funnel-rollup';
 const row=(date:string,metric:string,value:number,population='human'):Observation=>({date,dataset:'traffic',metric,value,population,definition:'public_human',currency:null,dimensions:{source:'meta'},sourceId:'s',retrievedAt:'2026-10-12T12:00:00Z',coverageThrough:'2026-10-12T12:00:00Z',quality:'complete'});
 it('keeps missing calendar dates as gaps and calculates rates from matching daily counts',()=>{const result=datasetSeries([row('2026-10-09','sessions',100),row('2026-10-09','converting_sessions',5),row('2026-10-11','sessions',400),row('2026-10-11','converting_sessions',40)],'2026-10-09','2026-10-11',['traffic']).traffic;expect(result.map(x=>x.date)).toEqual(['2026-10-09','2026-10-10','2026-10-11']);expect(result[0].summary.cvr).toBe(.05);expect(result[1].summary.sessions).toBeNull();expect(result[2].summary.cvr).toBe(.1);});
 it('does not combine distinct populations or average independently reported rates',()=>{const result=datasetSeries([row('2026-10-09','sessions',100),row('2026-10-09','converting_sessions',50,'other')],'2026-10-09','2026-10-09',['traffic']);expect(result.traffic[0].summary.cvr).toBeNull();});
@@ -20,4 +21,10 @@ it('preserves the 25 real intervals of a fall-back day and does not label a dail
  const input={...row('2026-11-01','revenue',10),dataset:'revenue',start:'2026-11-01T04:00:00Z',end:'2026-11-01T05:00:00Z'};
  expect(datasetHourlySeries([input],'2026-11-01','America/New_York',['revenue']).revenue).toHaveLength(25);
  expect(datasetHourlySeries([{...input,end:'2026-11-02T05:00:00Z'}],'2026-11-01','America/New_York',['revenue']).revenue).toEqual([]);
+});
+it.each(['traffic','funnels'] as const)('never infers hourly %s totals from collapsed one-hour and multihour page groups',dataset=>{
+ const oneHour:FunnelRollupObservation={...row('2026-10-11','sessions',20),dataset,start:'2026-10-11T00:00:00Z',end:'2026-10-11T01:00:00Z',aggregation:dataset==='traffic'?'hourly_public_page_traffic_rollup':'hourly_public_page_funnel_rollup',contributionCount:1};
+ const severalHours:FunnelRollupObservation={...oneHour,value:90,end:'2026-10-11T03:00:00Z',dimensions:{source:'tiktok'},contributionCount:3};
+ expect(datasetHourlySeries([oneHour,severalHours],'2026-10-11','UTC',[dataset],'2026-10-11T03:00:00Z')[dataset]).toEqual([]);
+ expect(datasetSeries([oneHour,severalHours],'2026-10-11','2026-10-11',[dataset])[dataset][0].summary.sessions).toBe(110);
 });

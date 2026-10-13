@@ -23,6 +23,11 @@ it('switches to an unvisited tab immediately with its metrics and immutable orig
  expect(navigation.selectWorkspaceView(next,'overview')!.clients[0].viewMetrics.revenue).toBe(100);
  expect(navigation.selectWorkspaceView(next,'funnels')!.clients[0].viewMetrics.cvr).toBe(.02);
 });
+it('requires full review documents before projecting an analytics index into the Reviews view',()=>{
+ const initial=workspace();initial.clients[0].reviewsIndexOnly=true;
+ expect(navigation.selectWorkspaceView(initial,'reviews')).toBeNull();
+ initial.clients[0].reviewsIndexOnly=false;expect(navigation.selectWorkspaceView(initial,'reviews')).not.toBeNull();
+});
 
 it('reuses the exact filter selection across views while refusing every changed data filter',()=>{
  const cache=new navigation.WorkspaceCache(workspace());

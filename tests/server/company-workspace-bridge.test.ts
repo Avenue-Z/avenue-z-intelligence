@@ -37,7 +37,11 @@ it('forwards only the exact safe workspace size-limit message and hides arbitrar
 });
 it('returns a bounded error before an oversized authorized workspace reaches the hosting response limit',async()=>{
  await getStore().saveReview('avenue-z',clients[0].id,'2026-10-11','large-report',{type:'historical',text:'x'.repeat(4*1024*1024)},new Date().toISOString());
- const response=await post(request());expect(response.status).toBe(413);expect(new TextEncoder().encode(await response.clone().text()).byteLength).toBeLessThan(1024);expect(await response.json()).toEqual({error:'This selection has too much detail. Choose a shorter period or a specific landing page.'});
+ // Analytics sends only the review index. The full Reviews view must still
+ // enforce the transport limit before returning the oversized report body.
+ expect((await post(request())).status).toBe(200);
+ const fullReviewQuery=new URLSearchParams(query());fullReviewQuery.set('view','reviews');
+ const response=await post(request({query:fullReviewQuery.toString()}));expect(response.status).toBe(413);expect(new TextEncoder().encode(await response.clone().text()).byteLength).toBeLessThan(1024);expect(await response.json()).toEqual({error:'This selection has too much detail. Choose a shorter period or a specific landing page.'});
 });
 beforeEach(async()=>{state.platform='vercel';for(const key of Object.keys(state.env))delete state.env[key];db=createClient({url:'file::memory:'});for(const file of readdirSync('drizzle').filter(f=>f.endsWith('.sql')))await db.executeMultiple(readFileSync(`drizzle/${file}`,'utf8'));Object.assign(state.env,{DB:sqliteBindings(db),APP_ORGANIZATION_ID:'avenue-z',COMPANY_WORKSPACE_SECRET:secret});const s=getStore();await s.run('INSERT INTO members VALUES(?,?,?,?,?)','avenue-z','analyst@example.com','sites:analyst','analyst',JSON.stringify([clients[0].id]));for(const c of clients)await s.run('INSERT INTO clients VALUES(?,?,?,?,?,?,?,?,1)',c.id,'avenue-z',c.name,c.slug,c.timezone,c.currency,c.color,JSON.stringify(c.config));state.identity.mockResolvedValue({userId:'sites:analyst'});state.model.mockReset();state.model.mockResolvedValue({answer:'No evidence in this window',sourceIds:['selection:kind-patches'],followUps:[],caveats:[]});});
 afterEach(()=>{db.close();vi.unstubAllGlobals();});
