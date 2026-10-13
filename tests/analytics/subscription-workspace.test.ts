@@ -28,4 +28,5 @@ it('shows actual calendar-date events separately and exposes comparison and char
  expect(html).toContain('value="custom"');
  expect(html).toContain('aria-label="Cancellation &amp; refund trends chart type"');
  expect(html).toContain('Europe/Stockholm calendar dates');
+ expect(html).toContain('<option value="bar" selected="">Bar chart</option>');
 });

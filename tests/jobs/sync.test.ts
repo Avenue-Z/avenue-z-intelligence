@@ -34,3 +34,11 @@ it('stops before claiming another job when the first job consumes the remaining 
  expect((await runSyncBatch(scope,{maxJobs:7,deadline:started+31000})).failed).toHaveLength(1);
  expect(await store.first("SELECT status,attempts,error,leaseUntil FROM jobs WHERE id='o:source:second'")).toEqual({status:'pending',attempts:0,error:null,leaseUntil:null});
 });
+it('does not claim a large hourly Meta report with a short remaining runtime budget',async()=>{
+ const store=state.store!;await store.run("UPDATE connections SET provider='kind-meta-performance'");const claim=vi.spyOn(store,'claim');
+ expect(await runSyncBatch(scope,{maxJobs:7,deadline:Date.now()+119999})).toEqual({completed:[],failed:[]});expect(claim).not.toHaveBeenCalled();expect(await store.first('SELECT status,attempts,error FROM jobs')).toEqual({status:'pending',attempts:0,error:null});
+});
+it('reserves enough runtime for a full paginated hourly Traffic capture',async()=>{
+ const store=state.store!;await store.run("UPDATE connections SET provider='kind-shopify-traffic'");const claim=vi.spyOn(store,'claim');
+ expect(await runSyncBatch(scope,{maxJobs:7,deadline:Date.now()+89999})).toEqual({completed:[],failed:[]});expect(claim).not.toHaveBeenCalled();
+});

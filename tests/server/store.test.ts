@@ -28,6 +28,11 @@ it('adds dated daily rechecks without overwriting a teammate’s owner, status o
  const f=(await s.findings('o','a'))[0];expect(f).toMatchObject({detail:'Original review evidence',owner:'Sarah',status:'investigating',version:1,latestCheck:{storeDate:'2026-10-12',detail:'Conversion recovered today'}});expect((await s.findings('other','a'))).toEqual([]);
 });
 it('claims a job once and recovers an expired lease',async()=>{const store=new Store(database());await store.enqueue('o','a','src','bucket','2026-10-08T00:00:00Z');const a=await store.claim('2026-10-08T00:01:00Z','o');expect(a).not.toBeNull();expect(await store.claim('2026-10-08T00:01:30Z','o')).toBeNull();expect(await store.claim('2026-10-08T00:10:00Z','o')).not.toBeNull();});
+it('prioritizes current refreshes over history and retains the lease for a large capture',async()=>{
+ const s=new Store(database());await s.enqueue('o','a','src','hourly-history:2026-10-07','2026-10-08T00:00:00Z');await s.enqueue('o','a','src','current','2026-10-08T00:01:00Z');
+ const job=await s.claim('2026-10-08T00:02:00Z','o',['a'],900000);expect(job.id).toBe('o:src:current');expect(job.leaseUntil).toBe('2026-10-08T00:17:00.000Z');
+ const historic=await s.claim('2026-10-08T00:08:00Z','o',['a'],900000);expect(historic.id).toContain('hourly-history');expect(await s.claim('2026-10-08T00:09:00Z','o',['a'],900000)).toBeNull();
+});
 it('does not claim another organization’s jobs',async()=>{const store=new Store(database());await store.enqueue('outside','a','src','bucket','2026-10-08T00:00:00Z');expect(await store.claim('2026-10-08T00:01:00Z','inside')).toBeNull();});
 it('does not claim another permitted organization’s unassigned client',async()=>{const store=new Store(database());await store.enqueue('o','beam','src','bucket','2026-10-08T00:00:00Z');expect(await store.claim('2026-10-08T00:01:00Z','o',['kind'])).toBeNull();});
 it('concurrent replay leaves the current review pointer intact',async()=>{const store=new Store(database());await Promise.all([store.saveReview('o','a','2026-10-07','same',{revenue:10},'now'),store.saveReview('o','a','2026-10-07','same',{revenue:10},'now')]);expect((await store.reviews('o','a')).filter(r=>r.current)).toHaveLength(1);});

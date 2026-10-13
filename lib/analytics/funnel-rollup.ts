@@ -1,8 +1,9 @@
 import {Temporal} from '@js-temporal/polyfill';
 import type {Observation} from './contracts';
-export type FunnelRollupOptions={timezone:string;cutoffClock?:string};
-export type FunnelRollupObservation=Observation&{aggregation?:'hourly_public_page_funnel_rollup';contributionCount?:number};
+export type FunnelRollupOptions={timezone:string;cutoffClock?:string;cutoffDates?:ReadonlySet<string>};
+export type FunnelRollupObservation=Observation&{aggregation?:'hourly_public_page_funnel_rollup'|'hourly_public_page_traffic_rollup';contributionCount?:number};
 const metrics=new Set(['sessions','atc_sessions','checkouts','converting_sessions','completed_checkouts']);
+const trafficDimensions=['page','market','device','source','utm_source','utm_medium','utm_campaign'];
 type Interval={start:number;end:number};
 
 /** Read-time compaction of an already reconciled, sparse public-page export.
@@ -43,12 +44,14 @@ export class FunnelRollupAccumulator {
  }
  add(row:Observation){
   const dimensions=Object.keys(row.dimensions??{});
-  const known=this.enabled&&row.quality==='complete'&&row.dataset==='funnels'&&row.definition==='shopify_human_public_landing_pages'&&row.population==='human_public_landing_page_sessions'&&metrics.has(row.metric)&&!!row.sourceId&&!!row.start&&!!row.end&&!!row.coverageThrough&&dimensions.length===2&&typeof row.dimensions.page==='string'&&typeof row.dimensions.market==='string'&&(row.value===null||(Number.isSafeInteger(row.value)&&row.value>=0))&&row.numerator===undefined&&row.denominator===undefined&&!(row as FunnelRollupObservation).aggregation;
+  const publicFunnels=row.dataset==='funnels'&&row.definition==='shopify_human_public_landing_pages'&&dimensions.length===2&&typeof row.dimensions.page==='string'&&typeof row.dimensions.market==='string';
+  const publicTraffic=row.dataset==='traffic'&&row.definition==='shopify_human_public_landing_page_traffic'&&dimensions.length===trafficDimensions.length&&trafficDimensions.every(d=>typeof row.dimensions[d]==='string');
+  const known=this.enabled&&row.quality==='complete'&&(publicFunnels||publicTraffic)&&row.population==='human_public_landing_page_sessions'&&metrics.has(row.metric)&&!!row.sourceId&&!!row.start&&!!row.end&&!!row.coverageThrough&&(row.value===null||(Number.isSafeInteger(row.value)&&row.value>=0))&&row.numerator===undefined&&row.denominator===undefined&&!(row as FunnelRollupObservation).aggregation;
   if(!known){this.rows.push(row);return;}
   const interval=this.interval(row);
   if(!interval||!Number.isFinite(Date.parse(row.coverageThrough!))||Date.parse(row.coverageThrough!)<interval.end){this.rows.push(row);return;}
-  if(this.clock){const cutoff=this.cutoff(row.date);if(cutoff===null){this.rows.push(row);return;}if(interval.end>cutoff)return;}
-  const key=JSON.stringify([row.sourceId,row.date,row.metric,Object.entries(row.dimensions).sort(),row.definition,row.population,row.currency,row.quality,row.coverageThrough,[...(row.channels??[])].sort()]);
+  if(this.clock&&(!this.options.cutoffDates||this.options.cutoffDates.has(row.date))){const cutoff=this.cutoff(row.date);if(cutoff===null){this.rows.push(row);return;}if(interval.end>cutoff)return;}
+  const key=JSON.stringify([row.sourceId,row.dataset,row.date,row.metric,Object.entries(row.dimensions).sort(),row.definition,row.population,row.currency,row.quality,row.coverageThrough,[...(row.channels??[])].sort()]);
   const existing=this.groups.get(key);
   if(existing){
    const value=existing.value===null||row.value===null?null:existing.value+row.value;
@@ -58,7 +61,7 @@ export class FunnelRollupAccumulator {
    if(interval.end>Date.parse(existing.end!))existing.end=row.end;
    if(Date.parse(row.retrievedAt)>Date.parse(existing.retrievedAt))existing.retrievedAt=row.retrievedAt;
   }else{
-   const aggregate:FunnelRollupObservation={...row,dimensions:{...row.dimensions},...row.channels?{channels:[...row.channels]}:{},aggregation:'hourly_public_page_funnel_rollup',contributionCount:1};
+   const aggregate:FunnelRollupObservation={...row,dimensions:{...row.dimensions},...row.channels?{channels:[...row.channels]}:{},aggregation:publicTraffic?'hourly_public_page_traffic_rollup':'hourly_public_page_funnel_rollup',contributionCount:1};
    this.groups.set(key,aggregate);this.rows.push(aggregate);
   }
  }

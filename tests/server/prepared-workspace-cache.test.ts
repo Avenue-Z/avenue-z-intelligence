@@ -95,6 +95,13 @@ it('preserves the full compact Traffic geometry, dataset charts, qualified marke
  const expected=await load(await input.store.connections('o','a'));load.mockClear();
  expect(await preparedWorkspaceFrame(input,load)).toEqual(expected);expect(await preparedWorkspaceFrame(input,load)).toEqual(expected);expect(load).toHaveBeenCalledTimes(1);expect(expected.trafficExplorer).toBeDefined();expect(expected.datasetSeries.traffic).toHaveLength(2);
 });
+it('preserves actual hourly sales and unknown intervals through independently decoded cached frames',async()=>{
+ const {input}=fixture();input.filters={...input.filters,from:'2026-10-11',to:'2026-10-11',view:'revenue',mode:'partial'};input.preparedDatasets=['revenue'];input.selection={datasets:['revenue'],includePriorWeek:false};
+ const rows:Observation[]=['2026-10-10','2026-10-11'].flatMap(date=>['revenue','orders'].map(metric=>({date,dataset:'revenue',metric,value:metric==='revenue'?80:4,population:'shopify_sales',definition:'net_sales',currency:metric==='revenue'?'USD':null,dimensions:{stream:'Online Store'},sourceId:'source',retrievedAt:'2026-10-12T00:00:00Z',coverageThrough:'2026-10-12T00:00:00Z',quality:'complete',start:new Date(Date.parse(`${date}T00:00:00Z`)-7200000).toISOString(),end:new Date(Date.parse(`${date}T00:00:00Z`)-3600000).toISOString()})));
+ const load=vi.fn(async(connections:Connection[])=>workspacePresentation(queryClient(input.client,rows,connections,input.filters,{preparedDatasets:input.preparedDatasets}),input.filters));
+ const first=await preparedWorkspaceFrame(input,load);expect(first.datasetHourlySeries.revenue).toHaveLength(2);expect(first.datasetHourlySeries.revenue[0].metrics.revenue).toBe(80);expect(first.datasetHourlySeries.revenue[1].summary.revenue).toBeNull();expect(first.comparisonDatasetHourlySeries.revenue[0].metrics.orders).toBe(4);
+ first.datasetHourlySeries.revenue[0].metrics.revenue=999;const second=await preparedWorkspaceFrame(input,load);expect(second.datasetHourlySeries.revenue[0].metrics.revenue).toBe(80);expect(load).toHaveBeenCalledTimes(1);
+});
 it('keeps organization, client and database namespaces isolated and ignores foreign pointer metadata',async()=>{
  const a=fixture(),b=fixture();await preparedWorkspaceFrame(a.input,a.load);await preparedWorkspaceFrame(b.input,b.load);expect(b.load).toHaveBeenCalledTimes(1);
  await preparedWorkspaceFrame({...a.input,organizationId:'outside'},a.load);await preparedWorkspaceFrame({...a.input,client:{...a.input.client,id:'other'}},a.load);expect(a.load).toHaveBeenCalledTimes(3);

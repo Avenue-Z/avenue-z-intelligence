@@ -1,6 +1,7 @@
 import type {AccessScope,QueryFilters} from './contracts';
 import type {Workspace} from '../server/workspace';
 import {workspaceDatasets} from './workspace-datasets';
+import {confirmedIntradayCutoff} from './intraday-coverage';
 
 const dataset=(view:string)=>view==='overview'?'funnels':view;
 const required=(view:string,focused:boolean)=>view==='overview'&&!focused?['overview']:workspaceDatasets(view);
@@ -12,6 +13,7 @@ export function selectWorkspaceView(workspace:Workspace,view:string,focusedClien
  const clients:Workspace['clients']=[];
  for(const record of workspace.clients){
   if(focusedClientId&&record.client.id!==focusedClientId){clients.push(record);continue;}
+  if(workspace.filters.mode==='partial'&&view!==workspace.filters.view){const nextCutoff=confirmedIntradayCutoff(record.connections,view,record.client.timezone,workspace.filters.to);if(!nextCutoff||nextCutoff!==record.cutoff)return null;}
   const prepared=record.preparedDatasets??[previousDataset,...Object.keys(record.views??{})];
   if(!required(view,!!focusedClientId).every(name=>prepared.includes(name)))return null;
   if(view===workspace.filters.view){clients.push(record);continue;}
@@ -26,7 +28,7 @@ export function selectWorkspaceView(workspace:Workspace,view:string,focusedClien
 }
 
 const scopeKey=(scope:AccessScope)=>JSON.stringify([scope.organizationId,scope.actorId,scope.role,[...scope.permittedClientIds].sort()]);
-const filterKey=(filters:QueryFilters)=>JSON.stringify([filters.from,filters.to,filters.compare,filters.compareFrom??null,filters.compareTo??null,filters.mode,filters.market,filters.stream,filters.source,filters.device,filters.page]);
+const filterKey=(filters:QueryFilters)=>JSON.stringify(['hourly-workspace-v1',filters.from,filters.to,filters.period??null,filters.compare,filters.compareFrom??null,filters.compareTo??null,filters.mode,filters.market,filters.stream,filters.source,filters.device,filters.page]);
 
 /** Page-memory cache. Never survives a logout, navigation or browser session. */
 export class WorkspaceCache{

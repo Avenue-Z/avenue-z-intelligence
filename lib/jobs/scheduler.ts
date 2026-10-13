@@ -17,8 +17,8 @@ export function dueReview(client:Client,now=new Date(),includePreviousSlot=false
 }
 export class DailyScheduler {
  constructor(private store:Store){}
- async acquire(id:string,now:string){
-  const token=crypto.randomUUID(),until=new Date(Date.parse(now)+360000).toISOString();
+ async acquire(id:string,now:string,durationMs=360000){
+  const token=crypto.randomUUID(),until=new Date(Date.parse(now)+durationMs).toISOString();
   const r=await this.store.run('INSERT INTO runner_leases(id,token,leaseUntil) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET token=excluded.token,leaseUntil=excluded.leaseUntil WHERE runner_leases.leaseUntil<=?',id,token,until,now);
   return r.meta.changes?token:null;
  }

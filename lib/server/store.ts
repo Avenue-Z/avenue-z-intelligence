@@ -2,6 +2,7 @@ import type {Client,Connection,Observation,SourceBatch,Review,Finding,QueryFilte
 import {shiftDate,dayWindow,matchedCutoff,comparisonPeriod,todayIn} from '../analytics/windows';
 import {preferredObservations} from '../analytics/source-precedence';
 import {FunnelRollupAccumulator} from '../analytics/funnel-rollup';
+import {intradayConnections} from '../analytics/intraday-coverage';
 import {Temporal} from '@js-temporal/polyfill';
 import {QueryCache} from './query-cache';
 import {observationCodec} from './observation-codec';
@@ -94,19 +95,19 @@ export class Store {
     const freshOperationalPointers=operationalPointers.filter(pointer=>pointer.date===latestOperationalDates.get(pointer.sourceId));
     const pointers=selectedPointers.filter(pointer=>!operationalSources.has(pointer.sourceId));
     let cutoffClock:string|undefined;
-    if(clientRow&&filters?.mode==='partial'){const contributing=sources.filter(c=>c.enabled&&(!c.provider||c.provider==='gateway'||c.provider==='kind-triple-whale'||c.provider==='kind-shopify-hourly')),coverage=contributing.map(c=>c.coverageThrough),known=contributing.length>0&&coverage.every((x):x is string=>!!x&&Date.parse(x)>=Date.parse(dayWindow(filters.to,clientRow.timezone).start));const cutoff=known?matchedCutoff(coverage as string[],clientRow.timezone):null;if(cutoff)cutoffClock=Temporal.Instant.from(cutoff).toZonedDateTimeISO(clientRow.timezone).toPlainTime().toString();}
+    if(clientRow&&filters?.mode==='partial'){const contributing=intradayConnections(sources,filters.view),coverage=contributing.map(c=>c.coverageThrough),known=contributing.length>0&&coverage.every((x):x is string=>!!x&&Date.parse(x)>=Date.parse(dayWindow(filters.to,clientRow.timezone).start));const cutoff=known?matchedCutoff(coverage as string[],clientRow.timezone):null;if(cutoff)cutoffClock=Temporal.Instant.from(cutoff).toZonedDateTimeISO(clientRow.timezone).toPlainTime().toString();}
     // Observation loading deliberately retains every dataset/dimension for
     // queryClient's unsupported-filter checks, peers and navigation. View and
     // dimension selections therefore share rows, while load-affecting filters
     // and fresh metadata are part of the key. Published pointers invalidate
     // across refreshes, including refreshes performed by another instance.
     const version=pointers.map(p=>[p.sourceId,p.snapshotId,p.date]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
-    const key=JSON.stringify(['chart-series-v3',org,client,filters?[filters.from,filters.to,filters.compare,filters.compareFrom??null,filters.compareTo??null,filters.mode]:null,headlinesOnly,clientRow?.timezone??null,cutoffClock??null,...selection?[{datasets:selectedDatasets,dimensions:!!selection.dimensions,includePriorWeek:selection.includePriorWeek!==false,trendDatasets:[...trendDatasets].sort(),filters:dimensionSelection}]:[],version]);
+    const key=JSON.stringify(['chart-series-v4',org,client,filters?[filters.from,filters.to,filters.compare,filters.compareFrom??null,filters.compareTo??null,filters.mode]:null,headlinesOnly,clientRow?.timezone??null,cutoffClock??null,...selection?[{datasets:selectedDatasets,dimensions:!!selection.dimensions,includePriorWeek:selection.includePriorWeek!==false,trendDatasets:[...trendDatasets].sort(),filters:dimensionSelection}]:[],version]);
     const load=()=>durableObservationPayload(this.db,org,client,key,async()=>{
     checkBudget();
     // Missing partial coverage must retain raw hourly rows so queryClient can
     // decline the comparison; it must never turn a full day into a partial day.
-    const accumulator=clientRow&&(!filters||filters.mode==='closed'||cutoffClock)?new FunnelRollupAccumulator({timezone:clientRow.timezone,cutoffClock}):null;
+    const accumulator=clientRow&&(!filters||filters.mode==='closed'||cutoffClock)?new FunnelRollupAccumulator({timezone:clientRow.timezone,cutoffClock,...filters?.mode==='partial'?{cutoffDates:new Set([filters.to,comparisonPeriod(filters).to,shiftDate(filters.to,-7)])}:{}}):null;
     const rows:Observation[]=[];
     const addRow=(row:Observation)=>{if(accumulator)accumulator.add(row);else rows.push(row);};
     const add=(page:{payload:string}[])=>{for(const r of page)addRow(JSON.parse(r.payload));};
@@ -209,7 +210,12 @@ export class Store {
     // A replay can need a previously retained day after a later correction.
     // First-wins inserts preserve existing rows and the snapshot's original
     // retrieval metadata while materializing only those now-required dates.
-    const writeRows=rows.filter(row=>!retained.has(row.date));
+    // A ready immutable capture already contains these facts. Check existence
+    // by snapshot/date instead of replaying tens of thousands of INSERT OR
+    // IGNORE statements. A previously retained, unmaterialized date can still
+    // be restored after a later source correction.
+    const materialized=new Set<string>(ready?(await this.all<{date:string}>("SELECT value AS date FROM json_each(?) d WHERE EXISTS (SELECT 1 FROM observations o WHERE o.snapshotId=? AND o.date=d.value LIMIT 1)",JSON.stringify(dates),id)).map(value=>value.date):[]);
+    const writeRows=rows.filter(row=>!retained.has(row.date)&&!materialized.has(row.date));
     for(let n=0;n<writeRows.length;n+=2000){const inserts=[];for(let start=n;start<Math.min(n+2000,writeRows.length);start+=500){const values=writeRows.slice(start,start+500).map(r=>({date:r.date,rowKey:JSON.stringify([r.dataset,r.metric,r.start,r.end,Object.entries(r.dimensions).sort()]),payload:JSON.stringify(r)}));inserts.push(this.db.prepare("INSERT INTO observations(snapshotId,date,rowKey,payload) SELECT ?,json_extract(value,'$.date'),json_extract(value,'$.rowKey'),json_extract(value,'$.payload') FROM json_each(?) WHERE 1 ON CONFLICT DO NOTHING").bind(id,JSON.stringify(values)));}await this.db.batch(inserts);}
     const pointers=[];
     for(const date of dates){const {dataHash,coveredThrough}=dayHashes.get(date)!;
@@ -266,7 +272,7 @@ export class Store {
     else r=await this.run('UPDATE findings SET payload=?,version=version+1,updatedAt=? WHERE id=? AND organizationId=? AND clientId=? AND version=?',payload,now,id,org,client,expected);
     if(!r.meta.changes)throw new Error('Changed by another teammate');await this.audit(org,client,actor,'finding.updated',input);return id;}
   async enqueue(org:string,client:string,source:string,bucket:string,now:string){await this.run('INSERT INTO jobs(id,organizationId,clientId,sourceId,status,attempts,dueAt) VALUES(?,?,?,?,?,0,?) ON CONFLICT DO NOTHING',`${org}:${source}:${bucket}`,org,client,source,'pending',now);}
-  async claim(now:string,org:string,permittedClientIds?:string[]){if(permittedClientIds?.length===0)return null;const clause=permittedClientIds?' AND clientId IN ('+permittedClientIds.map(()=>'?').join(',')+')':'';const r=await this.first(`SELECT * FROM jobs WHERE organizationId=?${clause} AND ((status='pending' AND dueAt<=?) OR (status='running' AND leaseUntil<?)) ORDER BY dueAt LIMIT 1`,org,...permittedClientIds??[],now,now);if(!r)return null;const leaseUntil=new Date(Date.parse(now)+300000).toISOString();const result=await this.run(`UPDATE jobs SET status='running',leaseUntil=?,attempts=attempts+1 WHERE id=? AND organizationId=? AND ((status='pending' AND dueAt<=?) OR (status='running' AND leaseUntil<?))`,leaseUntil,r.id,org,now,now);return result.meta.changes?{...r,leaseUntil,attempts:r.attempts+1}:null;}
+  async claim(now:string,org:string,permittedClientIds?:string[],leaseMs=300000){if(permittedClientIds?.length===0)return null;const clause=permittedClientIds?' AND clientId IN ('+permittedClientIds.map(()=>'?').join(',')+')':'';const r=await this.first(`SELECT * FROM jobs WHERE organizationId=?${clause} AND ((status='pending' AND dueAt<=?) OR (status='running' AND leaseUntil<?)) ORDER BY CASE WHEN id LIKE '%:hourly-history:____-__-__' THEN 1 ELSE 0 END,dueAt LIMIT 1`,org,...permittedClientIds??[],now,now);if(!r)return null;const leaseUntil=new Date(Date.parse(now)+leaseMs).toISOString();const result=await this.run(`UPDATE jobs SET status='running',leaseUntil=?,attempts=attempts+1 WHERE id=? AND organizationId=? AND ((status='pending' AND dueAt<=?) OR (status='running' AND leaseUntil<?))`,leaseUntil,r.id,org,now,now);return result.meta.changes?{...r,leaseUntil,attempts:r.attempts+1}:null;}
   async retry(id:string,attempts:number,error:string,now:string){const dueAt=new Date(Date.parse(now)+Math.min(30,2**attempts)*60000).toISOString();await this.run('UPDATE jobs SET status=?,dueAt=?,error=?,leaseUntil=NULL WHERE id=?',attempts>=3?'failed':'pending',dueAt,error,id);}
   async finish(id:string,error?:string){await this.run('UPDATE jobs SET status=?,error=?,leaseUntil=NULL WHERE id=?',error?'failed':'complete',error??null,id);}
   async jobs(org:string){return this.all('SELECT * FROM jobs WHERE organizationId=? ORDER BY dueAt DESC LIMIT 30',org);}

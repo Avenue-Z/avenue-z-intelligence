@@ -5,10 +5,11 @@ import {todayIn,shiftDate,comparisonPeriod} from '../analytics/windows';
 import {withAnalyticsMemory} from './analytics-memory';
 import {QueryCache} from './query-cache';
 import type {Store} from './store';
+import {intradayConnections} from '../analytics/intraday-coverage';
 
 type Presentation=ReturnType<typeof workspacePresentation>;
 type Frame=Omit<Presentation,'connections'>;
-const codecVersion='gzip-frame-v2',maximumExpandedBytes=4*1024*1024,maximumCompressedCharacters=512*1024;
+const codecVersion='gzip-frame-v3',maximumExpandedBytes=4*1024*1024,maximumCompressedCharacters=512*1024;
 export type PreparedWorkspaceInput={
  store:Store;organizationId:string;client:Client;filters:QueryFilters;preparedDatasets:string[];
  selection:{datasets:string[];dimensions?:boolean;includePriorWeek?:boolean;includeOperations?:boolean;trendDatasets?:string[]};
@@ -21,7 +22,7 @@ const databaseNamespaces=new WeakMap<Store['db'],number>();let nextDatabaseNames
 function databaseNamespace(db:Store['db']){let namespace=databaseNamespaces.get(db);if(namespace===undefined){namespace=++nextDatabaseNamespace;databaseNamespaces.set(db,namespace);}return namespace;}
 // Deliberately enumerate the analytics contract. A caller's workspace fields,
 // browser scope, member records and private notes cannot enter the cache.
-const frameFields=['client','metrics','prior','comparison','verdict','series','datasetSeries','comparisonDatasetSeries','datasetHistorySeries','details','actions','opportunities','views','preparedDatasets','datasetMetrics','activeIncidents','warnings','cutoff','availableDimensions','evidence','comparisonEvidence','selectedCount','liveOperations','subscriptions','viewMetrics','experimentDetails','comparisonViews','qualifiedPageAlerts','trafficExplorer','sourceQuality','efficiencyEvidence'] as const satisfies readonly (keyof Frame)[];
+const frameFields=['client','metrics','prior','comparison','verdict','series','datasetSeries','comparisonDatasetSeries','datasetHourlySeries','comparisonDatasetHourlySeries','datasetHistorySeries','details','actions','opportunities','views','preparedDatasets','datasetMetrics','activeIncidents','warnings','cutoff','availableDimensions','evidence','comparisonEvidence','selectedCount','liveOperations','subscriptions','viewMetrics','experimentDetails','comparisonViews','qualifiedPageAlerts','trafficExplorer','sourceQuality','efficiencyEvidence'] as const satisfies readonly (keyof Frame)[];
 function analyticsFrame(value:Presentation):Frame{
  // New presentation fields require an explicit decision about cache contents.
  const completeFields:Exclude<keyof Frame,typeof frameFields[number]> extends never?typeof frameFields:never=frameFields;
@@ -51,7 +52,7 @@ function validFrame(frame:unknown,input:PreparedWorkspaceInput):frame is Frame{
  if(JSON.stringify([...(value.preparedDatasets as string[])].sort())!==JSON.stringify([...new Set(input.preparedDatasets)].sort()))return false;
  if(!Number.isSafeInteger(value.selectedCount)||(value.selectedCount as number)<0||value.cutoff!==null&&typeof value.cutoff!=='string')return false;
  for(const key of ['metrics','prior','datasetMetrics','viewMetrics']){const summary=value[key];if(!summary||typeof summary!=='object'||Array.isArray(summary)||Object.values(summary).some(metric=>metric!==null&&(typeof metric!=='number'||!Number.isFinite(metric))))return false;}
- for(const key of ['views','datasetSeries','comparisonDatasetSeries','datasetHistorySeries','availableDimensions','subscriptions','comparison','verdict'])if(!value[key]||typeof value[key]!=='object'||Array.isArray(value[key]))return false;
+ for(const key of ['views','datasetSeries','comparisonDatasetSeries','datasetHourlySeries','comparisonDatasetHourlySeries','datasetHistorySeries','availableDimensions','subscriptions','comparison','verdict'])if(!value[key]||typeof value[key]!=='object'||Array.isArray(value[key]))return false;
  return true;
 }
 function stable(value:unknown):unknown{
@@ -93,11 +94,11 @@ async function token(input:PreparedWorkspaceInput,connections:Connection[]){
  // Intraday cutoff calculation uses every configured core source, even when
  // that source has no current rows. Closed historical frames do not depend on
  // the current hour's commerce/cancellation pointers outside their windows.
- const partial=input.filters.mode==='partial',core=(source:Connection)=>source.enabled&&(!source.provider||source.provider==='gateway'||source.provider==='kind-triple-whale'||source.provider==='kind-shopify-hourly');
+ const primarySources=new Set(intradayConnections(connections,input.filters.view).map(source=>source.id)),partial=input.filters.mode==='partial',core=(source:Connection)=>primarySources.has(source.id);
  if(partial)for(const source of connections)if(core(source))relevantSources.add(source.id);
  const sources=connections.filter(source=>relevantSources.has(source.id)).map(source=>[source.id,source.version,source.provider,source.enabled,...partial&&core(source)?[source.coverageThrough]:[]]).sort((a,b)=>String(a[0]).localeCompare(String(b[0])));
  const partialKindCaveat=partial&&connections.some(source=>source.enabled&&source.provider?.startsWith('kind-')&&source.provider!=='kind-triple-whale');
- return JSON.stringify(stable(['prepared-workspace-v3',organizationId,client,todayIn(client.timezone),input.filters,[...new Set(input.preparedDatasets)].sort(),{...input.selection,datasets:[...new Set(input.selection.datasets)].sort(),dimensions:!!input.selection.dimensions,includePriorWeek:input.selection.includePriorWeek!==false},sources,selectedPointers,qualifications.filter(qualification=>relevantSources.has(qualification.sourceId)),partialKindCaveat]));
+ return JSON.stringify(stable(['prepared-workspace-v4',organizationId,client,todayIn(client.timezone),input.filters,[...new Set(input.preparedDatasets)].sort(),{...input.selection,datasets:[...new Set(input.selection.datasets)].sort(),dimensions:!!input.selection.dimensions,includePriorWeek:input.selection.includePriorWeek!==false},sources,selectedPointers,qualifications.filter(qualification=>relevantSources.has(qualification.sourceId)),partialKindCaveat]));
 }
 async function digest(value:string){return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))),byte=>byte.toString(16).padStart(2,'0')).join('');}
 type DurableFrame={payload:string;payloadHash:string};

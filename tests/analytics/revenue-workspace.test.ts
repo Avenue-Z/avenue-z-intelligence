@@ -21,3 +21,8 @@ it('renders the supported sales-channel filter and removes four misleading unava
  const html=renderToStaticMarkup(createElement(ClientWorkspace,{record:record(),filters,update:()=>{},mutate:async()=>({}),admin:false}));
  expect(html).toContain('Sales channel');expect(html).toContain('sales channel filter');expect(html).not.toContain('market filter');expect(html).not.toContain('device filter');expect(html).not.toContain('source filter');expect(html).not.toContain('page filter');expect(html).not.toContain('<option value="">Unavailable</option>');
 });
+it('uses actual hourly sales on today without diverting the user to Overview',()=>{
+ const r=record(),f={...filters,mode:'partial' as const},hourly=[{date:f.to,start:'2026-10-11T00:00:00Z',end:'2026-10-11T01:00:00Z',metrics:{revenue:80,orders:4},summary:{...r.datasetSeries.revenue[0].summary,revenue:80,orders:4,aov:20}}];
+ const html=renderToStaticMarkup(createElement(RevenueWorkspace,{record:{...r,cutoff:'2026-10-11T01:00:00Z',datasetHourlySeries:{revenue:hourly},comparisonDatasetHourlySeries:{}} as ClientRecord,filters:f,update:()=>{}}));
+ expect(html).toContain('Actual hourly intervals');expect(html).toContain('Hourly');expect(html).toContain('Daily context');expect(html).toContain('hours reported');expect(html).not.toContain('reports cover closed store days');expect(html).not.toContain('use Overview');
+});

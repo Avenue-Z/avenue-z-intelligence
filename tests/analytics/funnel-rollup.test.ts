@@ -42,3 +42,22 @@ it('preserves raw input when a requested cutoff clock is unknown or invalid',()=
  expect(compact([row],{timezone:'Europe/Stockholm',cutoffClock:'unknown'})).toEqual([row]);
  expect(compact([row],{timezone:'Europe/Stockholm',cutoffClock:''})).toEqual([row]);
 });
+it('compacts independently reconciled hourly traffic only after applying the matched store cutoff',()=>{
+ const traffic={...row,dataset:'traffic',definition:'shopify_human_public_landing_page_traffic',dimensions:{page:'/pages/glp',market:'US',device:'mobile',source:'meta',utm_source:'facebook',utm_medium:'paid',utm_campaign:'glp'}};
+ const second={...traffic,value:12,start:'2026-10-12T00:00:00Z',end:'2026-10-12T01:00:00Z'};
+ const tooLate={...traffic,value:99,start:'2026-10-12T03:00:00Z',end:'2026-10-12T04:00:00Z'};
+ const otherSource={...second,value:3,dimensions:{...traffic.dimensions,source:'snapchat'}};
+ const result=compact([traffic,second,tooLate,otherSource],{timezone:'Europe/Stockholm',cutoffClock:'04:00'});
+ expect(result).toHaveLength(2);expect(result[0]).toMatchObject({value:22,contributionCount:2,aggregation:'hourly_public_page_traffic_rollup',start:traffic.start,end:second.end});expect(result[1]).toMatchObject({value:3,dimensions:{source:'snapchat'}});
+});
+it('preserves traffic with an unknown population or incomplete dimensions as raw evidence',()=>{
+ const traffic={...row,dataset:'traffic',definition:'shopify_human_public_landing_page_traffic',dimensions:{page:'/pages/glp',market:'US',device:'mobile',source:'meta',utm_source:'facebook',utm_medium:'paid',utm_campaign:'glp'}};
+ const {utm_campaign:ignored,...missingDimension}=traffic.dimensions;
+ const unknown=[{...traffic,population:'all_sessions'},{...traffic,dimensions:missingDimension},{...traffic,quality:'partial' as const}];
+ expect(compact(unknown)).toEqual(unknown);
+});
+it('keeps full prior calendar days while matching only the final dates of a live period and its comparison',()=>{
+ const a=new FunnelRollupAccumulator({timezone:'Europe/Stockholm',cutoffClock:'05:00',cutoffDates:new Set(['2026-10-12','2026-10-10'])});
+ const late={...row,start:'2026-10-12T03:00:00Z',end:'2026-10-12T04:00:00Z'},earlier={...late,date:'2026-10-11',start:'2026-10-11T03:00:00Z',end:'2026-10-11T04:00:00Z'},comparison={...late,date:'2026-10-10',start:'2026-10-10T03:00:00Z',end:'2026-10-10T04:00:00Z'};
+ for(const r of [late,earlier,comparison])a.add(r);expect(a.finish()).toHaveLength(1);expect(a.finish()[0]).toMatchObject({date:'2026-10-11',value:10});
+});

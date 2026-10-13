@@ -24,10 +24,11 @@ export async function warmSuccessfulSourceJobs(store:Store,scope:AccessScope,job
   if(native)await store.first('SELECT cacheKey FROM prepared_workspace_cache WHERE organizationId=? AND clientId=? LIMIT 1',scope.organizationId,client.id);
   const today=todayIn(client.timezone),base={compare:'previous',view:'overview',market:'',stream:'',source:'',device:'',page:''} as const;
   // Match the exact dataset selection used by foreground workspace reads.
-  // Prioritize the expensive closed Traffic scopes before the lighter modes;
-  // later native ticks fill remaining misses within the same bounded budget.
+  // Prepare the live workspace first. Closed history follows in the same
+  // bounded budget, so a large historical export cannot delay today's tabs.
   const primary=['previous','fourWeeks'] as const,secondary=['weekday','thirtyDays'] as const;
   const selections:QueryFilters[]=[];
+  for(const view of ['revenue','overview','media','markets','subscriptions','products','traffic'])selections.push({...base,view,from:today,to:today,mode:'partial'});
   if(native){const date=shiftDate(today,-1);selections.push({...base,view:'traffic',from:date,to:date,mode:'closed'},{...base,view:'overview',from:date,to:date,mode:'closed'},...([7,30] as const).map(days=>({...base,view:'traffic',from:shiftDate(date,-(days-1)),to:date,mode:'closed' as const})));}
   for(const mode of ['closed','partial'] as const)for(const comparisons of [primary,secondary])for(const view of ['traffic','overview'])for(const compare of comparisons){const date=mode==='closed'?shiftDate(today,-1):today;selections.push({...base,view,compare,from:date,to:date,mode});}
 

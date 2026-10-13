@@ -45,8 +45,9 @@ it('retains raw hourly intervals and exactly matches known, advancing and missin
  expect(rawReads(projected.queries)).toBe(0);
 });
 it('preserves immutable retrieval metadata on ready replay and raw first-wins duplicates',async()=>{
- const {connect,sqlite}=database(),store=new Store(connect()),first=batch();first.rows.push({...first.rows[0],value:999});
- await store.persistBatch('o','source',first,'same','2026-10-12T00:00:00Z');await store.persistBatch('o','source',{...batch('a',77),channels:['other'],coverageThrough:null},'same','2026-10-12T01:00:00Z');
+ const {connect,sqlite,batches}=database(),store=new Store(connect()),first=batch();first.rows.push({...first.rows[0],value:999});
+ await store.persistBatch('o','source',first,'same','2026-10-12T00:00:00Z');const priorInserts=batches.flat().filter(s=>s.sql.startsWith('INSERT INTO observations')).length;await store.persistBatch('o','source',{...batch('a',77),channels:['other'],coverageThrough:null},'same','2026-10-12T01:00:00Z');
+ expect(batches.flat().filter(s=>s.sql.startsWith('INSERT INTO observations'))).toHaveLength(priorInserts);
  const rows=await new Store(connect()).observations('o','a',filters);expect(rows).toHaveLength(2);expect(rows.every(row=>row.value===42&&row.retrievedAt==='2026-10-12T00:00:00Z'&&row.coverageThrough==='2026-10-12T00:00:00Z'&&row.channels?.[0]==='web')).toBe(true);
  expect(sqlite.prepare('SELECT COUNT(*) AS n FROM snapshot_day_projection_entries').get()?.n).toBe(2);
 });

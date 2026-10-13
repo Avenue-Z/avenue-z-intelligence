@@ -30,6 +30,14 @@ it('reuses the exact filter selection across views while refusing every changed 
  const different:Partial<QueryFilters>[]=[{from:'2026-10-06'},{to:'2026-10-08'},{compare:'weekday'},{mode:'partial'},{market:'US'},{stream:'subscriptions'},{source:'Meta'},{device:'mobile'},{page:'/landing'}];
  for(const changes of different)expect(cache.read({...filters,...changes})).toBeNull();
 });
+it('does not reuse intraday aggregates across views with different source cutoffs',()=>{
+ const initial=workspace({mode:'partial',view:'revenue'});initial.focusedClientId=client.id;
+ initial.clients[0].connections=[{id:'sales',provider:'kind-shopify-sales',enabled:true,coverageThrough:'2026-10-07T16:00:00Z'},{id:'tw',provider:'kind-triple-whale',enabled:true,coverageThrough:'2026-10-07T14:00:00Z'}] as any;
+ initial.clients[0].cutoff='2026-10-07T16:00:00Z';
+ expect(navigation.selectWorkspaceView(initial,'markets')).toBeNull();
+ initial.clients[0].connections[1].coverageThrough='2026-10-07T16:00:00Z';
+ expect(navigation.selectWorkspaceView(initial,'markets')).not.toBeNull();
+});
 
 it('returns cached content immediately but marks a minute-old response for background refresh',()=>{
  const cache=new navigation.WorkspaceCache(workspace());

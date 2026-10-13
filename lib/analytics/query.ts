@@ -1,13 +1,14 @@
 import type {Observation,QueryFilters,Client,Connection} from './contracts';
 import {ratio,change,compatibleTotal,spendVerdict,opportunity} from './metrics';
-import {shiftDate,todayIn,dayWindow,matchedCutoff,comparisonPeriod} from './windows';
-import {datasetSeries as buildDatasetSeries} from './dataset-series';
+import {shiftDate,todayIn,dayWindow,comparisonPeriod} from './windows';
+import {datasetSeries as buildDatasetSeries,datasetHourlySeries as buildDatasetHourlySeries} from './dataset-series';
 import {subscriptionComparison} from './subscriptions';
 import {benchmarkLookup} from './benchmark';
 import {Temporal} from '@js-temporal/polyfill';
 import {preferredObservations} from './source-precedence';
 import {sanitizePage,sourceMarket} from '../sources/kind-patches';
 import {compatibleZeroDenominatorRates} from './rate-qualification';
+import {confirmedIntradayCutoff} from './intraday-coverage';
 export function filtered(rows:Observation[],f:Partial<QueryFilters>) {return rows.filter(r=>(!f.from||r.date>=f.from)&&(!f.to||r.date<=f.to)&&['market','stream','source','device','page'].every(k=>!(f as any)[k]||r.dimensions[k]===(f as any)[k]));}
 export function sumMetric(rows:Observation[],metric:string) {const r=rows.filter(x=>x.metric===metric);if(metric.endsWith('_rate')&&r.length>1)return null;if(new Set(r.map(x=>x.population)).size>1||new Set(r.map(x=>JSON.stringify(Object.keys(x.dimensions??{}).sort()))).size>1)return null;const seen=new Set<string>();for(const x of r){const key=JSON.stringify([x.date,x.start,x.end,Object.entries(x.dimensions??{}).sort()]);if(seen.has(key))return null;seen.add(key);}return compatibleTotal(r);}
 type MetricTotal=(metric:string)=>number|null;
@@ -41,11 +42,11 @@ function datasetAnalytics(client:Client,current:Observation[],previous:Observati
 function byDataset(rows:Observation[]){const groups=new Map<string,Observation[]>();for(const row of rows){const group=groups.get(row.dataset);if(group)group.push(row);else groups.set(row.dataset,[row]);}return groups;}
 export function queryClient(client:Client,all:Observation[],connections:Connection[],f:QueryFilters,options:{prepareAllViews?:boolean;preparedDatasets?:string[]}={}) {
   if(f.market){const market=sourceMarket(f.market);if(market!==f.market)f={...f,market};}
-  all=preferredObservations(all.map(r=>{if(!r.dimensions.page)return r;const page=sanitizePage(r.dimensions.page);return page===r.dimensions.page?r:{...r,dimensions:{...r.dimensions,page}};}),{timezone:client.timezone,partial:f.mode==='partial'});
+  const comparison=comparisonPeriod(f);
+  all=preferredObservations(all.map(r=>{if(!r.dimensions.page)return r;const page=sanitizePage(r.dimensions.page);return page===r.dimensions.page?r:{...r,dimensions:{...r.dimensions,page}};}),{timezone:client.timezone,partial:f.mode==='partial',partialDates:[f.to,comparison.to]});
   // Legacy country aliases must be normalized after authority selection:
   // overlapping same-grain observations remain visible to duplicate guards.
   all=all.map(r=>{if(!r.dimensions.market)return r;const market=sourceMarket(r.dimensions.market);return market===r.dimensions.market?r:{...r,dimensions:{...r.dimensions,market}};});
-  const comparison=comparisonPeriod(f);
   const warnings:string[]=[];let cutoff:string|null=null;
   const activeFilters=['market','stream','source','device','page'].filter(k=>(f as any)[k]);
   const unscoped=filtered(all,{from:[comparison.from,f.from].sort()[0],to:[comparison.to,f.to].sort().at(-1)}),blocked=new Set<string>();
@@ -55,21 +56,19 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
   let current=filtered(capable,f),previous=filtered(capable,comparison),peers=filtered(capable,{...f,market:''});
   let currentEnd=Date.parse(dayWindow(f.to,client.timezone).end),previousEnd=Date.parse(dayWindow(comparison.to,client.timezone).end);
   if(f.mode==='partial') {
-    if(connections.some(c=>c.enabled&&c.provider?.startsWith('kind-')&&c.provider!=='kind-triple-whale'))warnings.push('Same-hour comparisons use qualified hourly commerce, media and human-session feeds. Shopify sales/product totals and AppLovin UTC reports use closed days; current operations are separate snapshots.');
-    const sources=connections.filter(c=>c.enabled&&(!c.provider||c.provider==='gateway'||c.provider==='kind-triple-whale'||c.provider==='kind-shopify-hourly')),coverage=sources.map(c=>c.coverageThrough);
-    const known=sources.length>0&&coverage.every((x):x is string=>!!x&&Date.parse(x)>=Date.parse(dayWindow(f.to,client.timezone).start));
-    cutoff=known?matchedCutoff(coverage as string[],client.timezone):null;
+    if(connections.some(c=>c.enabled&&c.provider?.startsWith('kind-')&&c.provider!=='kind-triple-whale'))warnings.push('Selected and comparison periods use the same confirmed store-hour cutoff. Platform-attributed reports and current operational snapshots retain their separate reporting populations and timestamps.');
+    cutoff=confirmedIntradayCutoff(connections,f.view,client.timezone,f.to);
     if(!cutoff) {current=[];previous=[];peers=[];warnings.push('An intraday comparison needs confirmed, current hourly coverage from every contributing source.');}
     else {const clock=Temporal.Instant.from(cutoff).toZonedDateTimeISO(client.timezone).toPlainTime();
-      const selectedEnd=Temporal.PlainDate.from(f.to).toZonedDateTime({timeZone:client.timezone,plainTime:clock});
+      const selectedEnd=Temporal.Instant.from(cutoff).toZonedDateTimeISO(client.timezone);
       const priorEnd=Temporal.PlainDate.from(comparison.to).toZonedDateTime({timeZone:client.timezone,plainTime:clock});
       currentEnd=Number(selectedEnd.epochMilliseconds);previousEnd=Number(priorEnd.epochMilliseconds);cutoff=selectedEnd.toInstant().toString();
-      const withinMatchedDay=(row:Observation)=>!!row.end&&Date.parse(row.end)<=Number(Temporal.PlainDate.from(row.date).toZonedDateTime({timeZone:client.timezone,plainTime:clock}).epochMilliseconds);
-      current=current.filter(withinMatchedDay);previous=previous.filter(withinMatchedDay);peers=peers.filter(withinMatchedDay);
+      const withinMatchedPeriod=(row:Observation,finalDate:string,matchedEnd:number)=>row.date<finalDate?(!row.end||Date.parse(row.end)<=Date.parse(dayWindow(row.date,client.timezone).end)):!!row.end&&Date.parse(row.end)<=matchedEnd;
+      current=current.filter(row=>withinMatchedPeriod(row,f.to,currentEnd));previous=previous.filter(row=>withinMatchedPeriod(row,comparison.to,previousEnd));peers=peers.filter(row=>withinMatchedPeriod(row,f.to,currentEnd));
       if(!current.length)warnings.push('Daily aggregates cannot supply a same-hour comparison.');
     }
   } else {const today=todayIn(client.timezone);current=current.filter(r=>r.date<today);previous=previous.filter(r=>r.date<today);peers=peers.filter(r=>r.date<today);}
-  function covered(rows:Observation[],from:string,to:string,end:number){const clock=f.mode==='partial'?Temporal.Instant.fromEpochMilliseconds(end).toZonedDateTimeISO(client.timezone).toPlainTime():null;return ['revenue','spend','new_orders'].every(metric=>{const values=rows.filter(r=>r.metric===metric);if(!values.length)return false;for(let date=from;date<=to;date=shiftDate(date,1)){const day=values.filter(r=>r.date===date),requiredEnd=clock?Number(Temporal.PlainDate.from(date).toZonedDateTime({timeZone:client.timezone,plainTime:clock}).epochMilliseconds):Date.parse(dayWindow(date,client.timezone).end);if(!day.length||day.some(r=>r.quality!=='complete'||!r.coverageThrough||Date.parse(r.coverageThrough)<requiredEnd))return false;if(clock&&Math.max(...day.map(r=>r.end?Date.parse(r.end):0))<requiredEnd)return false;}return true;});}
+  function covered(rows:Observation[],from:string,to:string,end:number){return ['revenue','spend','new_orders'].every(metric=>{const values=rows.filter(r=>r.metric===metric);if(!values.length)return false;for(let date=from;date<=to;date=shiftDate(date,1)){const day=values.filter(r=>r.date===date),requiredEnd=date===to?end:Date.parse(dayWindow(date,client.timezone).end);if(!day.length||day.some(r=>r.quality!=='complete'||!r.coverageThrough||Date.parse(r.coverageThrough)<requiredEnd))return false;if(f.mode==='partial'&&date===to&&requiredEnd<Date.parse(dayWindow(date,client.timezone).end)&&Math.max(...day.map(r=>r.end?Date.parse(r.end):0))<requiredEnd)return false;}return true;});}
   const headline=current.filter(r=>r.dataset==='overview'),previousHeadline=previous.filter(r=>r.dataset==='overview');
   const metrics=summarize(headline),prior=summarize(previousHeadline);
   const matched=[...headline,...previousHeadline];const spendRows=matched.filter(r=>r.metric==='spend');
@@ -108,10 +107,12 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
     return result;
   }
   const datasetSeries=prepareSeries?qualifiedDailySeries(current,f.from,f.to,currentEnd):{},comparisonDatasetSeries=prepareSeries?qualifiedDailySeries(previous,comparison.from,comparison.to,previousEnd):{};
+  const datasetHourlySeries=prepareSeries&&f.from===f.to?buildDatasetHourlySeries(current,f.to,client.timezone,dailyDatasets,new Date(currentEnd).toISOString()):{},comparisonDatasetHourlySeries=prepareSeries&&comparison.from===comparison.to?buildDatasetHourlySeries(previous,comparison.to,client.timezone,dailyDatasets,new Date(previousEnd).toISOString()):{};
   const historyClock=f.mode==='partial'&&cutoff?Temporal.Instant.from(cutoff).toZonedDateTimeISO(client.timezone).toPlainTime():null;
   const marketHistory=prepareSeries&&dailyDatasets.includes('markets')?filtered(capable,{...f,from:shiftDate(f.from,-1)}).filter(row=>{
     if(row.dataset!=='markets')return false;
     if(f.mode==='closed')return row.date<today;
+    if(row.date<f.to)return !row.end||Date.parse(row.end)<=Date.parse(dayWindow(row.date,client.timezone).end);
     if(!historyClock||!row.end)return false;
     const end=Temporal.PlainDate.from(row.date).toZonedDateTime({timeZone:client.timezone,plainTime:historyClock});
     return Date.parse(row.end)<=Number(end.epochMilliseconds);
@@ -119,11 +120,12 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
   const revenueHistory=prepareSeries&&dailyDatasets.includes('revenue')?filtered(capable,{...f,from:shiftDate(f.to,-29)}).filter(row=>{
     if(row.dataset!=='revenue')return false;
     if(f.mode==='closed')return row.date<today;
+    if(row.date<f.to)return !row.end||Date.parse(row.end)<=Date.parse(dayWindow(row.date,client.timezone).end);
     if(!historyClock||!row.end)return false;
     const end=Temporal.PlainDate.from(row.date).toZonedDateTime({timeZone:client.timezone,plainTime:historyClock});
     return Date.parse(row.end)<=Number(end.epochMilliseconds);
   }):[];
   const datasetHistorySeries={...prepareSeries&&dailyDatasets.includes('markets')?buildDatasetSeries(marketHistory,shiftDate(f.from,-1),f.to,['markets']):{},...prepareSeries&&dailyDatasets.includes('revenue')?buildDatasetSeries(revenueHistory,shiftDate(f.to,-29),f.to,['revenue']):{}};
-  return {client,metrics,prior,comparison,verdict,series,datasetSeries,comparisonDatasetSeries,datasetHistorySeries,details,actions,opportunities,views,preparedDatasets:[...new Set(datasets)],datasetMetrics:views[dataset]?.viewMetrics??summarize([]),activeIncidents,warnings,cutoff,availableDimensions,evidence:current,comparisonEvidence:previous,connections,selectedCount:current.length,liveOperations,subscriptions:subscriptionComparison(filtered(all,{...f,from:undefined,to:undefined}),f.to,client.config.incidents,f.mode==='partial'?{timezone:client.timezone,cutoff}:undefined)};
+  return {client,metrics,prior,comparison,verdict,series,datasetSeries,comparisonDatasetSeries,datasetHourlySeries,comparisonDatasetHourlySeries,datasetHistorySeries,details,actions,opportunities,views,preparedDatasets:[...new Set(datasets)],datasetMetrics:views[dataset]?.viewMetrics??summarize([]),activeIncidents,warnings,cutoff,availableDimensions,evidence:current,comparisonEvidence:previous,connections,selectedCount:current.length,liveOperations,subscriptions:subscriptionComparison(filtered(all,{...f,from:undefined,to:undefined}),f.to,client.config.incidents,f.mode==='partial'?{timezone:client.timezone,cutoff}:undefined)};
 }
 export type ClientAnalytics=ReturnType<typeof queryClient>;

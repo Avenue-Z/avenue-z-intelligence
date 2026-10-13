@@ -23,14 +23,14 @@ it('qualifies both matched partial-day MER points against their own normalized c
  const hourly=['2026-10-11','2026-10-12'].flatMap(date=>Array.from({length:13},(_,hour)=>rows(date).map(row=>({...row,start:`${date}T${String(hour).padStart(2,'0')}:00:00Z`,end:`${date}T${String(hour+1).padStart(2,'0')}:00:00Z`,coverageThrough:'2026-10-12T13:00:00Z'}))).flat());
  const result=queryClient(client,hourly,[partialConnection()],{...filters,from:'2026-10-12',to:'2026-10-12',mode:'partial'},{prepareAllViews:true});expect(result.datasetSeries.overview[0].summary.mer).toBe(2);expect(result.comparisonDatasetSeries.overview[0].summary.mer).toBe(2);
 });
-it('does not use full daily market rows as partial previous-day history',()=>{
+it('retains full closed market totals before the final live calendar day',()=>{
  const market:Observation={...rows('2026-10-10')[0],dataset:'markets',dimensions:{market:'US'},value:990};
- const result=queryClient(client,[...rows(filters.to),market],[partialConnection()],{...filters,mode:'partial',view:'markets'},{prepareAllViews:true});expect(result.datasetHistorySeries.markets[0].summary.revenue).toBeNull();
+ const result=queryClient(client,[...rows(filters.to),market],[partialConnection()],{...filters,mode:'partial',view:'markets'},{prepareAllViews:true});expect(result.datasetHistorySeries.markets[0].summary.revenue).toBe(990);
 });
-it('uses the same local-clock cutoff on every dated market history point',()=>{
+it('shows full prior-day market history while the latest day uses its live cutoff',()=>{
  const market:Observation={...rows('2026-10-10')[0],dataset:'markets',dimensions:{market:'US'},value:100,start:'2026-10-10T09:00:00Z',end:'2026-10-10T10:00:00Z'};
  const late={...market,value:200,start:'2026-10-10T18:00:00Z',end:'2026-10-10T19:00:00Z'};
- const result=queryClient(client,[...rows(filters.to),market,late],[partialConnection()],{...filters,mode:'partial',view:'markets'},{prepareAllViews:true});expect(result.datasetHistorySeries.markets[0].summary.revenue).toBe(100);
+ const result=queryClient(client,[...rows(filters.to),market,late],[partialConnection()],{...filters,mode:'partial',view:'markets'},{prepareAllViews:true});expect(result.datasetHistorySeries.markets[0].summary.revenue).toBe(300);
 });
 
 it('qualifies closed periods using each independently captured day end',()=>{
@@ -38,8 +38,14 @@ it('qualifies closed periods using each independently captured day end',()=>{
  const result=queryClient(client,['2026-10-08','2026-10-09','2026-10-10','2026-10-11'].flatMap(capture),[],{...filters,from:'2026-10-10'},{prepareAllViews:true});
  expect(result.verdict.spendComparison).not.toBe('unavailable');expect(result.metrics.mer).toBe(2);
 });
-it('applies the matched local clock to every day of a multi-day intraday period',()=>{
+it('includes full earlier days and matches only the final day of a multi-day intraday period',()=>{
  const hourly=['2026-10-08','2026-10-09','2026-10-10','2026-10-11'].flatMap(date=>Array.from({length:24},(_,hour)=>rows(date).map(row=>({...row,start:`${date}T${String(hour).padStart(2,'0')}:00:00Z`,end:new Date(Date.parse(`${date}T00:00:00Z`)+(hour+1)*3600000).toISOString(),coverageThrough:'2026-10-12T13:00:00Z'}))).flat());
  const result=queryClient(client,hourly,[partialConnection()],{...filters,from:'2026-10-10',to:'2026-10-11',mode:'partial'},{prepareAllViews:true});
- expect(result.metrics.revenue).toBe(2600);expect(result.prior.revenue).toBe(2600);expect(result.verdict.spendComparison).not.toBe('unavailable');
+ expect(result.metrics.revenue).toBe(3700);expect(result.prior.revenue).toBe(3700);expect(result.verdict.spendComparison).not.toBe('unavailable');
+});
+it('retains authoritative closed daily observations before the final partial day',()=>{
+ const earlier=['2026-10-08','2026-10-10'].flatMap(date=>rows(date).map(row=>({...row,coverageThrough:new Date(Date.parse(`${date}T00:00:00Z`)+86400000).toISOString()})));
+ const final=['2026-10-09','2026-10-11'].flatMap(date=>rows(date).map(row=>({...row,start:`${date}T00:00:00Z`,end:`${date}T13:00:00Z`,coverageThrough:'2026-10-12T13:00:00Z'})));
+ const result=queryClient(client,[...earlier,...final],[partialConnection()],{...filters,from:'2026-10-10',to:'2026-10-11',mode:'partial'},{prepareAllViews:true});
+ expect(result.metrics.revenue).toBe(200);expect(result.prior.revenue).toBe(200);expect(result.datasetSeries.overview[0].summary.revenue).toBe(100);expect(result.verdict.spendComparison).not.toBe('unavailable');
 });

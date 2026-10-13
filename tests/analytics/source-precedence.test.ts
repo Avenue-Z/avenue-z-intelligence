@@ -17,6 +17,10 @@ it('uses hourly Shopify counts for a partial selection without adding the corres
  const other={...daily,population:'bot_sessions'};expect(preferredObservations([other,hourly],{timezone:'Europe/Stockholm',partial:true})).toEqual([other,hourly]);
  const history={...other,quality:'historical'} as Observation;expect(preferredObservations([history,hourly],{timezone:'Europe/Stockholm',partial:true})).toEqual([history,hourly]);
 });
+it('preserves complete daily authority on earlier dates of a period with a partial final day',()=>{
+ const final={...hourly,date:'2026-10-13',start:'2026-10-12T22:00:00Z',end:'2026-10-12T23:00:00Z',coverageThrough:'2026-10-13T12:00:00Z'};
+ expect(preferredObservations([daily,hourly,final],{timezone:'Europe/Stockholm',partial:true,partialDates:['2026-10-13']})).toEqual([daily,final]);
+});
 it('uses complete hourly Shopify authority only after its store-day intervals cover the whole day',()=>{
  const full={...hourly,end:'2026-10-12T22:00:00Z',coverageThrough:'2026-10-12T22:00:00Z'};
  expect(preferredObservations([daily,full],{timezone:'Europe/Stockholm'})).toEqual([full]);

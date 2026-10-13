@@ -16,3 +16,7 @@ export function unsupportedClientFilterReset(filters:QueryFilters,view=filters.v
  const supported=supportedClientFilters(view);
  return Object.fromEntries(dimensionFilterKeys.filter(key=>filters[key]&&!supported.includes(key)).map(key=>[key,'']));
 }
+/** Today is a reporting window within the current view, not a navigation jump. */
+export function clientTodaySelection(filters:QueryFilters,today:string):Record<string,string>{
+ return {from:today,to:today,period:'today',mode:'partial',view:filters.view,...unsupportedClientFilterReset(filters)};
+}

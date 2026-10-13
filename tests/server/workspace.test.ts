@@ -31,11 +31,19 @@ it('narrows dimensions only for an authorized focused Traffic page drill',async(
  await loadWorkspace(params);expect(reads).toEqual([{client:'a',dimensions:false},{client:'b',dimensions:false}]);reads.length=0;
  params.set('drill','traffic-page');await loadWorkspace(params);expect(reads).toEqual([{client:'a',dimensions:true},{client:'b',dimensions:false}]);state.permitted=['a'];
 });
-it('defaults a focused client to its own closed or partial store date at the New York midnight boundary',async()=>{
+it('defaults a focused live client to today in its store timezone and preserves explicit closed history',async()=>{
  vi.useFakeTimers();vi.setSystemTime(new Date('2026-10-12T22:30:00Z'));try{
  state.permitted=['a'];state.store={first:async()=>null,clients:async()=>[{id:'a',name:'A',timezone:'Europe/Stockholm',currency:'USD',config:{incidents:[],spendChannels:[],benchmarkMarket:'US',minSessions:10,minOpportunity:1,maxActions:6}}],connections:async()=>[{id:'source',enabled:true}],observations:async()=>[],findings:async()=>[],reviews:async()=>[],note:async()=>({body:''}),jobs:async()=>[]};
- expect((await loadWorkspace(new URLSearchParams({clientId:'a'}))).filters).toMatchObject({from:'2026-10-12',to:'2026-10-12'});
- expect((await loadWorkspace(new URLSearchParams({clientId:'a',mode:'partial'}))).filters).toMatchObject({from:'2026-10-13',to:'2026-10-13'});
+ expect((await loadWorkspace(new URLSearchParams({clientId:'a'}))).filters).toMatchObject({from:'2026-10-13',to:'2026-10-13',mode:'partial',period:'today'});
+ expect((await loadWorkspace(new URLSearchParams({clientId:'a',mode:'closed'}))).filters).toMatchObject({from:'2026-10-12',to:'2026-10-12',mode:'closed'});
+ expect((await loadWorkspace(new URLSearchParams({clientId:'a',mode:'partial'}))).filters).toMatchObject({from:'2026-10-13',to:'2026-10-13',period:'today'});
  expect((await loadWorkspace(new URLSearchParams({clientId:'a',from:'2026-10-09',to:'2026-10-10'}))).filters).toMatchObject({from:'2026-10-09',to:'2026-10-10'});
+ }finally{vi.useRealTimers();}
+});
+it('rolls an explicit live-today marker across store midnight while keeping a chosen historical date fixed',async()=>{
+ vi.useFakeTimers();vi.setSystemTime(new Date('2026-10-13T22:30:00Z'));try{
+  state.permitted=['a'];state.store={first:async()=>null,clients:async()=>[{id:'a',name:'A',timezone:'Europe/Stockholm',currency:'USD',config:{incidents:[],spendChannels:[],benchmarkMarket:'US',minSessions:10,minOpportunity:1,maxActions:6}}],connections:async()=>[{id:'source',enabled:true}],observations:async()=>[],findings:async()=>[],reviews:async()=>[],note:async()=>({body:''}),jobs:async()=>[]};
+  expect((await loadWorkspace(new URLSearchParams({clientId:'a',period:'today',from:'2026-10-13',to:'2026-10-13',view:'products'}))).filters).toMatchObject({from:'2026-10-14',to:'2026-10-14',mode:'partial',view:'products',period:'today'});
+  expect((await loadWorkspace(new URLSearchParams({clientId:'a',from:'2026-10-13',to:'2026-10-13',view:'products'}))).filters).toMatchObject({from:'2026-10-13',to:'2026-10-13',mode:'closed',view:'products'});
  }finally{vi.useRealTimers();}
 });

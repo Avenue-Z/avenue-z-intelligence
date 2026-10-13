@@ -23,7 +23,7 @@ export async function clientEvidenceJSON(scope:AccessScope,clientId:string,param
  return withAnalyticsMemory(async()=>{
   const store=getStore(),client=(await store.clients(scope.organizationId)).find(client=>client.id===clientId);
   if(!client)throw Error('Client access denied');
-  if(!params.has('from')&&!params.has('to'))filters.from=filters.to=filters.mode==='partial'?todayIn(client.timezone):shiftDate(todayIn(client.timezone),-1);
+  if(filters.period==='today'||!params.has('from')&&!params.has('to'))filters.from=filters.to=filters.mode==='partial'?todayIn(client.timezone):shiftDate(todayIn(client.timezone),-1);
   const [observations,connections]=await Promise.all([store.observations(scope.organizationId,clientId,filters,false,undefined,{datasets:[dataset],dimensions:true,includePriorWeek:false}),store.connections(scope.organizationId,clientId)]);
   const analytics=queryClient(client,observations,connections,filters,{preparedDatasets:[dataset]});
   const rows=analytics.evidence.filter(row=>row.dataset===dataset&&(purpose==='export'||JSON.stringify(Object.entries(row.dimensions).sort())===segment));

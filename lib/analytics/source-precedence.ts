@@ -1,6 +1,6 @@
 import type {Observation} from './contracts';
 import {dayWindow} from './windows';
-type PreferenceOptions={timezone?:string;partial?:boolean};
+type PreferenceOptions={timezone?:string;partial?:boolean;partialDates?:readonly string[]};
 const sessionMetrics=new Set(['sessions','atc_sessions','checkouts','converting_sessions','completed_checkouts']);
 function shopifySessions(r:Observation){return sessionMetrics.has(r.metric)&&((r.dataset==='overview'&&r.definition==='shopify_human_sessions')||(r.dataset==='funnels'&&r.definition==='shopify_human_public_landing_pages'));}
 function family(r:Observation){return JSON.stringify([r.date,r.dataset,r.metric,r.definition,r.population,r.currency,Object.keys(r.dimensions??{}).sort()]);}
@@ -29,7 +29,8 @@ export function preferredObservations(rows:Observation[],options?:PreferenceOpti
   const keep=new Set<Observation>();
   for(const group of groups.values()){
    const hourly=group.filter(r=>r.start&&r.end&&r.quality==='complete'),daily=group.filter(r=>!r.start&&!r.end);
-   const useHourly=hourly.length>0&&(options.partial||fullDay(hourly,options.timezone));
+   const partial=options.partial&&(!options.partialDates||options.partialDates.includes(group[0].date));
+   const useHourly=hourly.length>0&&(partial||fullDay(hourly,options.timezone));
    for(const r of useHourly?hourly:daily.length?daily:group)keep.add(r);
   }
   selected=selected.filter(r=>!shopifySessions(r)||keep.has(r));
