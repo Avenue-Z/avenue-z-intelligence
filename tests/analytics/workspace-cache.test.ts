@@ -28,6 +28,17 @@ it('requires full review documents before projecting an analytics index into the
  expect(navigation.selectWorkspaceView(initial,'reviews')).toBeNull();
  initial.clients[0].reviewsIndexOnly=false;expect(navigation.selectWorkspaceView(initial,'reviews')).not.toBeNull();
 });
+it('does not deduplicate a full archive request against an analytics index refresh',()=>{
+ const analytics=new URLSearchParams({from:filters.from,to:filters.to,view:'overview',section:'portfolio'}),archive=new URLSearchParams(analytics);archive.set('section','reviews');
+ expect(navigation.workspaceRequestKey(analytics)).not.toBe(navigation.workspaceRequestKey(archive));
+ expect(navigation.workspaceRequestKey(analytics)).toBe(navigation.workspaceRequestKey(new URLSearchParams([...analytics].reverse())));
+});
+it('aborts an older pending response when immediate cached navigation becomes authoritative',async()=>{
+ const old=new AbortController(),request={current:old as AbortController|null},key={current:'old-traffic-request'};let release!:(view:string)=>void,currentView='revenue';
+ const pending=new Promise<string>(resolve=>{release=resolve;}).then(view=>{if(!old.signal.aborted)currentView=view;});
+ navigation.cancelWorkspaceRequest(request,key);release('traffic');await pending;
+ expect(currentView).toBe('revenue');expect(old.signal.aborted).toBe(true);expect(request.current).toBeNull();expect(key.current).toBe('');
+});
 
 it('reuses the exact filter selection across views while refusing every changed data filter',()=>{
  const cache=new navigation.WorkspaceCache(workspace());

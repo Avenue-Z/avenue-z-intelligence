@@ -30,6 +30,11 @@ export function selectWorkspaceView(workspace:Workspace,view:string,focusedClien
 
 const scopeKey=(scope:AccessScope)=>JSON.stringify([scope.organizationId,scope.actorId,scope.role,[...scope.permittedClientIds].sort()]);
 const filterKey=(filters:QueryFilters)=>JSON.stringify(['hourly-workspace-v1',filters.from,filters.to,filters.period??null,filters.compare,filters.compareFrom??null,filters.compareTo??null,filters.mode,filters.market,filters.stream,filters.source,filters.device,filters.page]);
+/** Section is part of request identity: the review archive returns full bodies. */
+export const workspaceRequestKey=(params:URLSearchParams)=>JSON.stringify([...params].sort());
+export function cancelWorkspaceRequest(request:{current:AbortController|null},key:{current:string}){
+ request.current?.abort();request.current=null;key.current='';
+}
 
 /** Page-memory cache. Never survives a logout, navigation or browser session. */
 export class WorkspaceCache{

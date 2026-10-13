@@ -98,7 +98,10 @@ async function token(input:PreparedWorkspaceInput,connections:Connection[]){
  if(partial)for(const source of connections)if(core(source))relevantSources.add(source.id);
  const sources=connections.filter(source=>relevantSources.has(source.id)).map(source=>[source.id,source.version,source.provider,source.enabled,...partial&&core(source)?[source.coverageThrough]:[]]).sort((a,b)=>String(a[0]).localeCompare(String(b[0])));
  const partialKindCaveat=partial&&connections.some(source=>source.enabled&&source.provider?.startsWith('kind-')&&source.provider!=='kind-triple-whale');
- return JSON.stringify(stable(['prepared-workspace-v5',organizationId,client,todayIn(client.timezone),input.filters,[...new Set(input.preparedDatasets)].sort(),{...input.selection,datasets:[...new Set(input.selection.datasets)].sort(),dimensions:!!input.selection.dimensions,includePriorWeek:input.selection.includePriorWeek!==false},sources,selectedPointers,qualifications.filter(qualification=>relevantSources.has(qualification.sourceId)),partialKindCaveat]));
+ // The Today shortcut is resolved to exact store dates before this call. It
+ // changes navigation, not these analytics; share the hosted warmer's frame.
+ const {period:_period,...resolvedFilters}=input.filters;
+ return JSON.stringify(stable(['prepared-workspace-v5',organizationId,client,todayIn(client.timezone),resolvedFilters,[...new Set(input.preparedDatasets)].sort(),{...input.selection,datasets:[...new Set(input.selection.datasets)].sort(),dimensions:!!input.selection.dimensions,includePriorWeek:input.selection.includePriorWeek!==false},sources,selectedPointers,qualifications.filter(qualification=>relevantSources.has(qualification.sourceId)),partialKindCaveat]));
 }
 async function digest(value:string){return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))),byte=>byte.toString(16).padStart(2,'0')).join('');}
 type DurableFrame={payload:string;payloadHash:string};

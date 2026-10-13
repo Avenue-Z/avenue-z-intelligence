@@ -29,6 +29,14 @@ function addPointer(sqlite:DatabaseSync,sourceId:string,date:string,key:string){
  sqlite.prepare('INSERT INTO current_snapshots(organizationId,clientId,sourceId,date,snapshotId) VALUES(?,?,?,?,?) ON CONFLICT(organizationId,clientId,sourceId,date) DO UPDATE SET snapshotId=excluded.snapshotId').run('o','a',sourceId,date,key);
 }
 function canonicalLoad(input:PreparedWorkspaceInput){return vi.fn(async(connections:Connection[])=>workspacePresentation(queryClient(input.client,await input.store.observations(input.organizationId,input.client.id,input.filters,false,undefined,input.selection),connections,input.filters,{preparedDatasets:input.preparedDatasets}),input.filters));}
+it('uses the hosted warmer frame for a resolved Today shortcut and still isolates another date',async()=>{
+ const {input,load}=fixture();input.filters={...input.filters,from:'2026-10-13',to:'2026-10-13',mode:'partial'};
+ await preparedWorkspaceFrame(input,load);
+ await preparedWorkspaceFrame({...input,filters:{...input.filters,period:'today'}},load);
+ expect(load).toHaveBeenCalledTimes(1);
+ await preparedWorkspaceFrame({...input,filters:{...input.filters,from:'2026-10-12',to:'2026-10-12'}},load);
+ expect(load).toHaveBeenCalledTimes(2);
+});
 it('serves financial scopes while the dimensional traffic memory lease is occupied',async()=>{
  const {input,load}=fixture();let release!:()=>void;
  state.gate.mockImplementationOnce(async work=>{await new Promise<void>(resolve=>{release=resolve;});return work();});
