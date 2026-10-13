@@ -33,11 +33,11 @@ it('keeps an unfocused portfolio to headline and renewal datasets without advert
 });
 
 it('narrows dimensions only for an authorized focused Traffic page drill',async()=>{
- state.permitted=['a','b'];const reads:{client:string;dimensions:boolean}[]=[];
- state.store={first:async()=>null,clients:async()=>['a','b'].map(id=>({id,name:id,timezone:'UTC',currency:'USD',config:{incidents:[],spendChannels:[],benchmarkMarket:'US',minSessions:10,minOpportunity:1,maxActions:6}})),connections:async()=>[],observations:async(_o:any,client:string,_f:any,_h:any,_b:any,selection:any)=>{reads.push({client,dimensions:!!selection.dimensions});return [];},findings:async()=>[],reviews:async()=>[],note:async()=>({body:''}),jobs:async()=>[]};
+ state.permitted=['a','b'];const reads:{client:string;dimensions:boolean;datasets:string[];trendDatasets:string[]}[]=[];
+ state.store={first:async()=>null,clients:async()=>['a','b'].map(id=>({id,name:id,timezone:'UTC',currency:'USD',config:{incidents:[],spendChannels:[],benchmarkMarket:'US',minSessions:10,minOpportunity:1,maxActions:6}})),connections:async()=>[],observations:async(_o:any,client:string,_f:any,_h:any,_b:any,selection:any)=>{reads.push({client,dimensions:!!selection.dimensions,datasets:selection.datasets,trendDatasets:selection.trendDatasets});return [];},findings:async()=>[],reviews:async()=>[],note:async()=>({body:''}),jobs:async()=>[]};
  const params=new URLSearchParams({clientId:'a',view:'traffic',from:'2026-10-10',to:'2026-10-11',page:'/selected'});
- await loadWorkspace(params);expect(reads).toEqual([{client:'a',dimensions:false},{client:'b',dimensions:false}]);reads.length=0;
- params.set('drill','traffic-page');await loadWorkspace(params);expect(reads).toEqual([{client:'a',dimensions:true},{client:'b',dimensions:false}]);state.permitted=['a'];
+ await loadWorkspace(params);expect(reads.map(({client,dimensions})=>({client,dimensions}))).toEqual([{client:'a',dimensions:false},{client:'b',dimensions:false}]);expect(reads[0].trendDatasets).toContain('traffic');reads.length=0;
+ params.set('drill','traffic-page');const detail=await loadWorkspace(params);expect(reads).toEqual([{client:'a',dimensions:true,datasets:['traffic','funnels'],trendDatasets:[]}]);expect(detail.clients.map(client=>client.client.id)).toEqual(['a']);state.permitted=['a'];
 });
 it('defaults a focused live client to today in its store timezone and preserves explicit closed history',async()=>{
  vi.useFakeTimers();vi.setSystemTime(new Date('2026-10-12T22:30:00Z'));try{

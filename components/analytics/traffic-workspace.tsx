@@ -79,7 +79,7 @@ export function TrafficWorkspace({record,filters,update}:{record:ExplorerRecord;
  const points=record.datasetSeries?.[frame.dataset]??emptySeries,previous=record.comparisonDatasetSeries?.[frame.dataset]??emptySeries;
  const trendContext=useMemo(()=>({current:record.trendDatasetSeries?.[frame.dataset]??points,previous:record.trendComparisonDatasetSeries?.[frame.dataset]??previous}),[record.trendDatasetSeries,record.trendComparisonDatasetSeries,frame.dataset,points,previous]);
  const scope=`${filters.from} – ${filters.to} · ${record.client.timezone}`;
- const namedPage=selectedPage!==null&&selectedPage!=='Unspecified',version=trafficRecordVersion(record),requestKey=selectedPage?trafficPageKey(record.browserScopeKey,record.client.id,filters,selectedPage,version):'',requestUrl=selectedPage?trafficPageRequest(record.client.id,filters,selectedPage):'';
+ const namedPage=selectedPage!==null&&selectedPage!=='Unspecified',version=trafficRecordVersion(record,frame.dataset),requestKey=selectedPage?trafficPageKey(record.browserScopeKey,record.client.id,filters,selectedPage,version):'',requestUrl=selectedPage?trafficPageRequest(record.client.id,filters,selectedPage):'';
  useEffect(()=>{
   const loader=loaderRef.current!;
   if(!namedPage){loader.cancel();return;}

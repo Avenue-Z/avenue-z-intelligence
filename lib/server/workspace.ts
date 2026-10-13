@@ -36,9 +36,9 @@ export async function loadWorkspaceForScope(p:URLSearchParams,scope:AccessScope)
  return loadWorkspaceWithinBudget(p,scope);
 }
 async function loadWorkspaceWithinBudget(p:URLSearchParams,scope:AccessScope){
- const focusedClientId=p.get('clientId')||undefined,s=getStore(),filters=validateWorkspaceQuery(p);
+ const focusedClientId=p.get('clientId')||undefined,s=getStore(),filters=validateWorkspaceQuery(p),pageDrill=p.get('drill')==='traffic-page';
  if(focusedClientId&&!scope.permittedClientIds.includes(focusedClientId))throw Error('Client access denied');
- const clients=(await s.clients(scope.organizationId)).filter(c=>scope.permittedClientIds.includes(c.id));
+ const clients=(await s.clients(scope.organizationId)).filter(c=>scope.permittedClientIds.includes(c.id)&&(!pageDrill||c.id===focusedClientId));
  if(focusedClientId&&!clients.some(client=>client.id===focusedClientId))throw Error('Client unavailable');
  const focusedClient=clients.find(client=>client.id===focusedClientId);
  if(focusedClient&&(filters.period==='today'||!p.has('from')&&!p.has('to'))){const today=todayIn(focusedClient.timezone);filters.from=filters.to=filters.mode==='partial'?today:shiftDate(today,-1);}
@@ -51,8 +51,10 @@ async function loadWorkspaceWithinBudget(p:URLSearchParams,scope:AccessScope){
  const all=await Promise.all(clients.map(async(client,i)=>{
   const fullReviews=p.get('section')==='reviews'||filters.view==='reviews'&&focusedClientId===client.id;
   const clientFilters=filters.period==='today'?{...filters,from:todayIn(client.timezone),to:todayIn(client.timezone)}:filters;
-  const preparedDatasets=focusedClientId?(client.id===focusedClientId?workspaceDatasets(filters.view):['overview']):['overview','subscriptions','subscriptionEvents'];
-  const selection={...workspaceObservationSelection(preparedDatasets),...(p.get('drill')==='traffic-page'&&client.id===focusedClientId?{dimensions:true}:{})};
+  const preparedDatasets=pageDrill?['traffic','funnels']:focusedClientId?(client.id===focusedClientId?workspaceDatasets(filters.view):['overview']):['overview','subscriptions','subscriptionEvents'];
+  // The drawer renders this page's selected/comparison funnel only. Keep the
+  // main workspace's thirty-day chart context outside this scoped drill read.
+  const selection=pageDrill?{datasets:preparedDatasets,dimensions:true,includePriorWeek:false,includeOperations:false,trendDatasets:[]}:workspaceObservationSelection(preparedDatasets);
   const [frame,findings,reviews,note,lastJob]=await Promise.all([preparedWorkspaceFrame({store:s,organizationId:scope.organizationId,client,filters:clientFilters,preparedDatasets,selection},async(freshConnections,canonicalFilters)=>{
    const rows=await s.observations(scope.organizationId,client.id,canonicalFilters,false,undefined,selection);
    return workspacePresentation(queryClient(client,rows,freshConnections,canonicalFilters,{preparedDatasets}),canonicalFilters);
