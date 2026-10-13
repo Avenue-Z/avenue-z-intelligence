@@ -13,6 +13,7 @@ import {serverSecret} from '../server/secrets';
 import {generateAIReview} from '../ai/server';
 import type {ScheduledReviewLease} from '../server/store';
 import {retryPublication} from './publication-retry';
+import {AppLovinSettlingHourError} from '../sources/hourly-paid-media';
 export {serverSecret} from '../server/secrets';
 // Leave enough of the shared source-run budget for a bounded provider request
 // (25 seconds) plus setup. Later jobs stay pending for the next native tick.
@@ -52,7 +53,14 @@ export async function runSyncBatch(scope:AccessScope,budget={maxJobs:7,deadline:
       }
       if(!historyDate){const publishedAt=new Date().toISOString();await retryPublication('source.freshness',budget.deadline,()=>s.run('UPDATE connections SET lastSuccess=?,coverageThrough=?,error=NULL WHERE id=? AND organizationId=?',publishedAt,coverage,source.id,scope.organizationId));}
       await retryPublication('source.complete',budget.deadline,()=>s.finish(j.id));out.completed.push(j.id);
-    }catch(e){const error=(e as Error).message;if(!historyDate&&!currentPublished)await s.run('UPDATE connections SET error=? WHERE id=? AND organizationId=?',error,j.sourceId,scope.organizationId);if(/HTTP (401|403)|not configured|disabled or unavailable|qualification|Unregistered|Registered/.test(error))await s.finish(j.id,error);else await s.retry(j.id,j.attempts,error,new Date().toISOString());out.failed.push({id:j.id,error});}
+    }catch(e){const error=(e as Error).message;
+      if(e instanceof AppLovinSettlingHourError&&!historyDate&&next?.provider==='kind-applovin'){
+        // No reconciled new-day interval exists yet. Preserve the previous
+        // capture and health until a real capture succeeds; provider lag must
+        // not consume the bounded attempts reserved for actual failures.
+        await s.run("UPDATE jobs SET status='pending',attempts=?,dueAt=?,error=?,leaseUntil=NULL WHERE id=? AND organizationId=? AND status='running'",Math.max(0,j.attempts-1),new Date(Date.now()+e.retryAfterMs).toISOString(),error,j.id,scope.organizationId);out.failed.push({id:j.id,error});continue;
+      }
+      if(!historyDate&&!currentPublished)await s.run('UPDATE connections SET error=? WHERE id=? AND organizationId=?',error,j.sourceId,scope.organizationId);if(/HTTP (401|403)|not configured|disabled or unavailable|qualification|Unregistered|Registered/.test(error))await s.finish(j.id,error);else await s.retry(j.id,j.attempts,error,new Date().toISOString());out.failed.push({id:j.id,error});}
   }
   return out;
 }

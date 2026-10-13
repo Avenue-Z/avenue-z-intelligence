@@ -6,7 +6,7 @@ import initial from '../../data/initial-clients.json';
 import type {AccessScope,SourceBatch} from '../../lib/analytics/contracts';
 import {kindQualification,observation,sourceBatch} from '../../lib/sources/kind-patches';
 
-const state=vi.hoisted(()=>({store:null as Store|null,sqlite:null as DatabaseSync|null,batch:null as SourceBatch|null,mode:'tail' as 'tail'|'before'|'success',platform:'sites',healthAtTail:null as any,puts:0,requests:[] as {kind:'current'|'history';provider:string;window:{from:string;to:string}}[]}));
+const state=vi.hoisted(()=>({store:null as Store|null,sqlite:null as DatabaseSync|null,batch:null as SourceBatch|null,mode:'tail' as 'tail'|'before'|'success'|'settling',platform:'sites',healthAtTail:null as any,puts:0,requests:[] as {kind:'current'|'history';provider:string;window:{from:string;to:string}}[]}));
 vi.mock('@avenue/runtime',()=>({env:{BUCKET:{put:async()=>{state.puts++;}}},get runtimePlatform(){return state.platform;}}));
 vi.mock('../../lib/server/access',()=>({getStore:()=>state.store}));
 vi.mock('../../lib/server/secrets',()=>({serverSecret:()=> 'server-only-test-secret'}));
@@ -16,7 +16,8 @@ vi.mock('../../lib/sources/kind-fetch',()=>({
  fetchKindBatches:async function*(source:{provider:string},_client:unknown,window:{from:string;to:string}){
   state.requests.push({kind:'current',provider:source.provider,window});
   if(state.mode==='before')throw Error('Current provider request failed');
-  yield {batch:state.batch!,window:{from:'2026-10-13',to:'2026-10-13'}};
+  if(state.mode==='settling'){const {AppLovinSettlingHourError}=await import('../../lib/sources/hourly-paid-media');throw new AppLovinSettlingHourError();}
+  const date=state.batch!.rows[0].date;yield {batch:state.batch!,window:{from:date,to:date}};
   state.healthAtTail=await state.store!.first('SELECT lastSuccess,coverageThrough,error FROM connections WHERE id=?','source');
   if(state.mode==='tail')throw Error('Historical provider request failed');
  }
@@ -50,6 +51,19 @@ it('records a current-capture failure without fabricating freshness or a ready s
  state.mode='before';const result=await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000});expect(result.failed).toHaveLength(1);
  expect(await state.store!.first('SELECT lastSuccess,coverageThrough,error FROM connections')).toEqual({lastSuccess:'2026-10-13T11:00:00Z',coverageThrough:'2026-10-13T10:00:00Z',error:'Current provider request failed'});
  expect(await state.store!.first('SELECT status,attempts,error FROM jobs')).toEqual({status:'pending',attempts:1,error:'Current provider request failed'});expect(await state.store!.all('SELECT * FROM snapshots')).toEqual([]);expect(state.puts).toBe(0);
+});
+it('defers a settling AppLovin first hour without consuming terminal attempts or changing valid stored data and health',async()=>{
+ const store=state.store!;vi.setSystemTime('2026-10-13T23:15:00Z');await store.run("UPDATE connections SET provider='kind-applovin'");
+ await store.persistBatch('o','source',state.batch!,'previous-valid','2026-10-13T11:00:00Z');await store.run('UPDATE jobs SET attempts=2');
+ const priorFacts=await store.all('SELECT * FROM observations'),priorPointers=await store.all('SELECT * FROM current_snapshots'),priorHealth=await store.first('SELECT lastSuccess,coverageThrough,error FROM connections');state.mode='settling';
+ await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000});
+ expect(await store.first('SELECT status,attempts,dueAt,leaseUntil,error FROM jobs')).toEqual({status:'pending',attempts:2,dueAt:'2026-10-13T23:20:00.000Z',leaseUntil:null,error:'AppLovin latest completed hour is still settling'});
+ vi.setSystemTime('2026-10-13T23:20:00Z');await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000});
+ expect(await store.first('SELECT status,attempts,dueAt FROM jobs')).toEqual({status:'pending',attempts:2,dueAt:'2026-10-13T23:25:00.000Z'});
+ expect(await store.first('SELECT lastSuccess,coverageThrough,error FROM connections')).toEqual(priorHealth);expect(await store.all('SELECT * FROM observations')).toEqual(priorFacts);expect(await store.all('SELECT * FROM current_snapshots')).toEqual(priorPointers);expect(state.puts).toBe(0);
+ vi.setSystemTime('2026-10-13T23:25:00Z');state.mode='success';state.batch={...state.batch!,coverageThrough:'2026-10-13T23:00:00Z',rows:state.batch!.rows.map(row=>({...row,date:'2026-10-14',start:'2026-10-13T22:00:00Z',end:'2026-10-13T23:00:00Z'}))};
+ expect((await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000})).completed).toEqual(['o:source:hourly-test']);expect(await store.first('SELECT status,attempts,error FROM jobs')).toEqual({status:'complete',attempts:3,error:null});
+ expect(await store.first('SELECT lastSuccess,coverageThrough,error FROM connections')).toEqual({lastSuccess:'2026-10-13T23:25:00.000Z',coverageThrough:'2026-10-13T23:00:00Z',error:null});expect(await store.first("SELECT date FROM current_snapshots WHERE date='2026-10-14'")).toEqual({date:'2026-10-14'});
 });
 it('leaves current health unchanged when archive or persistence fails before durable publication',async()=>{
  vi.spyOn(state.store!,'persistBatch').mockRejectedValue(Error('Durable storage unavailable'));

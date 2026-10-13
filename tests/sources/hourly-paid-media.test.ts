@@ -80,6 +80,14 @@ it('exposes the verified earlier AppLovin cutoff when only the newest completed 
  totals[0].cost=9;await expect(fetchAppLovinHourlySpend(client,config,w,fetcher,Date.now()+10000,now)).rejects.toThrow(/reconcile/i);
  expect(()=>normalizeAppLovinHourlySpend({hourly,totals},client,w,now,'2026-10-13T13:00:00Z')).toThrow(/boundary/i);
 });
+it('defers a settling first AppLovin hour instead of publishing an empty new store day',async()=>{
+ const day='2026-10-14',window={from:day,to:day},firstHour={day:date,hour:'22:00',campaign:'GLP',country:'US',cost:10};
+ let total=9;const fetcher:typeof fetch=async url=>Response.json({code:200,results:new URL(String(url)).searchParams.get('columns')==='day,hour,cost'?[{day:date,hour:'22:00',cost:total}]:[firstHour]});
+ await expect(fetchAppLovinHourlySpend(client,config,window,fetcher,Date.now()+10000,new Date('2026-10-13T23:15:00Z'))).rejects.toMatchObject({name:'AppLovinSettlingHourError',retryAfterMs:300000});
+ total=10;const valid=await fetchAppLovinHourlySpend(client,config,window,fetcher,Date.now()+10000,new Date('2026-10-13T23:20:00Z'));
+ expect(valid.coverageThrough).toBe('2026-10-13T23:00:00Z');expect(valid.rows).toHaveLength(1);expect(valid.rows[0]).toMatchObject({date:day,value:10,start:'2026-10-13T22:00:00Z',end:'2026-10-13T23:00:00Z'});
+ total=9;await expect(fetchAppLovinHourlySpend(client,config,window,fetcher,Date.now()+10000,new Date('2026-10-14T00:15:00Z'))).rejects.toThrow(/does not reconcile/i);
+});
 it('fails missing, negative, truncated and future data instead of publishing misleading partial totals',()=>{
  expect(()=>normalizeMetaHourlyPerformance({ads:[{...ad,spend:null}],account:[account]},client,w,now)).toThrow(/missing/i);
  expect(()=>normalizeMetaHourlyPerformance({ads:[{...ad,spend:-1}],account:[account]},client,w,now)).toThrow(/invalid/i);

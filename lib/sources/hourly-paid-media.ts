@@ -65,6 +65,10 @@ export function appLovinUTCWindow(client:Client,w:KindWindow,now=new Date()){
 }
 function appHour(row:Raw,window:{from:string;to:string}){checkDate(row.day,window);const match=String(row.hour??'').match(/^(\d{2}):00$/);if(!match||Number(match[1])>23)throw new Error('Invalid AppLovin UTC hour');const start=`${row.day}T${match[1]}:00:00Z`,end=Temporal.Instant.from(start).add({hours:1}).toString();return {start,end};}
 class AppLovinHourlyReconciliationError extends Error{constructor(readonly hour:string){super('AppLovin hourly spend does not reconcile with independent hour totals');}}
+export class AppLovinSettlingHourError extends Error{
+ readonly retryAfterMs=300000;
+ constructor(){super('AppLovin latest completed hour is still settling');this.name='AppLovinSettlingHourError';}
+}
 export function normalizeAppLovinHourlySpend(input:{hourly:Raw[];totals:Raw[]},client:Client,w:KindWindow,now=new Date(),settledThrough?:string):SourceBatch{
  const window=appLovinUTCWindow(client,w,now);if(settledThrough){if(!/^\d{4}-\d{2}-\d{2}T\d{2}:00:00Z$/.test(settledThrough)||Date.parse(settledThrough)!==Date.parse(window.through)-3600000||Date.parse(settledThrough)<=Date.parse(window.start)||w.to!==todayIn(client.timezone,now))throw new Error('Invalid AppLovin settled-hour boundary');window.through=settledThrough;}
  if(client.currency!=='USD')throw new Error('AppLovin report cost requires USD currency');boundedRows(input.hourly);boundedRows(input.totals);
@@ -128,6 +132,7 @@ export async function fetchAppLovinHourlySpend(client:Client,config:KindConfig,w
   // its exact coverage is retained and every older hour must still reconcile.
   const previous=Temporal.Instant.from(window.through).subtract({hours:1}).toString();
   if(!(error instanceof AppLovinHourlyReconciliationError)||error.hour!==previous||w.to!==todayIn(client.timezone,now))throw error;
+  if(Date.parse(previous)<=Date.parse(window.start))throw new AppLovinSettlingHourError();
   return normalizeAppLovinHourlySpend({hourly,totals},client,w,now,previous);
  }
 }
