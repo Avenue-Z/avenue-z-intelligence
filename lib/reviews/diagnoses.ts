@@ -3,6 +3,9 @@ import {change,ratio} from '../analytics/metrics';
 import {sumMetric} from '../analytics/query';
 import {dayWindow,shiftDate} from '../analytics/windows';
 import {Temporal} from '@js-temporal/polyfill';
+import {trendCutoffEnd} from '../analytics/trend-context';
+import {rechargeCancellationEventDefinition,rechargeCancellationEventPopulation} from '../sources/recharge-subscription-cohort';
+import {localHourInterval} from '../sources/kind-patches';
 type Period={from:string;to:string};
 type Brand=Pick<Client,'timezone'|'currency'>;
 const dates=(period:Period)=>{const result:string[]=[];for(let date=period.from;date<=period.to;date=shiftDate(date,1))result.push(date);return result;};
@@ -82,12 +85,25 @@ export function strategyDiagnoses(client:Brand,filters:QueryFilters,comparison:P
  limitations.push('Page-family AOV mix/rate decomposition is unavailable: the supplied page funnels do not include compatible page-attributed revenue and commerce orders. Session conversion counts are not a substitute for commerce orders. Campaign names do not establish which page family received spend.');
 
  const calendar=(values:Observation[],period:Period)=>{
-  const selected=values.filter(row=>row.dataset==='subscriptionEvents'&&row.metric==='subscription_cancellations'),qualified=coverage(selected,period,['subscription_cancellations'],client.timezone,filters.mode,cutoff);
-  const rows=dates(period).map(date=>({date,cancellations:sumMetric(selected.filter(row=>row.date===date),'subscription_cancellations')}));
-  return {...period,...qualified,total:qualified.qualified?sumMetric(selected,'subscription_cancellations'):null,rows};
+  const selected=values.filter(row=>row.dataset==='subscriptionEvents'&&row.metric==='subscription_cancellation_events'),qualified=coverage(selected,period,['subscription_cancellation_events'],client.timezone,filters.mode,cutoff);
+  // A current-day event capture is partial by calendar date, while its closed
+  // hourly buckets can completely cover the selected matched-clock window.
+  if(filters.mode==='partial'&&cutoff)qualified.qualified=qualified.missingDates.length===0&&dates(period).every(date=>{
+   const start=Date.parse(dayWindow(date,client.timezone).start),end=date<period.to?Date.parse(dayWindow(date,client.timezone).end):trendCutoffEnd(date,{timezone:client.timezone,cutoff,anchorDate:filters.to})??NaN;
+   const hours=selected.filter(row=>row.date===date).sort((a,b)=>Date.parse(a.start??'')-Date.parse(b.start??''));let cursor=start;
+   if(!hours.length||!Number.isFinite(end)||end<=start)return false;
+   for(const row of hours){const from=Date.parse(row.start??''),to=Date.parse(row.end??''),duration=to-from;
+    const interval=Number.isFinite(from)?localHourInterval(date,Temporal.Instant.from(row.start!).toZonedDateTimeISO(client.timezone).hour,client.timezone):null;
+    if(row.definition!==rechargeCancellationEventDefinition||row.population!==rechargeCancellationEventPopulation||row.currency!==null||Object.keys(row.dimensions).length||!row.sourceId||!['complete','partial'].includes(row.quality)||typeof row.value!=='number'||!Number.isSafeInteger(row.value)||row.value<0||from!==cursor||![3600000,7200000].includes(duration)||!interval||Date.parse(interval.start)!==from||Date.parse(interval.end)!==to||to>end||!row.coverageThrough||Date.parse(row.coverageThrough)<end)return false;
+    cursor=to;
+   }
+   return cursor===end;
+  });
+  const rows=dates(period).map(date=>({date,cancellations:sumMetric(selected.filter(row=>row.date===date),'subscription_cancellation_events')}));
+  return {...period,...qualified,total:qualified.qualified?sumMetric(selected,'subscription_cancellation_events'):null,rows};
  };
  const calendarCurrent=calendar(current,filters),calendarPrior=calendar(previous,comparison);
- const calendarCancellations={scope:`${scope} · Currently cancelled Recharge subscription records grouped by cancelled_at converted from UTC to the store calendar day. Reactivated or deleted records can disappear; this is not a complete historical cancellation-event ledger. Separate from cancelled renewal orders in their order-date cohort.`,current:calendarCurrent,comparison:calendarPrior,change:change(calendarCurrent.total,calendarPrior.total)};
+ const calendarCancellations={scope:`${scope} · Exact Recharge cancellation events grouped by the store calendar day, counting each subscription once at its first cancellation that day. Reactivated subscriptions retain the cancellation event. Seven-day provider retention requires previously captured events or a historical export for older dates. Separate from current-status subscription counts and cancelled renewal orders in their order-date cohort.`,current:calendarCurrent,comparison:calendarPrior,change:change(calendarCurrent.total,calendarPrior.total)};
  if(calendarCurrent.missingDates.length||calendarPrior.missingDates.length)limitations.push(`Calendar cancellation capture is incomplete. Selected missing dates: ${calendarCurrent.missingDates.join(', ')||'None'}; comparison missing dates: ${calendarPrior.missingDates.join(', ')||'None'}. Missing dates are unknown, not zero.`);
  return {scope,campaignCosts,pageFamilyMix,calendarCancellations,limitations};
 }

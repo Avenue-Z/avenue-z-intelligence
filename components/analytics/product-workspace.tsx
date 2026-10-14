@@ -12,7 +12,7 @@ type ProductRecord=Omit<ClientRecord,'datasetSeries'|'comparisonDatasetSeries'|'
  trendDatasetSeries?:Record<string,ProductDay[]>;
  trendComparisonDatasetSeries?:Record<string,ProductDay[]>;
 };
-const metrics:ChartMetric[]=[{key:'revenue',label:'Net sales',unit:'currency'},{key:'orders',label:'Product orders',unit:'count'},{key:'aov',label:'Average order value',unit:'currency'},{key:'discounts',label:'Discounts',unit:'currency'}];
+const metrics:ChartMetric[]=[{key:'revenue',label:'Net sales',unit:'currency'},{key:'orders',label:'Product orders',unit:'count'},{key:'aov',label:'Revenue per product order',unit:'currency'},{key:'discounts',label:'Discounts',unit:'currency'}];
 
 export function productChartContext(record:ProductRecord,filters:QueryFilters,window:TrendContextMode){
  const dates=trendContextRange(filters,window,record.comparison.from),range={from:dates.from,to:dates.to},comparisonRange={from:dates.comparisonFrom,to:dates.comparisonTo};

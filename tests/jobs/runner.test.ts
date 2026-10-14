@@ -3,15 +3,15 @@ import {readFileSync,readdirSync} from 'node:fs';
 import {it,expect,vi,beforeEach,afterEach} from 'vitest';
 import {Store} from '../../lib/server/store';
 import clients from '../../data/initial-clients.json';
-const state=vi.hoisted(()=>({store:null as any,fail:false,syncCompleted:[] as string[]}));
-vi.mock('@avenue/runtime',()=>({runtimePlatform:'sites'}));
+const state=vi.hoisted(()=>({store:null as any,fail:false,syncCompleted:[] as string[],runtimePlatform:'sites'}));
+vi.mock('@avenue/runtime',()=>({get runtimePlatform(){return state.runtimePlatform;}}));
 vi.mock('../../lib/server/access',()=>({getStore:()=>state.store}));
 vi.mock('../../lib/server/secrets',()=>({serverSecret:(key:string)=>key==='APP_ORGANIZATION_ID'?'o':null}));
 vi.mock('../../lib/jobs/sync',()=>({enqueueDue:async()=>{},runSyncBatch:async()=>({completed:state.syncCompleted,failed:[]}),generateReview:async(scope:any,c:any,date:string)=>{if(state.fail)throw new Error('sensitive provider detail');return state.store.saveReview(scope.organizationId,c.id,date,'generated',{actorId:scope.actorId},new Date().toISOString());}}));
 import {reviewTick,syncTick} from '../../lib/jobs/runner';
 import {DailyScheduler} from '../../lib/jobs/scheduler';
 beforeEach(async()=>{
- vi.useFakeTimers();vi.setSystemTime(new Date('2026-10-12T13:05:00Z'));state.fail=false;state.syncCompleted=[];
+ vi.useFakeTimers();vi.setSystemTime(new Date('2026-10-12T13:05:00Z'));state.fail=false;state.syncCompleted=[];state.runtimePlatform='sites';
  const db=new DatabaseSync(':memory:');for(const f of readdirSync('drizzle').filter(f=>f.endsWith('.sql')))db.exec(readFileSync(`drizzle/${f}`,'utf8'));
  const prepare=(sql:string)=>{let v:any[]=[];const api={bind(...values:any[]){v=values;return api;},async all(){return {results:db.prepare(sql).all(...v)};},async first(){return db.prepare(sql).get(...v)??null;},async run(){return {meta:{changes:Number(db.prepare(sql).run(...v).changes)}};}};return api;};state.store=new Store({prepare,batch:async(ss:any[])=>Promise.all(ss.map(s=>s.run()))});
  const c=clients[0];await state.store.run("INSERT INTO organizations VALUES('o','Avenue Z',1)");
@@ -80,6 +80,15 @@ it('warms durable closed and partial selections after a successful source job wi
  const s=state.store;await s.enqueue('o','kind-patches','s','warm','2026-10-12T13:00:00Z');await s.finish('o:s:warm');state.syncCompleted=['o:s:warm'];
  await s.persistBatch('o','s',{clientId:'kind-patches',channels:[],complete:true,coverageThrough:'2026-10-12T13:00:00Z',rows:[{date:'2026-10-11',dataset:'overview',metric:'revenue',value:42,definition:'web',currency:'USD',dimensions:{}}]},'warm','2026-10-12T13:00:00Z');
  const result=await syncTick();expect(result.completed).toEqual(['o:s:warm']);expect(result).toHaveProperty('cacheWarm.completed',30);expect(await s.all("SELECT status FROM observation_cache_entries WHERE organizationId='o' AND clientId='kind-patches'")).toEqual(Array.from({length:24},()=>({status:'ready'})));
+});
+it('releases the native sync lease after completed source jobs without duplicating independent cache warming',async()=>{
+ const s=state.store;state.runtimePlatform='vercel';await s.enqueue('o','kind-patches','s','warm','2026-10-12T13:00:00Z');await s.finish('o:s:warm');state.syncCompleted=['o:s:warm'];
+ await s.persistBatch('o','s',{clientId:'kind-patches',channels:[],complete:true,coverageThrough:'2026-10-12T13:00:00Z',rows:[{date:'2026-10-11',dataset:'overview',metric:'revenue',value:42,definition:'web',currency:'USD',dimensions:{}}]},'warm','2026-10-12T13:00:00Z');
+ const jobs=await s.all('SELECT id,status,attempts,dueAt FROM jobs ORDER BY id'),observations=vi.spyOn(s,'observations');
+ const result=await syncTick();
+ expect(result.completed).toEqual(['o:s:warm']);expect(result.failed).toEqual([]);expect(result).toHaveProperty('cacheWarm',{attempted:0,completed:0});
+ expect(observations).not.toHaveBeenCalled();expect(await s.all('SELECT * FROM observation_cache_entries')).toEqual([]);
+ expect(await s.all('SELECT * FROM runner_leases')).toEqual([]);expect(await s.all('SELECT id,status,attempts,dueAt FROM jobs ORDER BY id')).toEqual(jobs);
 });
 it.each(['pending','running'])('releases the sync lease without warming while enabled current jobs remain %s',async status=>{
  const s=state.store;await s.enqueue('o','kind-patches','s','warm','2026-10-12T13:00:00Z');await s.finish('o:s:warm');state.syncCompleted=['o:s:warm'];

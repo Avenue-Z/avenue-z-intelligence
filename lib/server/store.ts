@@ -13,6 +13,8 @@ import {TrendRollupAccumulator} from '../analytics/trend-rollup';
 import {readTrendObservations} from './trend-observations';
 import {reviewIndexFields} from '../reviews/index';
 import {retryPublication} from '../jobs/publication-retry';
+import {assertSourceActivation} from '../sources/registered-contract';
+import {expiredRechargeEventDay,completeRechargeEventDay,rechargeExactEventMetrics} from './recharge-event-retention';
 type Db={prepare:(sql:string)=>any;batch:(statements:any[])=>Promise<any[]>;allowCrossRequestCoalescing?:boolean};
 // Vercel reuses a warm adapter; Sites owns a fresh adapter per Store. This
 // optional memory cache stays isolated while the durable cache is shared.
@@ -234,10 +236,24 @@ export class Store {
     // Closed unchanged days already have immutable facts. Resolve them before
     // inserting a mixed refresh so polling today does not repeatedly store its
     // unchanged historical dates. The complete original batch remains archived.
-    const retained=new Map<string,string>();
+    const retained=new Map<string,string>(),retainedEvents=new Set<string>();
     if([...dayHashes.values()].some(day=>day.dataHash)){
-      const current=await publish('source.snapshot.current',()=>this.all<{date:string;snapshotId:string;dataHash:string|null;coverageThrough:string|null}>("SELECT c.date,c.snapshotId,c.dataHash,s.coverageThrough FROM current_snapshots c JOIN snapshots s ON s.id=c.snapshotId AND s.organizationId=c.organizationId AND s.clientId=c.clientId AND s.sourceId=c.sourceId AND s.status='ready' WHERE c.organizationId=? AND c.clientId=? AND c.sourceId=? AND c.date IN (SELECT value FROM json_each(?))",org,batch.clientId,source,JSON.stringify(dates)));
+      const current=await publish('source.snapshot.current',()=>this.all<{date:string;snapshotId:string;dataHash:string|null;coverageThrough:string|null;complete:number}>("SELECT c.date,c.snapshotId,c.dataHash,s.coverageThrough,s.complete FROM current_snapshots c JOIN snapshots s ON s.id=c.snapshotId AND s.organizationId=c.organizationId AND s.clientId=c.clientId AND s.sourceId=c.sourceId AND s.status='ready' WHERE c.organizationId=? AND c.clientId=? AND c.sourceId=? AND c.date IN (SELECT value FROM json_each(?))",org,batch.clientId,source,JSON.stringify(dates)));
       for(const day of current){const hash=dayHashes.get(day.date);if(hash?.dataHash&&hash.dataHash===day.dataHash&&hash.coveredThrough&&day.coverageThrough&&Date.parse(day.coverageThrough)>=Date.parse(hash.coveredThrough))retained.set(day.date,day.snapshotId);}
+      // Recharge cannot query exact events after seven days. A state-only
+      // refresh must not erase a previously qualified complete event day.
+      const expired=current.filter(day=>!retained.has(day.date)&&day.complete&&dayHashes.get(day.date)?.coveredThrough&&expiredRechargeEventDay(day.date,batch.timezone,now)&&(grouped.get(day.date)??[]).some(row=>row.metric==='new_subscriptions')&&!(grouped.get(day.date)??[]).some(row=>rechargeExactEventMetrics.has(row.metric)));
+      if(expired.length){
+        const [sourceRecord,clientRecord,qualification]=await publish('source.recharge.retention.activation',()=>Promise.all([this.first<{provider:string;enabled:number;version:number}>('SELECT provider,enabled,version FROM connections WHERE organizationId=? AND clientId=? AND id=?',org,batch.clientId,source),this.first<Omit<Client,'config'>&{config:string}>('SELECT * FROM clients WHERE organizationId=? AND id=?',org,batch.clientId),this.qualification(org,source)]));
+        if(sourceRecord?.provider==='kind-recharge-cancellations'&&sourceRecord.enabled&&clientRecord&&clientRecord.timezone===batch.timezone&&clientRecord.currency===batch.currency){
+          let contract:ReturnType<typeof assertSourceActivation>|undefined;try{contract=assertSourceActivation(sourceRecord,qualification,{...clientRecord,config:JSON.parse(clientRecord.config)});}catch{/* Unqualified originals cannot be pinned. */}
+          if(contract)for(const day of expired){const incoming=grouped.get(day.date)??[],through=dayHashes.get(day.date)!.coveredThrough!;if(!day.coverageThrough||Date.parse(day.coverageThrough)<Date.parse(through)||!completeRechargeEventDay(incoming,day.date,batch.timezone,source,contract,false))continue;
+            const original=await publish('source.recharge.retention.original',()=>this.all<{payload:string}>('SELECT payload FROM observations WHERE snapshotId=? AND date=? ORDER BY rowKey LIMIT 121',day.snapshotId,day.date));let originalRows:Observation[];try{originalRows=original.map(row=>JSON.parse(row.payload));}catch{continue;}
+            if(!completeRechargeEventDay(originalRows,day.date,batch.timezone,source,contract,true))continue;
+            retained.set(day.date,day.snapshotId);retainedEvents.add(day.date);dayHashes.set(day.date,{dataHash:day.dataHash,coveredThrough:through});
+          }
+        }
+      }
     }
     // A replay can need a previously retained day after a later correction.
     // First-wins inserts preserve existing rows and the snapshot's original
@@ -259,6 +275,11 @@ export class Store {
       // changes the current pointer between the lookup and this transaction.
       // The publication watermark still advances on unchanged facts, preventing
       // delayed older data from replacing the retained immutable snapshot.
+      if(retainedEvents.has(date)){
+        // Advance only this pointer's publication watermark. A concurrent real
+        // event correction must keep its different immutable snapshot intact.
+        pointers.push(this.db.prepare('UPDATE current_snapshots SET publishedAt=? WHERE organizationId=? AND clientId=? AND sourceId=? AND date=? AND snapshotId=? AND publishedAt<=?').bind(now,org,batch.clientId,source,date,retained.get(date),now));continue;
+      }
       pointers.push(this.db.prepare("INSERT INTO current_snapshots(organizationId,clientId,sourceId,date,snapshotId,publishedAt,dataHash) VALUES(?,?,?,?,?,?,?) ON CONFLICT(organizationId,clientId,sourceId,date) DO UPDATE SET snapshotId=CASE WHEN excluded.dataHash IS NOT NULL AND current_snapshots.dataHash=excluded.dataHash AND EXISTS (SELECT 1 FROM snapshots old WHERE old.id=current_snapshots.snapshotId AND old.status='ready' AND julianday(old.coverageThrough)>=julianday(?)) THEN current_snapshots.snapshotId ELSE excluded.snapshotId END,publishedAt=excluded.publishedAt,dataHash=excluded.dataHash WHERE excluded.publishedAt>=current_snapshots.publishedAt").bind(org,batch.clientId,source,date,retained.get(date)??id,now,dataHash,coveredThrough));
     }
     const publication=[...pointers,this.db.prepare('UPDATE snapshots SET status=? WHERE id=?').bind('ready',id)];

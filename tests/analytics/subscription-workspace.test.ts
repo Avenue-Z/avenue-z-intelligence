@@ -21,7 +21,7 @@ it('does not display cohort cancellations as actual subscriptions cancelled on a
  expect(html).toContain('order-date cohort');
 });
 it('shows actual calendar-date events separately and exposes comparison and chart controls',()=>{
- const html=renderToStaticMarkup(createElement(SubscriptionWorkspace,{record:{...base,datasetSeries:{subscriptions:commerce,subscriptionEvents:[{date:'2026-10-11',metrics:{subscription_cancellations:12}}]},comparisonDatasetSeries:{subscriptions:prior,subscriptionEvents:[{date:'2026-10-10',metrics:{subscription_cancellations:8}}]}},filters,update:()=>{}}));
+ const html=renderToStaticMarkup(createElement(SubscriptionWorkspace,{record:{...base,datasetSeries:{subscriptions:commerce,subscriptionEvents:[{date:'2026-10-11',metrics:{subscription_cancellation_events:12}}]},comparisonDatasetSeries:{subscriptions:prior,subscriptionEvents:[{date:'2026-10-10',metrics:{subscription_cancellation_events:8}}]}},filters,update:()=>{}}));
  expect(html).toMatch(/SUBSCRIPTIONS CANCELLED<\/span><strong>12<\/strong>/);
  expect(html).toContain('Subscriptions cancelled: Increased +50.00%; unfavorable');
  expect(html).toContain('data-tone="unfavorable" data-direction="up"');
@@ -63,11 +63,21 @@ it('retains unknown renewal history as gaps and calculates daily rates with matc
 });
 
 it('prominently shows creation-day cancellation rate with cohort counts and a favorable decline against the selected baseline',()=>{
- const html=renderToStaticMarkup(createElement(SubscriptionWorkspace,{record:{...base,datasetSeries:{subscriptions:commerce,subscriptionEvents:[{date:'2026-10-11',metrics:{new_subscriptions:100,same_day_subscription_cancellations:5,subscription_cancellations:12}}]},comparisonDatasetSeries:{subscriptions:prior,subscriptionEvents:[{date:'2026-10-10',metrics:{new_subscriptions:80,same_day_subscription_cancellations:8,subscription_cancellations:14}}]}},filters,update:()=>{}}));
+ const html=renderToStaticMarkup(createElement(SubscriptionWorkspace,{record:{...base,datasetSeries:{subscriptions:commerce,subscriptionEvents:[{date:'2026-10-11',metrics:{new_subscriptions:100,same_day_subscription_cancellation_events:5,subscription_cancellation_events:12}}]},comparisonDatasetSeries:{subscriptions:prior,subscriptionEvents:[{date:'2026-10-10',metrics:{new_subscriptions:80,same_day_subscription_cancellation_events:8,subscription_cancellation_events:14}}]}},filters,update:()=>{}}));
  expect(html).toMatch(/SAME-DAY CANCELLATION RATE<\/span><strong>5.00%<\/strong>/);expect(html).toContain('5 cancellations · 100 new subscriptions');expect(html).toContain('Same-day cancellation rate: Decreased -5.00 pp; favorable');expect(html).toContain('yesterday: 10.00%');expect(html).toContain('About these numbers');expect(html).not.toContain('Counts and revenue sum captured days.');expect(html).not.toContain('Recurring revenue divided by matching recurring orders');
 });
 it('shows favorable and unfavorable percentage-point changes for the matched weekly renewal rates',()=>{
  const record={...base,subscriptions:{...base.subscriptions,current:{...base.subscriptions.current,refundRate:.05,cancellationRate:.08},comparison:{...base.subscriptions.comparison,refundRate:.10,cancellationRate:.04}}};
  const html=renderToStaticMarkup(createElement(SubscriptionWorkspace,{record,filters,update:()=>{}}));
  expect(html).toContain('Refunded-order rate: Decreased -5.00 pp; favorable');expect(html).toContain('Renewal-order cancellation rate: Increased +4.00 pp; unfavorable');
+});
+
+it('shows event-backed creation-day cancellations and leaves an older current-state-only comparison unavailable',()=>{
+ const record={...base,datasetSeries:{subscriptions:commerce,subscriptionEvents:[{date:filters.to,metrics:{new_subscriptions:100,same_day_subscription_cancellations:2,same_day_subscription_cancellation_events:8,subscription_cancellation_events:12,subscription_cancellations:99}}]},comparisonDatasetSeries:{subscriptions:prior,subscriptionEvents:[{date:'2026-10-10',metrics:{new_subscriptions:100,same_day_subscription_cancellations:5,subscription_cancellations:22}}]}};
+ const html=renderToStaticMarkup(createElement(SubscriptionWorkspace,{record,filters,update:()=>{}}));
+ expect(html).toMatch(/SAME-DAY CANCELLATION RATE<\/span><strong>8.00%<\/strong>/);
+ expect(html).toContain('8 cancellations · 100 new subscriptions');expect(html).not.toContain('2 cancellations ·');
+ expect(html).toContain('Same-day cancellation rate: Comparison unavailable; neutral');expect(html).not.toContain('yesterday: 5.00%');
+ expect(html).toMatch(/SUBSCRIPTIONS CANCELLED<\/span><strong>12<\/strong>/);expect(html).toContain('Subscriptions cancelled: Comparison unavailable; neutral');expect(html).not.toContain('yesterday: 22');
+ expect(html).toContain('first cancellation events and include later reactivations');expect(html).toContain('older exact comparisons need previously captured events or a historical export');
 });

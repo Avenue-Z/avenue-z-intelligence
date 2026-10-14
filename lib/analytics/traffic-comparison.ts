@@ -1,4 +1,13 @@
 import type {ExplorerMetric} from './traffic-explorer';
+import type {Client} from './contracts';
+export type TrafficMeasurementIncident=Client['config']['incidents'][number];
+/** Compare tracking-sensitive values only within their configured regime. */
+export function trafficMeasurementCaveat(incidents:readonly TrafficMeasurementIncident[],current:{from:string;to:string},comparison:{from:string;to:string}){
+ const earliest=[current.from,comparison.from].sort()[0],latest=[current.to,comparison.to].sort().at(-1)!;
+ const overlaps=(period:{from:string;to:string},incident:TrafficMeasurementIncident)=>period.from<=(incident.end??incident.start)&&period.to>=incident.start;
+ const incident=incidents.find(value=>value.metrics.some(metric=>['atc','atc_rate','atc_sessions'].includes(metric))&&(value.end?overlaps(current,value)||overlaps(comparison,value):earliest<=value.start&&latest>=value.start));
+ return incident?`${incident.start}: ${incident.note}`:null;
+}
 
 const rateMetrics=new Set<ExplorerMetric>(['cvr','atc','checkoutCompletion']);
 const adverseMetrics=new Set<ExplorerMetric>(['refunds','discounts']);

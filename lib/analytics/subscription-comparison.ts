@@ -3,7 +3,7 @@ import type {SubscriptionMetric} from './subscription-explorer';
 type ComparisonDirection='up'|'down'|'unchanged'|'unavailable';
 type ComparisonTone='favorable'|'unfavorable'|'neutral';
 type ComparisonKind='percent'|'percentagePoints'|'absolute';
-const lowerIsBetter=new Set<SubscriptionMetric>(['subscription_cancellations','recurring_cancelled_orders','recurring_refund_orders','cancellation_rate','refund_rate','same_day_cancellation_rate','same_day_subscription_cancellations']);
+const lowerIsBetter=new Set<SubscriptionMetric>(['subscription_cancellation_events','recurring_cancelled_orders','recurring_refund_orders','cancellation_rate','refund_rate','same_day_cancellation_rate','same_day_subscription_cancellation_events']);
 
 /** Rates compare in percentage points; volume/value changes use the numeric baseline. */
 export function subscriptionComparison(metric:SubscriptionMetric,current:number|null,previous:number|null):{direction:ComparisonDirection;tone:ComparisonTone;kind:ComparisonKind;value:number|null}{

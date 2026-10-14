@@ -3,22 +3,22 @@ import {ratio} from './metrics';
 
 export type SubscriptionDay={date:string;metrics:Record<string,number|null>};
 export type SubscriptionRange={from:string;to:string};
-export type SubscriptionMetric='recurring_revenue'|'recurring_orders'|'aov'|'recurring_refund_orders'|'refund_rate'|'recurring_cancelled_orders'|'cancellation_rate'|'subscription_cancellations'|'new_subscriptions'|'same_day_subscription_cancellations'|'same_day_cancellation_rate';
+export type SubscriptionMetric='recurring_revenue'|'recurring_orders'|'aov'|'recurring_refund_orders'|'refund_rate'|'recurring_cancelled_orders'|'cancellation_rate'|'subscription_cancellation_events'|'new_subscriptions'|'same_day_subscription_cancellation_events'|'same_day_cancellation_rate';
 export const subscriptionMetrics:{id:SubscriptionMetric;label:string;unit:'currency'|'number'|'rate';color:string;definition:string}[]=[
  {id:'recurring_revenue',label:'Renewal revenue',unit:'currency',color:'#4368c4',definition:'Recurring order revenue excluding shipping and tax, before refunds'},
  {id:'recurring_orders',label:'Renewal orders',unit:'number',color:'#567fbb',definition:'Orders tagged Subscription Recurring Order'},
  {id:'aov',label:'Renewal AOV',unit:'currency',color:'#7567af',definition:'Recurring revenue divided by matching recurring orders'},
  {id:'new_subscriptions',label:'New subscriptions',unit:'number',color:'#4271d5',definition:'All newly created Recharge subscription records in the selected store-day creation cohort'},
- {id:'same_day_subscription_cancellations',label:'Same-day cancellations',unit:'number',color:'#ba6772',definition:'New subscription records cancelled on their store-calendar creation day, counted at cancellation time'},
- {id:'same_day_cancellation_rate',label:'Same-day cancellation rate',unit:'rate',color:'#ba6772',definition:'Creation-day cancellations divided by new subscriptions created in the identical store-day and completed-hour window; currently reported cancellation records exclude reactivated subscriptions'},
- {id:'subscription_cancellations',label:'Subscriptions cancelled',unit:'number',color:'#ba6772',definition:'Reported currently cancelled Recharge subscription records by cancellation date in the store timezone; reactivation can remove historical records'},
+ {id:'same_day_subscription_cancellation_events',label:'Same-day cancellations',unit:'number',color:'#ba6772',definition:'First cancellation events for newly created subscription records on their store-calendar creation day, including later reactivations'},
+ {id:'same_day_cancellation_rate',label:'Same-day cancellation rate',unit:'rate',color:'#ba6772',definition:'Creation-day cancellation events divided by new subscriptions created in the identical store-day and completed-hour window; later reactivation does not remove the first cancellation event'},
+ {id:'subscription_cancellation_events',label:'Subscriptions cancelled',unit:'number',color:'#ba6772',definition:'Unique subscriptions with a cancellation event on each store date, counted at their first cancellation that day; later reactivation does not remove the event'},
  {id:'recurring_cancelled_orders',label:'Cancelled renewal orders',unit:'number',color:'#b58365',definition:'Renewal orders placed in the period that now have cancellation status; this is an order-date cohort'},
  {id:'cancellation_rate',label:'Renewal-order cancellation rate',unit:'rate',color:'#b58365',definition:'Cancelled renewal orders divided by recurring orders in the same order-date cohort'},
  {id:'recurring_refund_orders',label:'Refunded renewal orders',unit:'number',color:'#b29b62',definition:'Renewal orders placed in the period with a refund; this is an order-date cohort'},
  {id:'refund_rate',label:'Refunded-order rate',unit:'rate',color:'#b29b62',definition:'Refunded renewal orders divided by recurring orders in the same order-date cohort'},
 ];
-const rawMetrics=['recurring_revenue','recurring_orders','recurring_refund_orders','recurring_cancelled_orders','subscription_cancellations','new_subscriptions','same_day_subscription_cancellations'];
-const eventMetrics=new Set(['subscription_cancellations','new_subscriptions','same_day_subscription_cancellations']);
+const rawMetrics=['recurring_revenue','recurring_orders','recurring_refund_orders','recurring_cancelled_orders','subscription_cancellation_events','new_subscriptions','same_day_subscription_cancellation_events'];
+const eventMetrics=new Set(['subscription_cancellation_events','new_subscriptions','same_day_subscription_cancellation_events']);
 function finite(value:unknown):value is number{return typeof value==='number'&&Number.isFinite(value);}
 function calendarDates(range:SubscriptionRange){
  const from=Temporal.PlainDate.from(range.from),to=Temporal.PlainDate.from(range.to),days=from.until(to).days;
@@ -35,15 +35,15 @@ export function subscriptionMetricValue(metrics:Record<string,number|null>,metri
  if(metric==='aov')return ratio(metrics.recurring_revenue,metrics.recurring_orders);
  if(metric==='refund_rate')return ratio(metrics.recurring_refund_orders,metrics.recurring_orders);
  if(metric==='cancellation_rate')return ratio(metrics.recurring_cancelled_orders,metrics.recurring_orders);
- if(metric==='same_day_cancellation_rate'){const numerator=metrics.same_day_subscription_cancellations,denominator=metrics.new_subscriptions;return finite(numerator)&&finite(denominator)&&numerator>=0&&denominator>=numerator?ratio(numerator,denominator):null;}
+ if(metric==='same_day_cancellation_rate'){const numerator=metrics.same_day_subscription_cancellation_events,denominator=metrics.new_subscriptions;return finite(numerator)&&finite(denominator)&&numerator>=0&&denominator>=numerator?ratio(numerator,denominator):null;}
  return finite(metrics[metric])?metrics[metric]:null;
 }
 function periodSummary(dates:string[],commerce:Map<string,Record<string,number|null>>,events:Map<string,Record<string,number|null>>){
  const metrics:Record<string,number|null>={},coverage:Record<string,{reportedDays:number;totalDays:number}>={};
- for(const metric of rawMetrics){const source=eventMetrics.has(metric)?events:commerce,values=dates.flatMap(date=>source.has(date)&&Object.hasOwn(source.get(date)!,metric)?[source.get(date)![metric]]:[]);const known=values.filter(finite);metrics[metric]=values.length&&values.every(finite)?known.reduce((sum,value)=>sum+value,0):null;coverage[metric]={reportedDays:known.length,totalDays:dates.length};}
+ for(const metric of rawMetrics){const source=eventMetrics.has(metric)?events:commerce,values=dates.flatMap(date=>source.has(date)&&Object.hasOwn(source.get(date)!,metric)?[source.get(date)![metric]]:[]);const known=values.filter(finite);metrics[metric]=values.length&&values.every(finite)&&(!['same_day_subscription_cancellation_events','subscription_cancellation_events'].includes(metric)||values.length===dates.length)?known.reduce((sum,value)=>sum+value,0):null;coverage[metric]={reportedDays:known.length,totalDays:dates.length};}
  for(const [metric,numerator] of [['aov','recurring_revenue'],['refund_rate','recurring_refund_orders'],['cancellation_rate','recurring_cancelled_orders']]){const numeratorDates=dates.filter(date=>commerce.has(date)&&Object.hasOwn(commerce.get(date)!,numerator)),denominatorDates=dates.filter(date=>commerce.has(date)&&Object.hasOwn(commerce.get(date)!,'recurring_orders')),matched=JSON.stringify(numeratorDates)===JSON.stringify(denominatorDates);metrics[metric]=matched?ratio(metrics[numerator],metrics.recurring_orders):null;coverage[metric]={reportedDays:dates.filter(date=>finite(commerce.get(date)?.[numerator])&&finite(commerce.get(date)?.recurring_orders)).length,totalDays:dates.length};}
- const cohortDates=dates.filter(date=>events.has(date)&&Object.hasOwn(events.get(date)!,'new_subscriptions')),cancelDates=dates.filter(date=>events.has(date)&&Object.hasOwn(events.get(date)!,'same_day_subscription_cancellations')),matched=JSON.stringify(cohortDates)===JSON.stringify(cancelDates);
- metrics.same_day_cancellation_rate=matched&&cohortDates.length===dates.length?subscriptionMetricValue(metrics,'same_day_cancellation_rate'):null;coverage.same_day_cancellation_rate={reportedDays:dates.filter(date=>finite(events.get(date)?.new_subscriptions)&&finite(events.get(date)?.same_day_subscription_cancellations)).length,totalDays:dates.length};
+ const cohortDates=dates.filter(date=>events.has(date)&&Object.hasOwn(events.get(date)!,'new_subscriptions')),cancelDates=dates.filter(date=>events.has(date)&&Object.hasOwn(events.get(date)!,'same_day_subscription_cancellation_events')),matched=JSON.stringify(cohortDates)===JSON.stringify(cancelDates);
+ metrics.same_day_cancellation_rate=matched&&cohortDates.length===dates.length?subscriptionMetricValue(metrics,'same_day_cancellation_rate'):null;coverage.same_day_cancellation_rate={reportedDays:dates.filter(date=>finite(events.get(date)?.new_subscriptions)&&finite(events.get(date)?.same_day_subscription_cancellation_events)).length,totalDays:dates.length};
  return {metrics,coverage};
 }
 export function buildSubscriptionExplorer({current,comparison,range,comparisonRange,currentEvents=[],comparisonEvents=[]}:{current:SubscriptionDay[];comparison:SubscriptionDay[];range:SubscriptionRange;comparisonRange:SubscriptionRange;currentEvents?:SubscriptionDay[];comparisonEvents?:SubscriptionDay[]}){

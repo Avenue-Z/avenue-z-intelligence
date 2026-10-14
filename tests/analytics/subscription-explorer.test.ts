@@ -22,9 +22,9 @@ describe('subscription explorer',()=>{
   expect(subscriptionMetricValue(result.current.metrics,'aov')).toBeNull();
  });
  it('keeps order-date cohort cancellations separate from calendar-date cancellation events',()=>{
-  const result=buildSubscriptionExplorer({range:{from:'2026-10-10',to:'2026-10-10'},comparisonRange:{from:'2026-10-09',to:'2026-10-09'},current:[{date:'2026-10-10',metrics:{recurring_orders:100,recurring_cancelled_orders:4}}],comparison:[],currentEvents:[{date:'2026-10-10',metrics:{subscription_cancellations:12}}]});
+  const result=buildSubscriptionExplorer({range:{from:'2026-10-10',to:'2026-10-10'},comparisonRange:{from:'2026-10-09',to:'2026-10-09'},current:[{date:'2026-10-10',metrics:{recurring_orders:100,recurring_cancelled_orders:4}}],comparison:[],currentEvents:[{date:'2026-10-10',metrics:{subscription_cancellation_events:12}}]});
   expect(result.current.metrics.recurring_cancelled_orders).toBe(4);
-  expect(result.current.metrics.subscription_cancellations).toBe(12);
+  expect(result.current.metrics.subscription_cancellation_events).toBe(12);
   expect(result.points[0].selected.recurring_cancelled_orders).toBe(4);
  });
  it('preserves a known invalid metric and refuses to double-count duplicate days',()=>{
@@ -41,13 +41,20 @@ describe('subscription explorer',()=>{
  });
 });
 it('weights same-day creation-cohort cancellation rate from matched event counts and retains calendar cancellations separately',()=>{
- const result=buildSubscriptionExplorer({range:{from:'2026-10-12',to:'2026-10-13'},comparisonRange:{from:'2026-10-10',to:'2026-10-11'},current:[],comparison:[],currentEvents:[{date:'2026-10-12',metrics:{new_subscriptions:10,same_day_subscription_cancellations:3,subscription_cancellations:40}},{date:'2026-10-13',metrics:{new_subscriptions:90,same_day_subscription_cancellations:2,subscription_cancellations:60}}]});
- expect(subscriptionMetricValue(result.current.metrics,'same_day_cancellation_rate' as any)).toBe(.05);expect(result.current.metrics.subscription_cancellations).toBe(100);expect(result.current.coverage.same_day_cancellation_rate.reportedDays).toBe(2);
+ const result=buildSubscriptionExplorer({range:{from:'2026-10-12',to:'2026-10-13'},comparisonRange:{from:'2026-10-10',to:'2026-10-11'},current:[],comparison:[],currentEvents:[{date:'2026-10-12',metrics:{new_subscriptions:10,same_day_subscription_cancellation_events:3,subscription_cancellation_events:40}},{date:'2026-10-13',metrics:{new_subscriptions:90,same_day_subscription_cancellation_events:2,subscription_cancellation_events:60}}]});
+ expect(subscriptionMetricValue(result.current.metrics,'same_day_cancellation_rate' as any)).toBe(.05);expect(result.current.metrics.subscription_cancellation_events).toBe(100);expect(result.current.coverage.same_day_cancellation_rate.reportedDays).toBe(2);
 });
 it('does not infer a same-day cancellation denominator from active customers or mismatched captured creation days',()=>{
- const result=buildSubscriptionExplorer({range:{from:'2026-10-12',to:'2026-10-13'},comparisonRange:{from:'2026-10-10',to:'2026-10-11'},current:[{date:'2026-10-12',metrics:{active_customers:10000}}],comparison:[],currentEvents:[{date:'2026-10-12',metrics:{new_subscriptions:10,same_day_subscription_cancellations:1}},{date:'2026-10-13',metrics:{new_subscriptions:20}}]});expect(subscriptionMetricValue(result.current.metrics,'same_day_cancellation_rate' as any)).toBeNull();expect(subscriptionMetricValue({new_subscriptions:0,same_day_subscription_cancellations:0},'same_day_cancellation_rate' as any)).toBeNull();
+ const result=buildSubscriptionExplorer({range:{from:'2026-10-12',to:'2026-10-13'},comparisonRange:{from:'2026-10-10',to:'2026-10-11'},current:[{date:'2026-10-12',metrics:{active_customers:10000}}],comparison:[],currentEvents:[{date:'2026-10-12',metrics:{new_subscriptions:10,same_day_subscription_cancellation_events:1}},{date:'2026-10-13',metrics:{new_subscriptions:20}}]});expect(subscriptionMetricValue(result.current.metrics,'same_day_cancellation_rate' as any)).toBeNull();expect(subscriptionMetricValue({new_subscriptions:0,same_day_subscription_cancellation_events:0},'same_day_cancellation_rate' as any)).toBeNull();
 });
 
 it('withholds a selected 30-day cohort rate when only seven requested creation days are captured, while retaining each known daily rate',()=>{
- const events=Array.from({length:7},(_,index)=>({date:`2026-10-${String(index+1).padStart(2,'0')}`,metrics:{new_subscriptions:100,same_day_subscription_cancellations:5}})),result=buildSubscriptionExplorer({range:{from:'2026-09-08',to:'2026-10-07'},comparisonRange:{from:'2026-08-09',to:'2026-09-07'},current:[],comparison:[],currentEvents:events});expect(result.current.coverage.same_day_cancellation_rate).toEqual({reportedDays:7,totalDays:30});expect(subscriptionMetricValue(result.current.metrics,'same_day_cancellation_rate')).toBeNull();expect(subscriptionMetricValue(result.points.at(-1)!.selected,'same_day_cancellation_rate')).toBe(.05);
+ const events=Array.from({length:7},(_,index)=>({date:`2026-10-${String(index+1).padStart(2,'0')}`,metrics:{new_subscriptions:100,same_day_subscription_cancellation_events:5}})),result=buildSubscriptionExplorer({range:{from:'2026-09-08',to:'2026-10-07'},comparisonRange:{from:'2026-08-09',to:'2026-09-07'},current:[],comparison:[],currentEvents:events});expect(result.current.coverage.same_day_cancellation_rate).toEqual({reportedDays:7,totalDays:30});expect(result.current.metrics.same_day_subscription_cancellation_events).toBeNull();expect(subscriptionMetricValue(result.current.metrics,'same_day_cancellation_rate')).toBeNull();expect(subscriptionMetricValue(result.points.at(-1)!.selected,'same_day_cancellation_rate')).toBe(.05);
+});
+
+it('never substitutes currently-cancelled records for exact creation-day cancellation events',()=>{
+ const range={from:'2026-10-13',to:'2026-10-13'},comparisonRange={from:'2026-10-12',to:'2026-10-12'};
+ const result=buildSubscriptionExplorer({range,comparisonRange,current:[],comparison:[],currentEvents:[{date:range.to,metrics:{new_subscriptions:100,same_day_subscription_cancellations:2,same_day_subscription_cancellation_events:8,subscription_cancellation_events:12,subscription_cancellations:99}}],comparisonEvents:[{date:comparisonRange.to,metrics:{new_subscriptions:100,same_day_subscription_cancellations:5,subscription_cancellations:22}}]});
+ expect(subscriptionMetricValue(result.current.metrics,'same_day_cancellation_rate')).toBe(.08);expect(subscriptionMetricValue(result.previous.metrics,'same_day_cancellation_rate')).toBeNull();expect(result.previous.coverage.same_day_cancellation_rate.reportedDays).toBe(0);
+ expect(result.current.metrics.subscription_cancellation_events).toBe(12);expect(result.previous.metrics.subscription_cancellation_events).toBeNull();
 });

@@ -10,7 +10,7 @@ import {trendContextWindows} from '../analytics/trend-context';
 
 type Presentation=ReturnType<typeof workspacePresentation>;
 type Frame=Omit<Presentation,'connections'>;
-const codecVersion='gzip-frame-v9',maximumExpandedBytes=4*1024*1024,maximumCompressedCharacters=512*1024;
+const codecVersion='gzip-frame-v10',maximumExpandedBytes=4*1024*1024,maximumCompressedCharacters=512*1024;
 export type PreparedWorkspaceInput={
  store:Store;organizationId:string;client:Client;filters:QueryFilters;preparedDatasets:string[];
  freshConnections?:Connection[];

@@ -5,7 +5,7 @@ vi.mock('../../components/ui/sheet',async()=>{const {createElement}=await import
 vi.mock('@/lib/utils',async()=>await import('../../lib/utils'));
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {TrafficWorkspace,ExplorerRanking,LandingPageMarkets} from '../../components/analytics/traffic-workspace';
+import {TrafficWorkspace,ExplorerRanking,LandingPageMarkets,explorerTrendData} from '../../components/analytics/traffic-workspace';
 import {compactTrafficExplorer} from '../../lib/analytics/traffic-presentation';
 import {detailRows,queryClient} from '../../lib/analytics/query';
 import {workspacePresentation} from '../../lib/analytics/presentation';
@@ -94,4 +94,44 @@ it('omits duplicate one-day page trend values but retains a genuine multi-day ca
  let selected=filters;const render=()=>renderToStaticMarkup(createElement(TrafficWorkspace,{record,filters:selected,update:()=>{}}));
  expect(render()).not.toContain('This page over time');
  detail.currentSeries.push({...detail.currentSeries[0],date:'2026-10-09'});selected={...filters,from:'2026-10-09'};state.drill.key=trafficPageKey(undefined,client.id,selected,state.page,trafficRecordVersion(record,'traffic'));expect(render()).toContain('This page over time');
+});
+const measurement={id:'measurement',title:'Bounce and ATC measurement change',start:'2026-09-22',metrics:['atc','bounce'],note:'Compare orders and CVR across this change; bounce and ATC are not comparable.'};
+function measurementRecord(compare:'thirtyDays'|'previous'|'custom'){
+ const selected:QueryFilters={...filters,from:'2026-10-14',to:'2026-10-14',mode:'partial',compare,...compare==='custom'?{compareFrom:'2026-09-14',compareTo:'2026-09-14'}:{}};
+ const prior=compare==='previous'?'2026-10-13':'2026-09-14',incidentClient={...client,config:{...client.config,incidents:[measurement]}};
+ const facts=[prior,selected.to].flatMap(date=>Object.entries({sessions:1000,converting_sessions:date===selected.to?30:20,atc_sessions:date===selected.to?200:100,checkouts:20,completed_checkouts:10}).map(([metric,value])=>({...rows[0],date,metric,value,dimensions:{page:'/pages/dream',market:'US',utm_source:'meta',source:'social',device:'mobile'},start:`${date}T00:00:00Z`,end:`${date}T01:00:00Z`,coverageThrough:'2026-10-14T01:00:00Z'})));
+ const a=workspacePresentation(queryClient(incidentClient,facts,[{id:'s',provider:'gateway',enabled:true,coverageThrough:'2026-10-14T01:00:00Z'}] as any,selected,{preparedDatasets:['traffic','funnels']}),selected);
+ return {selected,record:{...a,findings:[],reviews:[],note:{body:'',version:0}}};
+}
+it.each(['thirtyDays','custom'] as const)('suppresses cross-measurement ATC comparisons for %s while retaining current values and CVR comparisons',compare=>{
+ const {record,selected}=measurementRecord(compare),before=JSON.stringify(record),html=renderToStaticMarkup(createElement(TrafficWorkspace,{record,filters:selected,update:()=>{}}));
+ const atc=html.match(/ADD-TO-CART RATE[\s\S]*?<\/div><\/div>/)?.[0]??'',cells=[...html.matchAll(/<td>([\s\S]*?)<\/td>/g)].map(match=>match[1]);
+ expect(atc).toContain('20.00%');expect(atc).not.toContain('10.00%');expect(atc).not.toContain('+10.00 pp');
+ expect(cells[3]).toContain('>200</strong>');expect(cells[3]).not.toContain('+100.0%');
+ expect(cells[2]).toContain('+1.00 pp');expect(html).toContain(measurement.note);expect(JSON.stringify(record)).toBe(before);
+});
+it('retains clean day-over-day ATC comparisons after the configured measurement break',()=>{
+ const {record,selected}=measurementRecord('previous'),html=renderToStaticMarkup(createElement(TrafficWorkspace,{record,filters:selected,update:()=>{}}));
+ const atc=html.match(/ADD-TO-CART RATE[\s\S]*?<\/div><\/div>/)?.[0]??'';
+ expect(atc).toContain('20.00%');expect(atc).toContain('10.00%');expect(atc).toContain('+10.00 pp');expect(atc).toContain('data-tone="favorable"');
+});
+it('does not reinstate cross-measurement ATC comparisons inside a loaded landing-page drawer',()=>{
+ const {record,selected}=measurementRecord('thirtyDays');state.page='/pages/dream';
+ const detail:TrafficPageDetail={explorer:record.trafficExplorer!,cutoff:record.cutoff,warnings:[],comparison:record.comparison,currentSeries:record.datasetSeries.traffic,comparisonSeries:record.comparisonDatasetSeries.traffic,timezone:'UTC',currency:'USD',loadedAt:null};
+ state.drill={key:trafficPageKey(undefined,client.id,selected,state.page,trafficRecordVersion(record,'traffic')),data:detail,loading:false,error:''};
+ const html=renderToStaticMarkup(createElement(TrafficWorkspace,{record,filters:selected,update:()=>{}})),drawer=html.match(/<aside aria-label="Landing-page drawer"[\s\S]*?<\/aside>/)?.[0]??'';
+ expect(drawer).toContain('>200</strong>');expect(drawer).not.toContain('Cart sessions up: +100.0%');expect(drawer).not.toContain('Add-to-cart rate up: +10.00 pp');
+ expect(drawer).toContain('Session conversion rate up: +1.00 pp');expect(drawer).toContain(measurement.note);
+});
+it('omits only cross-measurement ATC prior chart points while keeping a clean CVR comparison',()=>{
+ const {record,selected}=measurementRecord('thirtyDays'),common={current:record.datasetSeries.traffic,previous:record.comparisonDatasetSeries.traffic,filters:selected,comparisonFrom:record.comparison.from,range:'selected' as const,incidents:[measurement]};
+ const atc=explorerTrendData({...common,metric:'atc'});expect(atc.points[0].current).toBe(.2);expect(atc.points[0].previous).toBeNull();
+ const cvr=explorerTrendData({...common,metric:'cvr'});expect(cvr.points[0].current).toBe(.03);expect(cvr.points[0].previous).toBe(.02);
+});
+it('keeps clean ATC trend pairs on either side of the change while omitting only the crossing pairs',()=>{
+ const series=(dates:string[],atc:number)=>dates.map(date=>({date,metrics:{sessions:1000,atc_sessions:atc*1000},summary:{atc}}));
+ const selected={...filters,from:'2026-09-21',to:'2026-09-24',compare:'custom' as const,compareFrom:'2026-09-20',compareTo:'2026-09-23'};
+ const result=explorerTrendData({current:series(['2026-09-21','2026-09-22','2026-09-23','2026-09-24'],.2),previous:series(['2026-09-20','2026-09-21','2026-09-22','2026-09-23'],.1),filters:selected,comparisonFrom:'2026-09-20',metric:'atc',range:'selected',incidents:[measurement]});
+ expect(result.points.map(point=>point.current)).toEqual([.2,.2,.2,.2]);
+ expect(result.points.map(point=>point.previous)).toEqual([.1,null,null,.1]);
 });

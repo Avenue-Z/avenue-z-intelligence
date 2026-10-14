@@ -35,7 +35,7 @@ it('qualifies coverage before decomposition and does not pool different metric p
  const multi=strategyDiagnoses(client,{...filters,from:'2026-10-10'},prior,page(filters.to,'/',200,40),previous);expect(multi.pageFamilyMix.currentCoverage.missingDates).toEqual(['2026-10-10']);expect(multi.pageFamilyMix.markets[0].decomposition).toBeNull();
 });
 it('states exact captured cancellation dates and never fills missing days with zero or renewal order cancellations',()=>{
- const event=(date:string,value:number)=>facts(date,'subscriptionEvents',{}, {subscription_cancellations:value}).map(r=>({...r,population:'recharge_cancelled_subscription_records',definition:'recharge_current_cancelled_subscription_records_cancelled_at_utc_to_store_date_excludes_reactivated'}));
+ const event=(date:string,value:number)=>facts(date,'subscriptionEvents',{}, {subscription_cancellation_events:value}).map(r=>({...r,population:'recharge_subscription_cancellation_events',definition:'recharge_subscription_cancelled_events_first_per_subscription_store_day_at_utc_includes_reactivated'}));
  const d=strategyDiagnoses(client,{...filters,from:'2026-10-10'},prior,[...event('2026-10-11',7),...facts('2026-10-11','subscriptions',{}, {recurring_cancelled_orders:99})],[]);
  expect(d.calendarCancellations.current).toMatchObject({observedDates:['2026-10-11'],missingDates:['2026-10-10'],total:null,rows:[{date:'2026-10-10',cancellations:null},{date:'2026-10-11',cancellations:7}]});expect(d.calendarCancellations.comparison.total).toBeNull();expect(d.calendarCancellations.change).toBeNull();expect(d.calendarCancellations.scope).toMatch(/reactivated/i);
 });
@@ -46,8 +46,26 @@ it('retains complete campaign aggregates before the 80-ad evidence preview and r
  const costs=evidenceReviewTables(c,filters).find(table=>table.title==='Meta campaign traffic costs vs comparison')!;expect(costs.rows[0]).toContain('$120.00');expect(costs.rows[0]).toContain('$60.00');expect(costs.sourceIds).toEqual([c.sourceId]);expect(costs.scope).toContain(`${filters.to}–${filters.to} vs ${prior.to}–${prior.to}`);
 });
 it('renders calendar cancellations separately and keeps unavailable diagnosis limits after deterministic refinement',()=>{
- const brand={...clients[0],timezone:'UTC',currency:'USD'} as any,event=facts(filters.to,'subscriptionEvents',{}, {subscription_cancellations:7}).map(row=>({...row,population:'recharge_cancelled_subscription_records',definition:'recharge_current_cancelled_subscription_records_cancelled_at_utc_to_store_date_excludes_reactivated'}));
+ const brand={...clients[0],timezone:'UTC',currency:'USD'} as any,event=facts(filters.to,'subscriptionEvents',{}, {subscription_cancellation_events:7}).map(row=>({...row,population:'recharge_subscription_cancellation_events',definition:'recharge_subscription_cancelled_events_first_per_subscription_store_day_at_utc_includes_reactivated'}));
  const analytics=queryClient(brand,event,[],filters),context=buildAIContext([{...analytics,note:{body:''},findings:[],reviews:[]}] as any,filters),c=context.clients[0],result={headlines:['Spend vs revenue','B','C','D'],actions:[],sections:REVIEW_SECTIONS.map(title=>({title,paragraphs:[],bullets:[],tables:[]}))} as any;
  refineReview(result,c,filters);const details=result.sections.find((section:any)=>section.title==='Detail tables').tables,table=details.find((table:any)=>table.title==='Subscription cancellations by store calendar day');expect(table.rows).toEqual([[filters.to,'7',prior.to,'Unavailable']]);expect(table.scope).toMatch(/comparison missing dates: 2026-10-10/i);
  const limits=result.sections.find((section:any)=>section.title==='Sources & limitations').paragraphs.join(' ');expect(limits).toContain('Market-level CPC');expect(limits).toContain('Page-family AOV');expect(limits).toContain('Missing dates are unknown');const once=JSON.stringify(result);refineReview(result,c,filters);expect(JSON.stringify(result)).toBe(once);
+});
+
+it('uses exact calendar events in AI diagnoses and review tables without substituting conflicting current-status counts',()=>{
+ const brand={...clients[0],timezone:'UTC',currency:'USD'} as any;
+ const rows=[...facts(filters.to,'subscriptionEvents',{}, {subscription_cancellation_events:12}),...facts(filters.to,'subscriptionEvents',{}, {subscription_cancellations:99}),...facts(prior.to,'subscriptionEvents',{}, {subscription_cancellations:22})];
+ const analytics=queryClient(brand,rows,[],filters),context=buildAIContext([{...analytics,note:{body:''},findings:[],reviews:[]}] as any,filters),c=context.clients[0];
+ expect(c.strategyDiagnoses.calendarCancellations.current.total).toBe(12);expect(c.strategyDiagnoses.calendarCancellations.comparison.total).toBeNull();
+ const table=evidenceReviewTables(c,filters).find(table=>table.title==='Subscription cancellations by store calendar day')!;
+ expect(table.rows).toEqual([[filters.to,'12',prior.to,'Unavailable']]);expect(table.sourceIds).toEqual([c.sourceId]);
+ expect(c.strategyDiagnoses.calendarCancellations.scope).toContain('cancellation events');
+});
+
+it('qualifies only contiguous registered exact-event hourly buckets through the confirmed partial cutoff',()=>{
+ const selected={...filters,mode:'partial' as const},cutoff='2026-10-11T02:00:00Z';
+ const rows:Observation[]=[0,1].map(hour=>({date:filters.to,dataset:'subscriptionEvents',metric:'subscription_cancellation_events',value:hour,dimensions:{},sourceId:'recharge',population:'recharge_subscription_cancellation_events',definition:'recharge_subscription_cancelled_events_first_per_subscription_store_day_at_utc_includes_reactivated',currency:null,retrievedAt:'2026-10-11T02:30:00Z',coverageThrough:cutoff,quality:'partial',start:`2026-10-11T0${hour}:00:00Z`,end:`2026-10-11T0${hour+1}:00:00Z`}));
+ expect(strategyDiagnoses(client,selected,prior,rows,[],cutoff).calendarCancellations.current.total).toBe(1);
+ const invalid=[rows.slice(1),rows.map(row=>({...row,quality:'estimated' as const})),rows.map(row=>({...row,definition:'current_status'})),rows.map(row=>({...row,coverageThrough:null})),[{...rows[0],value:1,end:cutoff}]];
+ for(const candidate of invalid)expect(strategyDiagnoses(client,selected,prior,candidate,[],cutoff).calendarCancellations.current.total).toBeNull();
 });
