@@ -6,11 +6,13 @@ import type {Store} from '../server/store';
 import {validateBatch} from '../sources/qualification';
 import {DailyScheduler} from './scheduler';
 
-type ArchivedSnapshot={id:string;organizationId:string;clientId:string;sourceId:string;retrievedAt:string;coverageThrough:string|null;complete:number;objectKey:string;provider:string|null};
+type ArchivedSnapshot={id:string;organizationId:string;clientId:string;sourceId:string;retrievedAt:string;coverageThrough:string|null;complete:number;status:string;objectKey:string;provider:string|null};
 type ArchiveContent={text:string;bytes:number;pathname:string;etag:string};
 export type ArchiveReader=(key:string,deadline:number)=>Promise<ArchiveContent>;
 type Options={maxSnapshots:number;maxRows:number;deadline:number;readArchive?:ArchiveReader};
 const MAX_ARCHIVE_BYTES=200*1024*1024;
+const MAX_CANDIDATE_PAGES=32;
+type MaintenanceResult={verifiedSnapshots:number;prunedSnapshots:number;rowsDeleted:number;charactersDeleted:number;projectionChunksDeleted:number;projectionEntriesDeleted?:number;skipped:number;deferred?:'current-source-work'|'deadline'|'database'|'candidate-page-limit';stage?:string;uncertainWrite?:boolean};
 
 async function privateArchive(key:string,deadline:number):Promise<ArchiveContent>{
  const token=serverSecret('BLOB_READ_WRITE_TOKEN');if(!token)throw Error('Private archive is unavailable');
@@ -43,22 +45,31 @@ async function verifiedArchive(store:Store,snapshot:ArchivedSnapshot,reader:Arch
 
 // These predicates are repeated inside every DELETE, after remote archive
 // verification, so a concurrent pointer/job/review publication protects it.
-const protection=`s.organizationId=? AND s.clientId='kind-patches' AND s.status='ready' AND s.retrievedAt<?
+const protection=`s.organizationId=? AND s.clientId='kind-patches' AND s.status IN ('ready','writing') AND s.retrievedAt<?
  AND NOT EXISTS(SELECT 1 FROM current_snapshots p WHERE p.snapshotId=s.id)
  AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.organizationId=s.organizationId AND j.clientId=s.clientId AND j.sourceId=s.sourceId AND j.status='running' AND j.leaseUntil>=?)
  AND NOT EXISTS(SELECT 1 FROM scheduled_reviews r WHERE r.organizationId=s.organizationId AND r.clientId=s.clientId AND r.status='running' AND r.leaseUntil>=?)
  AND NOT EXISTS(SELECT 1 FROM snapshot_day_projection_entries e WHERE e.snapshotId=s.id AND e.status='writing')
  AND NOT EXISTS(SELECT 1 FROM reviews r WHERE r.organizationId=s.organizationId AND r.clientId=s.clientId AND (instr(r.payload,s.id)>0 OR (instr(r.payload,s.sourceId)>0 AND instr(r.payload,s.retrievedAt)>0)))
  AND NOT EXISTS(SELECT 1 FROM ai_turns a WHERE a.organizationId=s.organizationId AND (instr(a.payload,s.id)>0 OR (instr(a.payload,s.sourceId)>0 AND instr(a.payload,s.retrievedAt)>0)))`;
+const currentWork=`SELECT 1 FROM jobs j JOIN connections c ON c.id=j.sourceId AND c.organizationId=j.organizationId AND c.clientId=j.clientId WHERE j.organizationId=? AND j.clientId='kind-patches' AND c.enabled=1 AND j.id NOT LIKE '%:hourly-history:____-__-__' AND j.status IN ('pending','running') AND j.dueAt<=?`;
+// A committed final fact page may lose its response before derived cleanup.
+// Revisit only its original recovery marker plus remaining scoped copies.
+const materialization=`(EXISTS(SELECT 1 FROM observations o WHERE o.snapshotId=s.id LIMIT 1) OR (EXISTS(SELECT 1 FROM audit a WHERE a.id='archive-materialization:'||s.id AND a.organizationId=s.organizationId AND a.clientId=s.clientId AND a.action='snapshot.materialization.archive_verified' AND json_extract(a.payload,'$.objectKey')=s.objectKey AND json_extract(a.payload,'$.originalRetrievedAt')=s.retrievedAt AND json_extract(a.payload,'$.originalCoverageThrough') IS s.coverageThrough) AND (EXISTS(SELECT 1 FROM snapshot_day_projection_chunks d WHERE d.organizationId=s.organizationId AND d.clientId=s.clientId AND d.snapshotId=s.id LIMIT 1) OR EXISTS(SELECT 1 FROM snapshot_day_projection_entries d WHERE d.organizationId=s.organizationId AND d.clientId=s.clientId AND d.snapshotId=s.id AND d.status='ready' LIMIT 1))))`;
 
-/** Reclaim recoverable database copies, never original captures or metadata.
+/** Reclaim recoverable ready or stale partial database copies, never original captures or metadata.
  * A separate maintenance lease and <=2,000 indexed rows per write bound work. */
 export async function pruneArchivedMaterializations(store:Store,scope:AccessScope,options:Options){
- const result={verifiedSnapshots:0,prunedSnapshots:0,rowsDeleted:0,charactersDeleted:0,projectionChunksDeleted:0,skipped:0};
+ const result:MaintenanceResult={verifiedSnapshots:0,prunedSnapshots:0,rowsDeleted:0,charactersDeleted:0,projectionChunksDeleted:0,skipped:0};
  if(!['admin','service'].includes(scope.role)||!scope.permittedClientIds.includes('kind-patches')||Date.now()>=options.deadline)return result;
- const scheduler=new DailyScheduler(store),leaseId=`${scope.organizationId}:archive-materializations`,token=await scheduler.acquire(leaseId,new Date().toISOString(),Math.max(120000,Math.min(900000,options.deadline-Date.now()+30000)));
- if(!token)return {...result,skipped:1};
+ const scheduler=new DailyScheduler(store),leaseId=`${scope.organizationId}:archive-materializations`;let token:string|null=null,stage='priority.read',snapshotId:string|undefined;
+ const step=async<T>(name:string,work:()=>Promise<T>):Promise<T>=>{stage=name;const started=Date.now();const value=await work();if(Date.now()-started>=5000)console.info('Archive maintenance stage',{stage:name,ms:Date.now()-started,snapshotId,rowsDeleted:result.rowsDeleted});return value;};
+ const canWrite=async()=>{if(result.deferred)return false;if(Date.now()>=options.deadline){result.deferred='deadline';return false;}if(await step('priority.read',()=>store.first(currentWork+' LIMIT 1',scope.organizationId,new Date().toISOString()))){result.deferred='current-source-work';return false;}return true;};
+ const deferred=(error:unknown)=>{if(!(error instanceof Error&&(error.name==='TimeoutError'||error.message==='Database request timed out')))throw error;result.deferred='database';result.stage=stage;if(stage.endsWith('.delete'))result.uncertainWrite=true;console.warn('Archive maintenance database deferred',{stage,snapshotId,kind:error.name,...result});};
  try{
+  if(!await canWrite())return result;
+  token=await step('lease.acquire',()=>scheduler.acquire(leaseId,new Date().toISOString(),Math.max(120000,Math.min(900000,options.deadline-Date.now()+30000))));
+  if(!token)return {...result,skipped:1};
   const cutoff=new Date(Date.now()-2*3600000).toISOString(),now=new Date().toISOString();
   const limit=Math.max(0,Math.min(8,options.maxSnapshots)),pageSize=Math.max(16,limit*4),priority="CASE WHEN c.provider='kind-shopify-traffic' THEN 0 WHEN c.provider='kind-meta-performance' THEN 1 WHEN c.provider IN ('kind-shopify-hourly','kind-shopify-funnels') THEN 2 ELSE 3 END",order=`${priority},s.retrievedAt,s.id`;
   // Bound expensive review/AI payload checks before evaluating protection.
@@ -66,47 +77,51 @@ export async function pruneArchivedMaterializations(store:Store,scope:AccessScop
   // Protected or unverifiable captures cannot starve a later valid archive.
   // A stable cursor also avoids skipping rows as earlier pages are pruned.
   async function* candidates(){
-   let cursor:{priority:number;retrievedAt:string;id:string}|null=null;
-   while(limit&&result.verifiedSnapshots<limit&&result.rowsDeleted<options.maxRows&&Date.now()<options.deadline){
+   let cursor:{priority:number;retrievedAt:string;id:string}|null=null,pages=0;
+   while(limit&&pages<MAX_CANDIDATE_PAGES&&!result.deferred&&result.verifiedSnapshots<limit&&result.rowsDeleted<options.maxRows&&Date.now()<options.deadline){
+    pages++;
     const after:string=cursor?` AND (${priority},s.retrievedAt,s.id)>(?,?,?)`:'',values:(number|string)[]=cursor?[cursor.priority,cursor.retrievedAt,cursor.id]:[];
-    const page:ArchivedSnapshot[]=await store.all<ArchivedSnapshot>(`SELECT s.*,c.provider FROM snapshots s LEFT JOIN connections c ON c.id=s.sourceId AND c.organizationId=s.organizationId WHERE s.organizationId=? AND s.clientId='kind-patches' AND s.status='ready' AND s.retrievedAt<? AND NOT EXISTS(SELECT 1 FROM current_snapshots p WHERE p.snapshotId=s.id) AND EXISTS(SELECT 1 FROM observations o WHERE o.snapshotId=s.id LIMIT 1)${after} ORDER BY ${order} LIMIT ?`,scope.organizationId,cutoff,...values,pageSize);
+    const page:ArchivedSnapshot[]=await step('candidates.read',()=>store.all<ArchivedSnapshot>(`SELECT s.*,c.provider FROM snapshots s LEFT JOIN connections c ON c.id=s.sourceId AND c.organizationId=s.organizationId WHERE s.organizationId=? AND s.clientId='kind-patches' AND s.status IN ('ready','writing') AND s.retrievedAt<? AND NOT EXISTS(SELECT 1 FROM current_snapshots p WHERE p.snapshotId=s.id) AND ${materialization}${after} ORDER BY ${order} LIMIT ?`,scope.organizationId,cutoff,...values,pageSize));
     if(!page.length||Date.now()>=options.deadline)return;
     const last:ArchivedSnapshot=page.at(-1)!;cursor={priority:last.provider==='kind-shopify-traffic'?0:last.provider==='kind-meta-performance'?1:['kind-shopify-hourly','kind-shopify-funnels'].includes(last.provider??'')?2:3,retrievedAt:last.retrievedAt,id:last.id};
-    const eligible=await store.all<ArchivedSnapshot>(`SELECT s.*,c.provider FROM snapshots s LEFT JOIN connections c ON c.id=s.sourceId AND c.organizationId=s.organizationId WHERE s.id IN (SELECT value FROM json_each(?)) AND ${protection} AND EXISTS(SELECT 1 FROM observations o WHERE o.snapshotId=s.id LIMIT 1) ORDER BY ${order} LIMIT ?`,JSON.stringify(page.map(snapshot=>snapshot.id)),scope.organizationId,cutoff,now,now,pageSize);
+    const eligible=await step('candidates.protection',()=>store.all<ArchivedSnapshot>(`SELECT s.*,c.provider FROM snapshots s LEFT JOIN connections c ON c.id=s.sourceId AND c.organizationId=s.organizationId WHERE s.id IN (SELECT value FROM json_each(?)) AND ${protection} AND ${materialization} ORDER BY ${order} LIMIT ?`,JSON.stringify(page.map(snapshot=>snapshot.id)),scope.organizationId,cutoff,now,now,pageSize));
     for(const snapshot of eligible)yield snapshot;
     if(page.length<pageSize)return;
    }
+   if(pages>=MAX_CANDIDATE_PAGES&&!result.deferred&&result.verifiedSnapshots<limit&&result.rowsDeleted<options.maxRows)result.deferred='candidate-page-limit';
   }
   for await(const snapshot of candidates()){
-   if(Date.now()>=options.deadline||result.rowsDeleted>=options.maxRows||result.verifiedSnapshots>=limit)break;
-   let verified;try{verified=await verifiedArchive(store,snapshot,options.readArchive??privateArchive,options.deadline);result.verifiedSnapshots++;}catch{result.skipped++;continue;}
-   let removed=0,characters=0,projectionChunks=0;
-   const guard=()=>({sql:`EXISTS(SELECT 1 FROM snapshots s WHERE s.id=? AND s.objectKey=? AND s.retrievedAt=? AND s.sourceId=? AND s.complete=? AND s.coverageThrough IS ? AND ${protection}) AND EXISTS(SELECT 1 FROM runner_leases WHERE id=? AND token=? AND leaseUntil>=?)`,args:[snapshot.id,snapshot.objectKey,snapshot.retrievedAt,snapshot.sourceId,snapshot.complete,snapshot.coverageThrough,scope.organizationId,cutoff,new Date().toISOString(),new Date().toISOString(),leaseId,token,new Date().toISOString()]});
+   snapshotId=snapshot.id;
+   if(result.deferred||Date.now()>=options.deadline||result.rowsDeleted>=options.maxRows||result.verifiedSnapshots>=limit)break;
+   let verified;try{verified=await step('archive.verify',()=>verifiedArchive(store,snapshot,options.readArchive??privateArchive,options.deadline));result.verifiedSnapshots++;}catch{result.skipped++;continue;}
+   let removed=0,characters=0,projectionChunks=0,projectionEntries=0,counted=false;
+   const countPruned=()=>{if(!counted){result.prunedSnapshots++;counted=true;}};
+   const guard=(recovery=true)=>({sql:`EXISTS(SELECT 1 FROM snapshots s WHERE s.id=? AND s.objectKey=? AND s.retrievedAt=? AND s.sourceId=? AND s.complete=? AND s.coverageThrough IS ? AND s.status=? AND ${protection}) AND EXISTS(SELECT 1 FROM runner_leases WHERE id=? AND token=? AND leaseUntil>=?) AND NOT EXISTS(${currentWork})${recovery?" AND EXISTS(SELECT 1 FROM audit WHERE id=? AND organizationId=? AND clientId=? AND action='snapshot.materialization.archive_verified')":''}`,args:[snapshot.id,snapshot.objectKey,snapshot.retrievedAt,snapshot.sourceId,snapshot.complete,snapshot.coverageThrough,snapshot.status,scope.organizationId,cutoff,new Date().toISOString(),new Date().toISOString(),leaseId,token,new Date().toISOString(),scope.organizationId,new Date().toISOString(),...recovery?[`archive-materialization:${snapshot.id}`,scope.organizationId,snapshot.clientId]:[]]});
    // Publish the recovery marker before the first bounded delete. Ready replay
    // must fill missing rows even if a timeout leaves part of this day present.
-   const verificationGuard=guard();await store.run(`INSERT INTO audit(id,organizationId,clientId,actorId,action,payload,createdAt) SELECT ?,?,?,?,?,?,? WHERE ${verificationGuard.sql} ON CONFLICT(id) DO NOTHING`,`archive-materialization:${snapshot.id}`,scope.organizationId,snapshot.clientId,scope.actorId,'snapshot.materialization.archive_verified',JSON.stringify({snapshotId:snapshot.id,sourceId:snapshot.sourceId,objectKey:snapshot.objectKey,archiveHash:verified.hash,archiveBytes:verified.archive.bytes,archiveEtag:verified.archive.etag,originalRetrievedAt:snapshot.retrievedAt,originalCoverageThrough:snapshot.coverageThrough}),new Date().toISOString(),...verificationGuard.args);
+   if(!await canWrite())break;
+   const verificationGuard=guard(false);await step('archive.verification.audit',()=>store.run(`INSERT INTO audit(id,organizationId,clientId,actorId,action,payload,createdAt) SELECT ?,?,?,?,?,?,? WHERE ${verificationGuard.sql} ON CONFLICT(id) DO NOTHING`,`archive-materialization:${snapshot.id}`,scope.organizationId,snapshot.clientId,scope.actorId,'snapshot.materialization.archive_verified',JSON.stringify({snapshotId:snapshot.id,sourceId:snapshot.sourceId,objectKey:snapshot.objectKey,archiveHash:verified.hash,archiveBytes:verified.archive.bytes,archiveEtag:verified.archive.etag,originalRetrievedAt:snapshot.retrievedAt,originalCoverageThrough:snapshot.coverageThrough}),new Date().toISOString(),...verificationGuard.args));
    for(;;){
-    if(Date.now()>=options.deadline||result.rowsDeleted>=options.maxRows)break;
-    const limit=Math.min(2000,options.maxRows-result.rowsDeleted),rows=await store.all<{rowid:number;characters:number}>('SELECT rowid,length(payload) AS characters FROM observations WHERE snapshotId=? ORDER BY date,rowKey LIMIT ?',snapshot.id,limit);
-    if(!rows.length)break;const safety=guard();
+    if(result.rowsDeleted>=options.maxRows||result.deferred||Date.now()>=options.deadline)break;
+    const limit=Math.min(2000,options.maxRows-result.rowsDeleted),rows=await step('facts.select',()=>store.all<{rowid:number;characters:number}>('SELECT rowid,length(payload) AS characters FROM observations WHERE snapshotId=? ORDER BY date,rowKey LIMIT ?',snapshot.id,limit));
+    if(!rows.length||!await canWrite())break;const safety=guard();
     // Select by the snapshot index above, then delete only these rowids. The
     // snapshot index would otherwise rescan every remaining row on each page.
-    const deletion=await store.run(`DELETE FROM observations NOT INDEXED WHERE snapshotId=? AND rowid IN (SELECT value FROM json_each(?)) AND ${safety.sql}`,snapshot.id,JSON.stringify(rows.map(row=>row.rowid)),...safety.args);
-    if(!deletion.meta.changes)break;removed+=deletion.meta.changes;result.rowsDeleted+=deletion.meta.changes;
+    const deletion=await step('facts.delete',()=>store.run(`DELETE FROM observations NOT INDEXED WHERE snapshotId=? AND rowid IN (SELECT value FROM json_each(?)) AND ${safety.sql}`,snapshot.id,JSON.stringify(rows.map(row=>row.rowid)),...safety.args));
+    if(!deletion.meta.changes)break;countPruned();removed+=deletion.meta.changes;result.rowsDeleted+=deletion.meta.changes;
     // A single guarded write removes this exact indexed selection atomically.
     if(deletion.meta.changes===rows.length){const bytes=rows.reduce((sum,row)=>sum+row.characters,0);characters+=bytes;result.charactersDeleted+=bytes;}
    }
-   if(removed){
-    result.prunedSnapshots++;
-    if(!await store.first('SELECT 1 AS present FROM observations WHERE snapshotId=? LIMIT 1',snapshot.id)){
-     for(;;){if(Date.now()>=options.deadline)break;const safety=guard(),deletion=await store.run(`DELETE FROM snapshot_day_projection_chunks WHERE organizationId=? AND clientId=? AND snapshotId=? AND rowid IN (SELECT rowid FROM snapshot_day_projection_chunks WHERE snapshotId=? ORDER BY date,codecVersion,generation,chunkIndex LIMIT 64) AND ${safety.sql} AND NOT EXISTS(SELECT 1 FROM observations WHERE snapshotId=?)`,scope.organizationId,snapshot.clientId,snapshot.id,snapshot.id,...safety.args,snapshot.id);projectionChunks+=deletion.meta.changes;result.projectionChunksDeleted+=deletion.meta.changes;if(deletion.meta.changes<64)break;}
-     const safety=guard();await store.run(`DELETE FROM snapshot_day_projection_entries WHERE organizationId=? AND clientId=? AND snapshotId=? AND status='ready' AND rowid IN (SELECT rowid FROM snapshot_day_projection_entries WHERE snapshotId=? ORDER BY date,codecVersion LIMIT 64) AND ${safety.sql} AND NOT EXISTS(SELECT 1 FROM snapshot_day_projection_chunks WHERE snapshotId=?) AND NOT EXISTS(SELECT 1 FROM observations WHERE snapshotId=?)`,scope.organizationId,snapshot.clientId,snapshot.id,snapshot.id,...safety.args,snapshot.id,snapshot.id);
-    }
-    await store.audit(scope.organizationId,snapshot.clientId,scope.actorId,'snapshot.materialization.archived',{snapshotId:snapshot.id,sourceId:snapshot.sourceId,objectKey:snapshot.objectKey,archiveHash:verified.hash,archiveBytes:verified.archive.bytes,archiveEtag:verified.archive.etag,originalRetrievedAt:snapshot.retrievedAt,originalCoverageThrough:snapshot.coverageThrough,rowsDeleted:removed,payloadCharactersDeleted:characters,projectionChunksDeleted:projectionChunks});
+   if(!result.deferred&&!await step('facts.remaining',()=>store.first('SELECT 1 AS present FROM observations WHERE snapshotId=? LIMIT 1',snapshot.id))){
+    for(;;){if(!await canWrite())break;const safety=guard(),deletion=await step('projections.chunks.delete',()=>store.run(`DELETE FROM snapshot_day_projection_chunks WHERE organizationId=? AND clientId=? AND snapshotId=? AND rowid IN (SELECT rowid FROM snapshot_day_projection_chunks WHERE organizationId=? AND clientId=? AND snapshotId=? ORDER BY date,codecVersion,generation,chunkIndex LIMIT 64) AND ${safety.sql} AND NOT EXISTS(SELECT 1 FROM observations WHERE snapshotId=?)`,scope.organizationId,snapshot.clientId,snapshot.id,scope.organizationId,snapshot.clientId,snapshot.id,...safety.args,snapshot.id));if(deletion.meta.changes)countPruned();projectionChunks+=deletion.meta.changes;result.projectionChunksDeleted+=deletion.meta.changes;if(deletion.meta.changes<64)break;}
+    if(await canWrite()){const safety=guard(),deletion=await step('projections.entries.delete',()=>store.run(`DELETE FROM snapshot_day_projection_entries WHERE organizationId=? AND clientId=? AND snapshotId=? AND status='ready' AND rowid IN (SELECT rowid FROM snapshot_day_projection_entries WHERE organizationId=? AND clientId=? AND snapshotId=? ORDER BY date,codecVersion LIMIT 64) AND ${safety.sql} AND NOT EXISTS(SELECT 1 FROM snapshot_day_projection_chunks WHERE organizationId=? AND clientId=? AND snapshotId=?) AND NOT EXISTS(SELECT 1 FROM observations WHERE snapshotId=?)`,scope.organizationId,snapshot.clientId,snapshot.id,scope.organizationId,snapshot.clientId,snapshot.id,...safety.args,scope.organizationId,snapshot.clientId,snapshot.id,snapshot.id));projectionEntries=deletion.meta.changes;if(projectionEntries){countPruned();result.projectionEntriesDeleted=(result.projectionEntriesDeleted??0)+projectionEntries;}}
    }
+   if((removed||projectionChunks||projectionEntries)&&await canWrite())await step('archive.completion.audit',()=>store.audit(scope.organizationId,snapshot.clientId,scope.actorId,'snapshot.materialization.archived',{snapshotId:snapshot.id,sourceId:snapshot.sourceId,objectKey:snapshot.objectKey,archiveHash:verified.hash,archiveBytes:verified.archive.bytes,archiveEtag:verified.archive.etag,originalRetrievedAt:snapshot.retrievedAt,originalCoverageThrough:snapshot.coverageThrough,rowsDeleted:removed,payloadCharactersDeleted:characters,projectionChunksDeleted:projectionChunks,projectionEntriesDeleted:projectionEntries}));
   }
+  if(Date.now()>=options.deadline&&!result.deferred)result.deferred='deadline';
   return result;
- }finally{await scheduler.release(leaseId,token);}
+ }catch(error){deferred(error);return result;}
+ finally{if(token)try{await step('lease.release',()=>scheduler.release(leaseId,token!));}catch(error){deferred(error);}}
 }
 
 /** Recovery uses the original timestamp: reconstruct immutable facts without

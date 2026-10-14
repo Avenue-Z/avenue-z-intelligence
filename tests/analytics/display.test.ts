@@ -60,11 +60,12 @@ describe('detail presentation',()=>{
     expect(html).toContain(view==='products'?'>PRODUCT ORDERS<':view==='revenue'?'>Orders<':'>ORDERS<');
     expect(html).toContain('$20');
   });
-  it('shows the separate human traffic cut with source and UTM dimensions',()=>{
+  it('shows human traffic landing pages with paired sessions and conversion rankings',()=>{
     const dimensions={market:'FR',device:'mobile',source:'social',utm_source:'meta',utm_campaign:'Prospecting',page:'/pages/glp'};
     const html=workspace('traffic',[observation('sessions',1000,dimensions,'traffic'),observation('converting_sessions',20,dimensions,'traffic')]);
     expect(html).toContain('SESSIONS');
-    expect(html).toContain('UTM campaign');
+    expect(html).toContain('Top landing pages by sessions');
+    expect(html).toContain('Landing-page conversion rate');
     expect(html).toContain('Landing pages &amp; funnels');
     expect(html).toContain('/pages/glp');
     expect(html).toContain('>SESSIONS<');

@@ -18,8 +18,19 @@ const STORAGE_SAFETY_BYTES=22000000000;
 type HistoryBudget={maxJobs:number;deadline:number};
 type HistoryResult={completed:string[];failed:{id:string;error:string}[];skipped?:string;storageBytes?:number;maintenance?:Awaited<ReturnType<typeof pruneArchivedMaterializations>>};
 type EligibleSource={source:Connection;client:Client;contract:RegisteredContract};
-type HistoryJob={id:string;sourceId:string;clientId:string;attempts:number};
+type HistoryJob={id:string;sourceId:string;clientId:string;attempts:number;leaseUntil:string|null};
 function requiredBudget(provider:string){return provider==='kind-recharge-cancellations'?180000:provider==='kind-triple-whale'?200000:['kind-meta-performance','kind-shopify-traffic'].includes(provider)?300000:provider==='kind-shopify-products'?90000:30000;}
+function budgetFailure(error:unknown){
+ // Only known transport/deadline failures qualify. Data and authorization
+ // failures remain real failures even if their processing finished late.
+ for(let depth=0;depth<4&&error instanceof Error;depth++,error=error.cause){
+  if(/HTTP \d{3}|not configured|qualification|unregistered|registered|invalid|mismatch|reconcil|pagination|row limit|identity|filter/i.test(error.message))return false;
+  if(error.name==='TimeoutError'||error.name==='AbortError'||['Source synchronization deadline reached','Source publication budget elapsed','Provider request timed out or could not be reached','Database request timed out'].includes(error.message))return true;
+  const code=(error as Error&{code?:unknown}).code;
+  if(typeof code==='string'&&['UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT','UND_ERR_BODY_TIMEOUT','UND_ERR_SOCKET','ETIMEDOUT','ECONNRESET','ECONNREFUSED','ENOTFOUND','EAI_AGAIN'].includes(code))return true;
+ }
+ return false;
+}
 
 async function currentSourcesDue(store:Store,scope:AccessScope){return !!await store.first("SELECT j.id FROM jobs j JOIN connections c ON c.id=j.sourceId AND c.organizationId=j.organizationId AND c.clientId=j.clientId WHERE j.organizationId=? AND j.clientId='kind-patches' AND c.enabled=1 AND j.id NOT LIKE '%:hourly-history:____-__-__' AND j.status IN ('pending','running') AND j.dueAt<=? LIMIT 1",scope.organizationId,new Date().toISOString());}
 
@@ -59,11 +70,11 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
    // Fill recent comparisons before older archives, including sources added
    // after the initial queue. Keep immutable due times and benchmark ordering
    // within each band; AppLovin retains its oldest-date priority in that band.
-   const job=await store.first<HistoryJob>(`SELECT j.id,j.sourceId,j.clientId,j.attempts FROM jobs j JOIN connections c ON c.id=j.sourceId AND c.organizationId=j.organizationId WHERE j.organizationId=? AND j.clientId='kind-patches' AND j.sourceId IN (${sourceIds.map(()=>'?').join(',')}) AND j.id LIKE '%:hourly-history:____-__-__' AND ((j.status='pending' AND j.dueAt<=?) OR (j.status='running' AND j.leaseUntil<?))${limited?' AND substr(j.id,-10)>=? AND substr(j.id,-10)<?':''} ORDER BY CASE WHEN substr(j.id,-10)>=? THEN 0 WHEN substr(j.id,-10)>=? THEN 1 ELSE 2 END,CASE WHEN c.provider='kind-applovin' THEN 0 ELSE 1 END,CASE WHEN c.provider='kind-applovin' THEN substr(j.id,-10) ELSE j.dueAt END,j.dueAt,j.id LIMIT 1`,scope.organizationId,...sourceIds,now,now,...limited?[shiftDate(today,-30),today]:[],shiftDate(today,-7),shiftDate(today,-30));
+   const job=await store.first<HistoryJob>(`SELECT j.id,j.sourceId,j.clientId,j.attempts,j.leaseUntil FROM jobs j JOIN connections c ON c.id=j.sourceId AND c.organizationId=j.organizationId WHERE j.organizationId=? AND j.clientId='kind-patches' AND j.sourceId IN (${sourceIds.map(()=>'?').join(',')}) AND j.id LIKE '%:hourly-history:____-__-__' AND ((j.status='pending' AND j.dueAt<=?) OR (j.status='running' AND j.leaseUntil<?))${limited?' AND substr(j.id,-10)>=? AND substr(j.id,-10)<?':''} ORDER BY CASE WHEN substr(j.id,-10)>=? THEN 0 WHEN substr(j.id,-10)>=? THEN 1 ELSE 2 END,CASE WHEN c.provider='kind-applovin' THEN 0 ELSE 1 END,CASE WHEN c.provider='kind-applovin' THEN substr(j.id,-10) ELSE j.dueAt END,j.dueAt,j.id LIMIT 1`,scope.organizationId,...sourceIds,now,now,...limited?[shiftDate(today,-30),today]:[],shiftDate(today,-7),shiftDate(today,-30));
    if(!job)return null;
    const leaseUntil=new Date(Date.now()+900000).toISOString(),updated=await store.run("UPDATE jobs SET status='running',leaseUntil=?,attempts=attempts+1 WHERE id=? AND organizationId=? AND ((status='pending' AND dueAt<=?) OR (status='running' AND leaseUntil<?))",leaseUntil,job.id,scope.organizationId,now,now);
    if(!updated.meta.changes)return null;
-   const value=eligible.get(job.sourceId)!;active.add(value.source.provider);claimed++;return {job:{...job,attempts:job.attempts+1},...value};
+   const value=eligible.get(job.sourceId)!;active.add(value.source.provider);claimed++;return {job:{...job,attempts:job.attempts+1,leaseUntil},...value};
   }finally{release();}
  };
  const publish=async(work:()=>Promise<unknown>)=>{
@@ -71,7 +82,7 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
   try{return await work();}finally{release();}
  };
  const worker=async()=>{
-  for(;;){const capture=await claim();if(!capture)return;const {job,source,client,contract}=capture;
+  for(;;){const capture=await claim();if(!capture)return;const {job,source,client,contract}=capture;let completing=false;
    try{
     const prefix=`${scope.organizationId}:${source.id}:hourly-history:`,date=job.id.startsWith(prefix)?job.id.slice(prefix.length):'',today=todayIn(client.timezone);
     if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||date>=today||date<shiftDate(today,source.provider==='kind-applovin'?-28:-61))throw Error('Historical source window is invalid');
@@ -89,10 +100,22 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
      if(storage>=STORAGE_SAFETY_BYTES&&!(smallRecharge&&recentRechargeHistoryDate(date,today)&&rechargeHistoryFits(storage)))throw new HistoryCapacityDeferral('Historical storage capacity reserved for current ingestion');
      return store.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,window,{publicationDeadline:budget.deadline});
     });
-    await retryPublication('history.complete',budget.deadline,()=>store.finish(job.id));out.completed.push(job.id);
+    completing=true;await retryPublication('history.complete',budget.deadline,()=>store.finish(job.id));out.completed.push(job.id);
    }catch(error){
     const message=error instanceof Error?error.message:'Historical capture failed';
-    if(error instanceof HistoryCapacityDeferral){
+    if(completing&&budgetFailure(error)){
+     // A successful acknowledgment can commit before its response times out.
+     // Verify that outcome before any generic retry could change it back.
+     const durable=await store.first<{status:string}>('SELECT status FROM jobs WHERE id=? AND organizationId=?',job.id,scope.organizationId);
+     if(durable?.status==='complete'){out.completed.push(job.id);continue;}
+    }
+    if(Date.now()>=budget.deadline&&budgetFailure(error)){
+     out.skipped='budget';
+     // Refund only this exact running claim. A late response must not clear a
+     // newer lease, spend a failure attempt, or reopen an already complete job.
+     await store.run("UPDATE jobs SET status='pending',attempts=MAX(0,attempts-1),dueAt=?,error=?,leaseUntil=NULL WHERE id=? AND organizationId=? AND status='running' AND attempts=? AND leaseUntil=?",new Date(Date.now()+5*60000).toISOString(),message,job.id,scope.organizationId,job.attempts,job.leaseUntil);
+     continue;
+    }else if(error instanceof HistoryCapacityDeferral){
      out.skipped='storage-capacity';
      await store.run("UPDATE jobs SET status='pending',attempts=MAX(0,attempts-1),dueAt=?,error=?,leaseUntil=NULL WHERE id=? AND organizationId=? AND status='running'",new Date(Date.now()+5*60000).toISOString(),message,job.id,scope.organizationId);
      continue;

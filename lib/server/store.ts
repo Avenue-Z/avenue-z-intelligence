@@ -214,10 +214,13 @@ export class Store {
       return retryPublication(operation,options.publicationDeadline,work);
     };
     const id=`${org}:${batch.clientId}:${source}:${key}`;
-    const ready=await publish('source.snapshot.read',()=>this.first('SELECT id,retrievedAt,coverageThrough,complete FROM snapshots WHERE id=? AND status=?',id,'ready'));
+    // A partial publication owns the same immutable provenance as a ready one.
+    // Retried missing facts must not mix their retry timestamp with old rows.
+    const existing=await publish('source.snapshot.read',()=>this.first('SELECT id,status,retrievedAt,coverageThrough,complete FROM snapshots WHERE id=?',id));
+    const ready=existing?.status==='ready'?existing:null;
     const created=await publish('source.snapshot.create',()=>this.run('INSERT INTO snapshots(id,organizationId,clientId,sourceId,retrievedAt,coverageThrough,complete,status,objectKey) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',id,org,batch.clientId,source,now,batch.coverageThrough,Number(batch.complete),'writing',`snapshots/${id}.json`));
-    const complete=ready?!!ready.complete:batch.complete;
-    const rows=batch.rows.map(r=>({...r,channels:batch.channels,sourceId:source,retrievedAt:ready?.retrievedAt??now,coverageThrough:ready?ready.coverageThrough:batch.coverageThrough,quality:complete?(r.quality??'complete'):(r.quality==='historical'?'historical':'partial')}));
+    const complete=existing?!!existing.complete:batch.complete;
+    const rows=batch.rows.map(r=>({...r,channels:batch.channels,sourceId:source,retrievedAt:existing?.retrievedAt??now,coverageThrough:existing?existing.coverageThrough:batch.coverageThrough,quality:complete?(r.quality??'complete'):(r.quality==='historical'?'historical':'partial')}));
     const dates=window?(()=>{const d:string[]=[];for(let s=window.from;s<=window.to;s=shiftDate(s,1)){d.push(s);if(d.length>62)throw new Error('Window exceeds 62 days');}return d;})():[...new Set(rows.map(r=>r.date))];
     const grouped=new Map<string,Observation[]>();for(const row of rows){const values=grouped.get(row.date);if(values)values.push(row);else grouped.set(row.date,[row]);}
     const canonical=(value:unknown):unknown=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.entries(value).sort(([a],[b])=>a.localeCompare(b)).map(([field,item])=>[field,canonical(item)])):value;

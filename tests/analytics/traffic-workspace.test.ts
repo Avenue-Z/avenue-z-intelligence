@@ -17,7 +17,7 @@ const rows=Object.entries({sessions:100,converting_sessions:3,atc_sessions:10,ch
 afterEach(()=>{state.page=null;state.table=false;state.drill=null;});
 it('renders traffic statistics, all-page search and local chart controls from compact aggregates alone',()=>{
  const a=workspacePresentation(queryClient(client,rows,[],filters,{preparedDatasets:['overview','traffic','funnels']}),filters),record={...a,views:{},details:[],findings:[],reviews:[],note:{body:'',version:0}},html=renderToStaticMarkup(createElement(TrafficWorkspace,{record,filters,update:()=>{}}));
- expect(html).toContain('100');expect(html).toContain('3.00%');expect(html).toContain('/pages/dream');expect(record.trafficExplorer?.current.breakdowns.traffic_channel.groups[0].label).toBe('Meta · UTM');expect(html).toContain('UTM medium');expect(html).toContain('Search landing pages');expect(html).toContain('Explore funnel');
+ expect(html).toContain('100');expect(html).toContain('3.00%');expect(html).toContain('/pages/dream');expect(record.trafficExplorer?.current.breakdowns.traffic_channel.groups[0].label).toBe('Meta · UTM');expect(html).toContain('Search landing pages');expect(html).toContain('Explore funnel');
 });
 it('states the full ranked population when only bounded chart segments are transferred',()=>{
  const group=compactTrafficExplorer(detailRows(rows),[],'traffic').current.pages[0],html=renderToStaticMarkup(createElement(ExplorerRanking,{groups:[group],metric:'sessions',currency:'USD',title:'Traffic mix',description:'Dated',top:10,groupCount:900,omitted:899}));
@@ -42,11 +42,36 @@ it('keeps a missing selected-page comparison and an unqualified current rate una
  expect(drawer).toContain('100');expect(drawer).not.toContain('Comparison landing-page funnel');expect(drawer).not.toContain('<strong>3.00%</strong>');expect(drawer).not.toContain('<strong>0.00%</strong>');expect(drawer).toContain('Yesterday: —');
 });
 
-it('defaults traffic mix to qualified conversion rate grouped by explicit UTM source',()=>{
+it('pairs sessions and conversion rate for the same landing pages while retaining UTM exploration in the drawer',()=>{
  const a=workspacePresentation(queryClient(client,rows,[],filters,{preparedDatasets:['traffic','funnels']}),filters),record={...a,views:{},details:[],findings:[],reviews:[],note:{body:'',version:0}},html=renderToStaticMarkup(createElement(TrafficWorkspace,{record,filters,update:()=>{}}));
- expect(html).toContain('Conversion rate by UTM source');
- expect(html).toContain('<option value="utm_source" selected="">UTM source</option>');
+ expect(html).toContain('Top landing pages by sessions');
+ expect(html).toContain('Landing-page conversion rate');
+ expect(html).not.toContain('Conversion rate by UTM source');
  expect(html).toContain('<option value="cvr" selected="">Session conversion rate</option>');
+});
+function pairedRankingRows(html:string){
+ const pair=html.match(/<div class="[^"]*columns[^"]*">([\s\S]*?)<h2>Landing pages &amp; funnels<\/h2>/)?.[1]??'';
+ return [...pair.matchAll(/<tbody>([\s\S]*?)<\/tbody>/g)].map(table=>[...table[1].matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/g)].map(row=>({label:row[1].match(/<button[^>]*>([^<]*)<\/button>/)?.[1]??'',html:row[1]})));
+}
+it('uses the selected-period top ten session pages and order in both ranking tables, including prior pages outside the prior top ten',()=>{
+ state.table=true;
+ const pageRows=(date:string,page:string,sessions:number,converted:number)=>rows.map(row=>({...row,date,value:({sessions,converting_sessions:converted,atc_sessions:0,checkouts:0,completed_checkouts:0} as Record<string,number>)[row.metric],dimensions:{...row.dimensions,page}}));
+ const current=Array.from({length:12},(_,index)=>pageRows(filters.to,`/current-${index}`,1200-index*50,index+1)).flat().reverse(),prior=[...Array.from({length:12},(_,index)=>pageRows('2026-10-10',`/prior-${index}`,5000-index*100,100)).flat(),...pageRows('2026-10-10','/current-0',40,2),...pageRows('2026-10-10','/current-1',9000,9)];
+ const a=workspacePresentation(queryClient(client,[...current,...prior],[],filters,{preparedDatasets:['traffic','funnels']}),filters),record={...a,views:{},details:[],findings:[],reviews:[],note:{body:'',version:0}},tables=pairedRankingRows(renderToStaticMarkup(createElement(TrafficWorkspace,{record,filters,update:()=>{}})));
+ const selected=['/current-0','/current-1','/current-2','/current-3','/current-4','/current-5','/current-6','/current-7','/current-8','/current-9'];
+ expect(tables.map(table=>table.map(row=>row.label))).toEqual([selected,selected]);
+ expect(tables[0][0].html).toContain('<strong>1,200</strong>');expect(tables[0][0].html).toContain('Yesterday: 40');
+ expect(tables[1][0].html).toContain('Yesterday: 5.00%');expect(tables[1][1].html).toContain('Yesterday: 0.10%');
+});
+it('shows pooled converting-session CVR for the session-ranked page cohort and leaves zero denominators and absent baselines blank',()=>{
+ state.table=true;
+ const pageRows=(date:string,page:string,source:string,sessions:number,converted:number)=>rows.map(row=>({...row,date,value:({sessions,converting_sessions:converted,atc_sessions:0,checkouts:0,completed_checkouts:0} as Record<string,number>)[row.metric],dimensions:{...row.dimensions,page,utm_source:source}}));
+ const current=[...pageRows(filters.to,'/weighted','meta',100,10),...pageRows(filters.to,'/weighted','tiktok',900,18),...pageRows(filters.to,'/missing-prior','meta',500,5),...pageRows(filters.to,'/zero','meta',0,0)],prior=[...pageRows('2026-10-10','/weighted','meta',50,5),...pageRows('2026-10-10','/weighted','tiktok',950,19),...pageRows('2026-10-10','/zero','meta',0,0)];
+ const a=workspacePresentation(queryClient(client,[...current,...prior],[],filters,{preparedDatasets:['traffic','funnels']}),filters),record={...a,views:{},details:[],findings:[],reviews:[],note:{body:'',version:0}},tables=pairedRankingRows(renderToStaticMarkup(createElement(TrafficWorkspace,{record,filters,update:()=>{}})));
+ expect(tables.map(table=>table.map(row=>row.label))).toEqual([['/weighted','/missing-prior','/zero'],['/weighted','/missing-prior','/zero']]);
+ expect(tables[0][0].html).toContain('<strong>1,000</strong>');expect(tables[1][0].html).toContain('<strong>2.80%</strong>');expect(tables[1][0].html).toContain('Yesterday: 2.40%');expect(tables[1][0].html).toContain('+0.40 pp');
+ expect(tables[1][1].html).toContain('Yesterday: —');expect(tables[1][1].html).not.toContain('Yesterday: 0.00%');
+ expect(tables[1][2].html).toContain('<strong>—</strong>');expect(tables[1][2].html).toContain('Yesterday: —');expect(tables[1][2].html).not.toContain('0.00%');
 });
 it('compares landing-page metrics against yesterday at the same confirmed hour rather than a closed day',()=>{
  const partialFilters={...filters,mode:'partial' as const},counts=(date:string,startHour:string,endHour:string,values:Record<string,number>)=>rows.map(row=>({...row,date,start:`${date}T${startHour}:00:00Z`,end:`${date}T${endHour}:00:00Z`,value:values[row.metric],coverageThrough:`${date}T23:00:00Z`}));
