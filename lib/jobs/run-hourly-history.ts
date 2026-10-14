@@ -12,6 +12,7 @@ import {DailyScheduler} from './scheduler';
 import {pruneArchivedMaterializations} from './archive-materialization-retention';
 import {ShopifyRateLimitError} from '../sources/shopify-graphql';
 import {retryPublication} from './publication-retry';
+import {boundedRechargeContract,HistoryCapacityDeferral,recentRechargeHistoryDate,rechargeHistoryFits,validateBoundedRechargeHistory} from './bounded-recharge-history';
 
 const STORAGE_SAFETY_BYTES=22000000000;
 type HistoryBudget={maxJobs:number;deadline:number};
@@ -49,14 +50,16 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
    if(claimed>=budget.maxJobs||Date.now()+30000>budget.deadline||out.skipped)return null;
    if(await currentSourcesDue(store,scope)){out.skipped='current-source-work';return null;}
    const storage=await storageBytes(store);out.storageBytes=storage;
-   if(storage>=STORAGE_SAFETY_BYTES){out.skipped='storage-capacity';return null;}
-   const available=[...eligible.values()].filter(value=>!active.has(value.source.provider)&&(!value.source.provider.startsWith('kind-shopify-')||Date.now()>=shopifyCooldownUntil)&&Date.now()+requiredBudget(value.source.provider)<=budget.deadline);
+   const limited=storage>=STORAGE_SAFETY_BYTES;
+   const capacityEligible=[...eligible.values()].filter(value=>!limited||value.source.provider==='kind-recharge-cancellations'&&boundedRechargeContract(value.contract)&&rechargeHistoryFits(storage));
+   if(limited&&!capacityEligible.length){out.skipped='storage-capacity';return null;}
+   const available=capacityEligible.filter(value=>!active.has(value.source.provider)&&(!value.source.provider.startsWith('kind-shopify-')||Date.now()>=shopifyCooldownUntil)&&Date.now()+requiredBudget(value.source.provider)<=budget.deadline);
    if(!available.length)return null;
    const now=new Date().toISOString(),sourceIds=available.map(value=>value.source.id),today=todayIn(available[0].client.timezone,new Date(now));
    // Fill recent comparisons before older archives, including sources added
    // after the initial queue. Keep immutable due times and benchmark ordering
    // within each band; AppLovin retains its oldest-date priority in that band.
-   const job=await store.first<HistoryJob>(`SELECT j.id,j.sourceId,j.clientId,j.attempts FROM jobs j JOIN connections c ON c.id=j.sourceId AND c.organizationId=j.organizationId WHERE j.organizationId=? AND j.clientId='kind-patches' AND j.sourceId IN (${sourceIds.map(()=>'?').join(',')}) AND j.id LIKE '%:hourly-history:____-__-__' AND ((j.status='pending' AND j.dueAt<=?) OR (j.status='running' AND j.leaseUntil<?)) ORDER BY CASE WHEN substr(j.id,-10)>=? THEN 0 WHEN substr(j.id,-10)>=? THEN 1 ELSE 2 END,CASE WHEN c.provider='kind-applovin' THEN 0 ELSE 1 END,CASE WHEN c.provider='kind-applovin' THEN substr(j.id,-10) ELSE j.dueAt END,j.dueAt,j.id LIMIT 1`,scope.organizationId,...sourceIds,now,now,shiftDate(today,-7),shiftDate(today,-30));
+   const job=await store.first<HistoryJob>(`SELECT j.id,j.sourceId,j.clientId,j.attempts FROM jobs j JOIN connections c ON c.id=j.sourceId AND c.organizationId=j.organizationId WHERE j.organizationId=? AND j.clientId='kind-patches' AND j.sourceId IN (${sourceIds.map(()=>'?').join(',')}) AND j.id LIKE '%:hourly-history:____-__-__' AND ((j.status='pending' AND j.dueAt<=?) OR (j.status='running' AND j.leaseUntil<?))${limited?' AND substr(j.id,-10)>=? AND substr(j.id,-10)<?':''} ORDER BY CASE WHEN substr(j.id,-10)>=? THEN 0 WHEN substr(j.id,-10)>=? THEN 1 ELSE 2 END,CASE WHEN c.provider='kind-applovin' THEN 0 ELSE 1 END,CASE WHEN c.provider='kind-applovin' THEN substr(j.id,-10) ELSE j.dueAt END,j.dueAt,j.id LIMIT 1`,scope.organizationId,...sourceIds,now,now,...limited?[shiftDate(today,-30),today]:[],shiftDate(today,-7),shiftDate(today,-30));
    if(!job)return null;
    const leaseUntil=new Date(Date.now()+900000).toISOString(),updated=await store.run("UPDATE jobs SET status='running',leaseUntil=?,attempts=attempts+1 WHERE id=? AND organizationId=? AND ((status='pending' AND dueAt<=?) OR (status='running' AND leaseUntil<?))",leaseUntil,job.id,scope.organizationId,now,now);
    if(!updated.meta.changes)return null;
@@ -74,16 +77,26 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
     if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||date>=today||date<shiftDate(today,source.provider==='kind-applovin'?-28:-61))throw Error('Historical source window is invalid');
     const secret=serverSecret(source.secretRef);if(!secret)throw Error(`Server secret ${source.secretRef} is not configured`);if(!env.BUCKET)throw Error('Snapshot archive unavailable');
     const window={from:date,to:date},batch=await fetchKindSource(source,client,window,secret,fetch,budget.deadline);
+    const smallRecharge=source.provider==='kind-recharge-cancellations'&&boundedRechargeContract(contract);
+    if(smallRecharge)validateBoundedRechargeHistory(batch,contract,client,date);
     validateRegisteredBatch(batch,contract);
     if(!batch.complete||!batch.coverageThrough||Date.parse(batch.coverageThrough)<Date.parse(dayWindow(date,client.timezone).end)||batch.rows.some(row=>row.date!==date))throw Error('Historical capture did not cover the complete store day');
     const hash=await fingerprint(batch),key=`snapshots/${scope.organizationId}:${client.id}:${source.id}:${hash}.json`;
     await env.BUCKET.put(key,JSON.stringify(batch),{httpMetadata:{contentType:'application/json'}});
     const capturedAt=new Date().toISOString();
-    await publish(()=>store.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,window,{publicationDeadline:budget.deadline}));
+    await publish(async()=>{
+     const storage=await storageBytes(store);out.storageBytes=storage;
+     if(storage>=STORAGE_SAFETY_BYTES&&!(smallRecharge&&recentRechargeHistoryDate(date,today)&&rechargeHistoryFits(storage)))throw new HistoryCapacityDeferral('Historical storage capacity reserved for current ingestion');
+     return store.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,window,{publicationDeadline:budget.deadline});
+    });
     await retryPublication('history.complete',budget.deadline,()=>store.finish(job.id));out.completed.push(job.id);
    }catch(error){
     const message=error instanceof Error?error.message:'Historical capture failed';
-    if(error instanceof ShopifyRateLimitError&&source.provider.startsWith('kind-shopify-')){
+    if(error instanceof HistoryCapacityDeferral){
+     out.skipped='storage-capacity';
+     await store.run("UPDATE jobs SET status='pending',attempts=MAX(0,attempts-1),dueAt=?,error=?,leaseUntil=NULL WHERE id=? AND organizationId=? AND status='running'",new Date(Date.now()+5*60000).toISOString(),message,job.id,scope.organizationId);
+     continue;
+    }else if(error instanceof ShopifyRateLimitError&&source.provider.startsWith('kind-shopify-')){
      const delay=Math.min(3600000,Math.max(60000,Number.isFinite(error.retryAfterMs)?error.retryAfterMs:60000));shopifyCooldownUntil=Math.max(shopifyCooldownUntil,Date.now()+delay);
      // Budget pressure defers valid dates, rather than spending their bounded
      // failure attempts or immediately claiming more work from the same bucket.
