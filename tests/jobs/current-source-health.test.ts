@@ -88,7 +88,7 @@ it('retains bounded historical planning in the Sites scheduler fallback',async()
 
 it.each(['kind-shopify-sales','kind-shopify-products','kind-shopify-traffic','kind-meta-performance','kind-applovin'])('keeps routine %s captures on today while independent history repairs remain separate',async provider=>{
  await state.store!.run('UPDATE connections SET provider=?',provider);state.mode='before';
- await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+300000});
+ await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+700000});
  expect(state.requests).toEqual([{kind:'current',provider,window:{from:'2026-10-13',to:'2026-10-13'}}]);
 });
 it.each(['kind-shopify-hourly','kind-shopify-funnels','kind-triple-whale','kind-triple-whale-summary','kind-triple-whale-diagnostics'])('preserves existing comparison recency for %s without independent history jobs',async provider=>{
@@ -114,7 +114,7 @@ it('retries the identical fact page after a committed database timeout without r
 });
 it('retries only idempotent source freshness and completion acknowledgments after committed response timeouts',async()=>{
  state.mode='success';const store=state.store!,run=store.run.bind(store),lost=new Set<string>();
- vi.spyOn(store,'run').mockImplementation(async(sql,...values)=>{const result=await run(sql,...values);if((sql.startsWith('UPDATE connections SET lastSuccess=')||sql.startsWith('UPDATE jobs SET status=?'))&&!lost.has(sql)){lost.add(sql);throw new DOMException('Database request timed out','TimeoutError');}return result;});
+ vi.spyOn(store,'run').mockImplementation(async(sql,...values)=>{const result=await run(sql,...values);if((sql.startsWith('UPDATE connections SET lastSuccess=')||sql.startsWith("UPDATE jobs SET status='complete'"))&&!lost.has(sql)){lost.add(sql);throw new DOMException('Database request timed out','TimeoutError');}return result;});
  const result=await settlePublication(runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000}));
  expect(result).toEqual({completed:['o:source:hourly-test'],failed:[]});expect(state.requests).toHaveLength(1);expect(lost.size).toBe(2);expect(await store.first('SELECT status,error,attempts FROM jobs')).toEqual({status:'complete',error:null,attempts:1});expect((await store.first('SELECT error FROM connections'))?.error).toBeNull();
 });

@@ -4,7 +4,7 @@ import {workspacePresentation} from '../analytics/presentation';
 import {queryClient} from '../analytics/query';
 import {todayIn,shiftDate,comparisonPeriod} from '../analytics/windows';
 import {initialReportingDate,liveReportingDate} from '../analytics/reporting-date';
-import type {AccessScope,QueryFilters} from '../analytics/contracts';
+import type {AccessScope,Client,QueryFilters} from '../analytics/contracts';
 import {serverSecret} from './secrets';
 import {withAnalyticsMemory} from './analytics-memory';
 import {bridgedWorkspace} from './company-workspace-bridge';
@@ -27,6 +27,7 @@ export async function loadWorkspace(p:URLSearchParams):Promise<Awaited<ReturnTyp
  validateWorkspaceQuery(p);
  const remote=await bridgedWorkspace(scope,p);
  const result=remote??await loadWorkspaceForScope(p,scope);
+ if(result.navigationClients!==undefined&&(!Array.isArray(result.navigationClients)||result.navigationClients.some(client=>!result.scope.permittedClientIds.includes(client.id))))throw Error('Company workspace access changed. Please reload.');
  console.info('Workspace read phase',{phase:'analytics-complete',ms:Date.now()-started});return result;
 }
 function validateWorkspaceQuery(p:URLSearchParams){
@@ -41,7 +42,8 @@ export async function loadWorkspaceForScope(p:URLSearchParams,scope:AccessScope)
 async function loadWorkspaceWithinBudget(p:URLSearchParams,scope:AccessScope){
  const focusedClientId=p.get('clientId')||undefined,s=getStore(),filters=validateWorkspaceQuery(p),pageDrill=p.get('drill')==='traffic-page',globalFindings=!focusedClientId&&p.get('section')==='findings';
  if(focusedClientId&&!scope.permittedClientIds.includes(focusedClientId))throw Error('Client access denied');
- const clients=(await s.clients(scope.organizationId)).filter(c=>scope.permittedClientIds.includes(c.id)&&(!pageDrill||c.id===focusedClientId));
+ const navigationClients=(await s.clients(scope.organizationId)).filter(c=>scope.permittedClientIds.includes(c.id));
+ const clients=focusedClientId?navigationClients.filter(client=>client.id===focusedClientId):navigationClients;
  if(focusedClientId&&!clients.some(client=>client.id===focusedClientId))throw Error('Client unavailable');
  const focusedClient=clients.find(client=>client.id===focusedClientId);
  const connections=await Promise.all(clients.map(c=>s.connections(scope.organizationId,c.id)));let reportingDate:string|null=null;
@@ -55,7 +57,7 @@ async function loadWorkspaceWithinBudget(p:URLSearchParams,scope:AccessScope){
   const fullReviews=p.get('section')==='reviews'||filters.view==='reviews'&&focusedClientId===client.id;
   const liveDate=filters.period==='today'?liveReportingDate(connections[i],filters.view,client.timezone):null;
   const clientFilters=liveDate?{...filters,from:liveDate,to:liveDate}:filters;
-  const preparedDatasets=pageDrill?['traffic','funnels']:focusedClientId?(client.id===focusedClientId?workspaceDatasets(filters.view):['overview']):['overview','subscriptions','subscriptionEvents',...globalFindings?['funnels']:[]];
+  const preparedDatasets=pageDrill?['traffic','funnels']:focusedClientId?workspaceDatasets(filters.view):['overview','subscriptions','subscriptionEvents',...globalFindings?['funnels']:[]];
   // The drawer renders this page's selected/comparison funnel only. Keep the
   // main workspace's thirty-day chart context outside this scoped drill read.
   // The action queue needs qualified selected/comparison page evidence, not
@@ -69,6 +71,7 @@ async function loadWorkspaceWithinBudget(p:URLSearchParams,scope:AccessScope){
   }),pageDrill?Promise.resolve([]):s.findings(scope.organizationId,client.id),pageDrill?Promise.resolve([]):s.reviews(scope.organizationId,client.id,!fullReviews),pageDrill?Promise.resolve({body:''}):s.note(scope.organizationId,client.id),pageDrill?Promise.resolve(null):s.first('SELECT storeDate,mode,status,completedAt,error FROM scheduled_reviews WHERE organizationId=? AND clientId=? ORDER BY dueAt DESC LIMIT 1',scope.organizationId,client.id)]);
   return {...frame,...({browserScopeKey:JSON.stringify([scope.organizationId,scope.actorId,scope.role,[...scope.permittedClientIds].sort()])} as {browserScopeKey?:string}),...({reviewsIndexOnly:!fullReviews} as {reviewsIndexOnly?:boolean}),findings,reviews:fullReviews?reviews:reviews.map(workspaceReviewIndex),note,scheduleState:{active:serverSecret('APP_SCHEDULER_ACTIVE')==='true',waitingForSources:!connections[i].some(c=>c.enabled),lastJob:lastJob??undefined}};
  }));
- return {scope,filters,...focusedClientId?{focusedClientId}:{},clients:all,reportingDateNote:reportingDate?`Latest available closed reporting day · ${reportingDate}`:null,jobs:pageDrill?[]:(await s.jobs(scope.organizationId)).filter(j=>scope.permittedClientIds.includes(j.clientId)),loadedAt:new Date().toISOString()};
+ const navigation:{navigationClients?:Client[]}={navigationClients};
+ return {scope,filters,...focusedClientId?{focusedClientId}:{},...navigation,clients:all,reportingDateNote:reportingDate?`Latest available closed reporting day · ${reportingDate}`:null,jobs:pageDrill?[]:(await s.jobs(scope.organizationId)).filter(j=>scope.permittedClientIds.includes(j.clientId)&&(!focusedClientId||j.clientId===focusedClientId)),loadedAt:new Date().toISOString()};
 }
 export type Workspace=Awaited<ReturnType<typeof loadWorkspaceForScope>>;
