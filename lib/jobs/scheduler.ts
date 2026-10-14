@@ -36,7 +36,25 @@ export class DailyScheduler {
    throw error;
   }
  }
- async release(id:string,token:string){await this.store.run('DELETE FROM runner_leases WHERE id=? AND token=?',id,token);}
+ async release(id:string,token:string){
+  const remove=()=>this.store.run('DELETE FROM runner_leases WHERE id=? AND token=?',id,token);
+  try{await remove();}
+  catch(error){
+   if(!(error instanceof Error&&(error.name==='TimeoutError'||error.message==='Database request timed out')))throw error;
+   const bounded=async<T>(work:()=>Promise<T>):Promise<T>=>{
+    let timer:ReturnType<typeof setTimeout>|undefined;
+    try{return await Promise.race([work(),new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(error),5000);})]);}
+    finally{if(timer)clearTimeout(timer);}
+   };
+   let owned:{token:string}|null;
+   try{owned=await bounded(()=>this.store.first<{token:string}>('SELECT token FROM runner_leases WHERE id=?',id));}
+   catch{throw error;}
+   // A lost acknowledgment may already have released this owner. A late
+   // exact-token retry also cannot remove a replacement acquired meanwhile.
+   if(owned?.token!==token)return;
+   await bounded(remove);
+  }
+ }
  async enqueue(org:string,client:string,due:DueReview,now:string){
   await this.store.run("INSERT INTO scheduled_reviews(id,organizationId,clientId,storeDate,mode,status,attempts,dueAt) VALUES(?,?,?,?,?,'pending',0,?) ON CONFLICT DO NOTHING",`${org}:${client}:${due.storeDate}:${due.mode}`,org,client,due.storeDate,due.mode,now);
  }
