@@ -3,17 +3,19 @@ import {readFileSync,readdirSync} from 'node:fs';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {Store} from '../../lib/server/store';
 import initial from '../../data/initial-clients.json';
-import type {AccessScope,SourceBatch} from '../../lib/analytics/contracts';
+import type {AccessScope,Client,SourceBatch} from '../../lib/analytics/contracts';
 import {kindQualification,observation,sourceBatch} from '../../lib/sources/kind-patches';
 
-const state=vi.hoisted(()=>({store:null as Store|null,sqlite:null as DatabaseSync|null,batch:null as SourceBatch|null,mode:'tail' as 'tail'|'before'|'success'|'settling',platform:'sites',healthAtTail:null as any,puts:0,requests:[] as {kind:'current'|'history';provider:string;window:{from:string;to:string}}[]}));
+const state=vi.hoisted(()=>({store:null as Store|null,sqlite:null as DatabaseSync|null,batch:null as SourceBatch|null,mode:'tail' as 'tail'|'before'|'success'|'settling',platform:'sites',healthAtTail:null as any,puts:0,skips:null as string[]|null,requests:[] as {kind:'current'|'history';provider:string;window:{from:string;to:string}}[]}));
 vi.mock('@avenue/runtime',()=>({env:{BUCKET:{put:async()=>{state.puts++;}}},get runtimePlatform(){return state.platform;}}));
 vi.mock('../../lib/server/access',()=>({getStore:()=>state.store}));
 vi.mock('../../lib/server/secrets',()=>({serverSecret:()=> 'server-only-test-secret'}));
 vi.mock('../../lib/ai/server',()=>({generateAIReview:vi.fn()}));
-vi.mock('../../lib/sources/kind-fetch',()=>({
+vi.mock('../../lib/sources/kind-fetch',async importOriginal=>({
+ kindSourceDates:(await importOriginal<typeof import('../../lib/sources/kind-fetch')>()).kindSourceDates,
  fetchKindSource:async(source:{provider:string},_client:unknown,window:{from:string;to:string})=>{state.requests.push({kind:'history',provider:source.provider,window});return state.batch!;},
- fetchKindBatches:async function*(source:{provider:string},_client:unknown,window:{from:string;to:string}){
+ fetchKindBatches:async function*(source:{provider:string},_client:unknown,window:{from:string;to:string},_secret:string,_fetch:unknown,_deadline:number,skips?:ReadonlySet<string>){
+  state.skips=skips?[...skips]:null;
   state.requests.push({kind:'current',provider:source.provider,window});
   if(state.mode==='before')throw Error('Current provider request failed');
   if(state.mode==='settling'){const {AppLovinSettlingHourError}=await import('../../lib/sources/hourly-paid-media');throw new AppLovinSettlingHourError();}
@@ -26,7 +28,7 @@ import {enqueueDue,runSyncBatch} from '../../lib/jobs/sync';
 
 const scope:AccessScope={organizationId:'o',actorId:'scheduler',role:'service',permittedClientIds:['kind-patches']};
 beforeEach(async()=>{
- vi.useFakeTimers();vi.setSystemTime('2026-10-13T13:00:00Z');state.mode='tail';state.platform='sites';state.healthAtTail=null;state.puts=0;state.requests=[];
+ vi.useFakeTimers();vi.setSystemTime('2026-10-13T13:00:00Z');state.mode='tail';state.platform='sites';state.healthAtTail=null;state.puts=0;state.skips=null;state.requests=[];
  const sqlite=state.sqlite=new DatabaseSync(':memory:');for(const file of readdirSync('drizzle').filter(file=>file.endsWith('.sql')))sqlite.exec(readFileSync(`drizzle/${file}`,'utf8'));
  const prepare=(sql:string)=>{let values:unknown[]=[];const statement={sql,bind(...input:unknown[]){values=input;return statement;},async all(){return {results:sqlite.prepare(sql).all(...values as any[])};},async first(){return sqlite.prepare(sql).get(...values as any[])??null;},async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...values as any[]).changes)}};}};return statement;};
  const store=state.store=new Store({prepare,batch:async statements=>Promise.all(statements.map(statement=>statement.run()))}),client={...initial[0],version:1};
@@ -126,4 +128,28 @@ it('does not start a publication retry when the native source-run budget is near
  state.mode='success';const started=Date.now(),store=state.store!,write=store.db.batch.bind(store.db);let attempts=0;
  store.db.batch=async statements=>{if(statements[0]?.sql.startsWith('INSERT INTO observations')){attempts++;vi.setSystemTime(started+180000);throw new DOMException('Database request timed out','TimeoutError');}return write(statements);};
  const result=await runSyncBatch(scope,{maxJobs:1,deadline:started+200000});expect(attempts).toBe(1);expect(result.failed).toHaveLength(1);expect(state.requests).toHaveLength(1);
+});
+
+async function sessionComparisonFixture(provider:'kind-shopify-hourly'|'kind-shopify-funnels'){
+ const store=state.store!,client={...initial[0],version:1} as Client,date='2026-10-12',prior=sourceBatch(client,[observation(date,'overview','sessions',7,'shopify_human_sessions','human_online_store_sessions',null,{},{start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'})],'2026-10-12T22:00:00Z',[],'hourly');
+ await store.run('UPDATE connections SET provider=?',provider);await store.persistBatch('o','source',prior,'comparison','2026-10-13T00:00:00Z',{from:date,to:date});
+ state.batch=sourceBatch(client,[observation('2026-10-13','overview','sessions',9,'shopify_human_sessions','human_online_store_sessions',null,{},{start:'2026-10-13T11:00:00Z',end:'2026-10-13T12:00:00Z'})],'2026-10-13T12:00:00Z',[],'hourly');
+ await store.saveQualification('o',client.id,'source',1,1,kindQualification(state.batch,provider),'scheduler');state.mode='success';
+}
+it.each(['kind-shopify-hourly','kind-shopify-funnels'] as const)('native automatic %s reuse is passed to the provider generator while today publishes normally',async provider=>{
+ await sessionComparisonFixture(provider);state.platform='vercel';const result=await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000});
+ expect(result.completed).toEqual(['o:source:hourly-test']);expect(state.skips).toEqual(['2026-10-12']);expect(state.requests).toHaveLength(1);
+ expect(await state.store!.first("SELECT status,error FROM jobs")).toEqual({status:'complete',error:null});
+});
+it.each(['manual','initial','legacy'] as const)('preserves %s session priming without handing the generator a closed-date skip set',async reason=>{
+ await sessionComparisonFixture('kind-shopify-hourly');state.platform=reason==='legacy'?'sites':'vercel';
+ if(reason==='manual'){await state.store!.run('DELETE FROM jobs');await state.store!.enqueue('o','kind-patches','source','manual:abc',new Date().toISOString());}
+ if(reason==='initial')await state.store!.run('UPDATE connections SET lastSuccess=NULL');
+ expect((await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000})).completed).toHaveLength(1);expect(state.skips).toBeNull();
+});
+it('still publishes and completes today when optional session metadata reuse times out',async()=>{
+ await sessionComparisonFixture('kind-shopify-hourly');state.platform='vercel';const store=state.store!,read=store.all.bind(store);
+ vi.spyOn(store,'all').mockImplementation(async(sql,...args)=>{if(sql.includes('AS payload FROM current_snapshots c JOIN snapshots'))throw new DOMException('Database request timed out','TimeoutError');return read(sql,...args);});
+ expect(await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000})).toEqual({completed:['o:source:hourly-test'],failed:[]});expect(state.skips).toEqual([]);expect(state.requests).toHaveLength(1);
+ expect(await store.first('SELECT error,coverageThrough FROM connections')).toEqual({error:null,coverageThrough:'2026-10-13T12:00:00Z'});
 });

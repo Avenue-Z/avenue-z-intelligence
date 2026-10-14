@@ -4,7 +4,8 @@ import type {AccessScope,Client} from '../analytics/contracts';
 import {todayIn,shiftDate,dayWindow} from '../analytics/windows';
 import {assertSourceActivation,validateRegisteredBatch} from '../sources/registered-contract';
 import {fetchGateway} from '../sources/gateway';
-import {fetchKindBatches,fetchKindSource} from '../sources/kind-fetch';
+import {fetchKindBatches,fetchKindSource,kindSourceDates} from '../sources/kind-fetch';
+import {closedSessionDatesToSkip} from './closed-session-dates';
 import {planHistoricalHourlyJobs} from './hourly-history';
 import {fingerprint,reviewPayload} from '../reviews/build';
 import {queryClient} from '../analytics/query';
@@ -37,7 +38,9 @@ export async function runSyncBatch(scope:AccessScope,budget={maxJobs:7,deadline:
     try{const source=(await s.connections(scope.organizationId,j.clientId)).find(c=>c.id===j.sourceId&&c.enabled),client=clients.find(c=>c.id===j.clientId);if(!source||!client)throw new Error('Source is disabled or unavailable');const qualified=assertSourceActivation(source,await s.qualification(scope.organizationId,source.id),client);const secret=serverSecret(source.secretRef);if(!secret)throw new Error(`Server secret ${source.secretRef} is not configured`);
       const date=todayIn(client.timezone);if(historyDate&&(!/^\d{4}-\d{2}-\d{2}$/.test(historyDate)||historyDate>=date||historyDate<shiftDate(date,source.provider==='kind-applovin'?-28:-61)||!['kind-shopify-sales','kind-shopify-products','kind-shopify-traffic','kind-meta-performance','kind-applovin'].includes(source.provider)))throw Error('Historical source window is invalid');
       const window=historyDate?{from:historyDate,to:historyDate}:client.id==='kind-patches'&&INDEPENDENT_HISTORY_PROVIDERS.has(source.provider)?{from:date,to:date}:{from:shiftDate(date,source.provider==='kind-shopify-hourly'?-1:source.lastSuccess?-6:-59),to:date};if(!env.BUCKET)throw new Error('Snapshot archive unavailable');let coverage:string|null=null;
-      const batches=historyDate?(async function*(){yield {batch:await fetchKindSource(source,client,window,secret,fetch,budget.deadline),window};})():source.provider==='gateway'?(async function*(){yield {batch:await fetchGateway(source,client,window,secret,fetch,budget.deadline),window};})():fetchKindBatches(source,client,window,secret,fetch,budget.deadline);
+      const skipClosedDates=runtimePlatform==='vercel'&&!historyDate&&!j.id.includes(':manual:')&&source.lastSuccess&&['kind-shopify-hourly','kind-shopify-funnels'].includes(source.provider)?await closedSessionDatesToSkip(s,scope.organizationId,client,source,qualified,kindSourceDates(source,client,window),new Date()):undefined;
+      if(skipClosedDates?.size)console.info('Reusing settled session captures',{provider:source.provider,closedDays:skipClosedDates.size});
+      const batches=historyDate?(async function*(){yield {batch:await fetchKindSource(source,client,window,secret,fetch,budget.deadline),window};})():source.provider==='gateway'?(async function*(){yield {batch:await fetchGateway(source,client,window,secret,fetch,budget.deadline),window};})():fetchKindBatches(source,client,window,secret,fetch,budget.deadline,skipClosedDates);
       for await(const {batch,window:actualWindow} of batches){
         validateRegisteredBatch(batch,qualified);const hash=await fingerprint(batch),key=`snapshots/${scope.organizationId}:${client.id}:${source.id}:${hash}.json`;
         await env.BUCKET.put(key,JSON.stringify(batch),{httpMetadata:{contentType:'application/json'}});

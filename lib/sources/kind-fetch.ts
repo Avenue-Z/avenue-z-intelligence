@@ -85,12 +85,13 @@ export function kindSourceDates(connection:Connection,client:Client,w:KindWindow
  const earliest=connection.provider==='kind-applovin'?shiftDate(todayIn('UTC',asOf),-29):null;
  return [...new Set(dates)].filter(date=>!earliest||dayWindow(date,client.timezone).start.slice(0,10)>=earliest).sort((a,b)=>b.localeCompare(a));
 }
-export async function* fetchKindBatches(connection:Connection,client:Client,w:KindWindow,secret:string,fetcher:typeof fetch=fetch,deadline=Date.now()+180000){
+export async function* fetchKindBatches(connection:Connection,client:Client,w:KindWindow,secret:string,fetcher:typeof fetch=fetch,deadline=Date.now()+180000,skipClosedDates?:ReadonlySet<string>){
  const asOf=new Date(),actualWindow=effectiveKindWindow(connection,client,w,asOf);
  if(hourlyProviders.has(connection.provider)){
   const dates=kindSourceDates(connection,client,w,asOf);
   const historicalHeadroom=connection.provider==='kind-shopify-traffic'?120000:connection.provider==='kind-shopify-products'?60000:connection.provider==='kind-shopify-sales'?20000:connection.provider==='kind-meta-performance'?120000:connection.provider==='kind-applovin'?10000:10000;
   for(const [index,day] of dates.entries()){
+   if(day<todayIn(client.timezone,asOf)&&skipClosedDates?.has(day))continue;
    // Current data must reach durable storage before optional historical repairs.
    // Missing history is handled by independent single-day history jobs; running
    // out of historical headroom is a successful current source refresh.
