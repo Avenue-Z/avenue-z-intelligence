@@ -8,6 +8,7 @@ import type {Store} from '../server/store';
 import {dayWindow} from '../analytics/windows';
 import {warmSuccessfulSourceJobs} from '../server/cache-warming';
 import {intradayConnections} from '../analytics/intraday-coverage';
+import {pruneArchivedMaterializations} from './archive-materialization-retention';
 
 async function serviceScope(s:Store):Promise<AccessScope>{
  const organizationId=serverSecret('APP_ORGANIZATION_ID')||'avenue-z';
@@ -36,8 +37,23 @@ export async function syncTick(){
   // Native cache warming has its own cron and lease; release the source runner
   // after ingestion. Legacy runtimes retain inline warming once current feeds catch up.
   const pendingCurrent=scope.permittedClientIds.length?await s.first(`SELECT j.id FROM jobs j JOIN connections c ON c.id=j.sourceId AND c.organizationId=j.organizationId AND c.clientId=j.clientId WHERE j.organizationId=? AND j.clientId IN (${scope.permittedClientIds.map(()=>'?').join(',')}) AND c.enabled=1 AND j.id NOT LIKE '%:hourly-history:____-__-__' AND j.status IN ('pending','running') AND j.dueAt<=? LIMIT 1`,scope.organizationId,...scope.permittedClientIds,new Date().toISOString()):null;
+  let maintenance:Awaited<ReturnType<typeof pruneArchivedMaterializations>>|undefined;
+  // Catch a genuine drain before releasing the sync owner. Reserve the last
+  // 40 seconds of the native tail for release; metadata reads get one 5s budget.
+  if(runtimePlatform==='vercel'&&scope.permittedClientIds.includes('kind-patches')&&!pendingCurrent&&Date.now()+5000<started+730000){
+   let timer:ReturnType<typeof setTimeout>|undefined;
+   try{
+    const [pages,size,free,owner]=await Promise.race([Promise.all([s.first<{page_count:number}>('PRAGMA page_count'),s.first<{page_size:number}>('PRAGMA page_size'),s.first<{freelist_count:number}>('PRAGMA freelist_count'),s.first<{token:string;leaseUntil:string}>('SELECT token,leaseUntil FROM runner_leases WHERE id=? AND token=? AND leaseUntil>?',id,token,new Date().toISOString())]),new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new DOMException('Maintenance capacity read timed out','TimeoutError')),5000);})]);
+    if(timer)clearTimeout(timer);
+    if(pages&&size&&free&&[pages.page_count,size.page_size,free.freelist_count].every(Number.isSafeInteger)&&pages.page_count>=0&&size.page_size>=512&&size.page_size<=65536&&(size.page_size&(size.page_size-1))===0&&free.freelist_count>=0&&free.freelist_count<=pages.page_count){
+     const bytes=(pages.page_count-free.freelist_count)*size.page_size;
+     if(Number.isSafeInteger(bytes)&&bytes>=18000000000&&owner?.token===token&&Date.parse(owner.leaseUntil)>Date.now()&&Date.now()<started+730000){maintenance=await pruneArchivedMaterializations(s,scope,{maxSnapshots:8,maxRows:250000,deadline:Math.min(Date.now()+60000,started+730000)});console.info('Post-current archive maintenance',maintenance);}
+    }
+   }catch(error){console.warn('Post-current archive maintenance deferred',{kind:error instanceof Error&&['Error','TypeError','TimeoutError','AbortError'].includes(error.name)?error.name:'Unknown'});}
+   finally{if(timer)clearTimeout(timer);}
+  }
   const cacheWarm=runtimePlatform==='vercel'||pendingCurrent?{attempted:0,completed:0}:await warmSuccessfulSourceJobs(s,scope,result.completed,started+770000);
-  return {...result,cacheWarm};
+  return {...result,cacheWarm,...maintenance?{maintenance}:{}};
  }
  finally{await scheduler.release(id,token);}
 }
