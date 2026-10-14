@@ -43,6 +43,35 @@ it('bounds payload protection scans before selecting a small maintenance batch',
  expect(result.rowsDeleted).toBe(3);expect(result.prunedSnapshots).toBe(1);expect(payloadChecks).toBeLessThan(80);
  expect(await store.first('SELECT COUNT(*) AS n FROM observations WHERE snapshotId=?',currentId)).toEqual({n:3});
 });
+it('uses the existing scoped current-pointer index during candidate selection',async()=>{
+ const all=store.all.bind(store),plans:{detail:string}[]=[];
+ vi.spyOn(store,'all').mockImplementation(async(sql,...args)=>{
+  if(sql.startsWith('SELECT s.*,c.provider')&&!sql.includes('s.id IN'))plans.push(...sqlite.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args as SQLInputValue[]).map(row=>({detail:String(row.detail)})));
+  return all(sql,...args);
+ });
+ expect((await pruneArchivedMaterializations(store,scope,options())).rowsDeleted).toBe(3);
+ expect(plans.some(row=>/SEARCH p USING INDEX sqlite_autoindex_current_snapshots_1 \(organizationId=\? AND clientId=\? AND sourceId=\?\)/.test(row.detail))).toBe(true);
+ expect(plans.some(row=>/SCAN p\b/.test(row.detail))).toBe(false);
+});
+it.each(['before-selection','after-verification'])('preserves a cross-scope current pointer %s despite scoped candidate selection',async timing=>{
+ const point=()=>store.run('INSERT INTO current_snapshots(organizationId,clientId,sourceId,date,snapshotId,publishedAt) VALUES(?,?,?,?,?,?)','other-org','beam','other-source','2026-10-13',oldId,'2026-10-13T17:00:00Z');
+ if(timing==='before-selection')await point();
+ const facts=await store.all('SELECT * FROM observations ORDER BY snapshotId,date,rowKey'),metadata=await store.all('SELECT * FROM snapshots ORDER BY id'),raw=[...archives.entries()],all=store.all.bind(store),candidateIds:string[]=[];
+ vi.spyOn(store,'all').mockImplementation(async(sql,...args)=>{
+  const rows=await all(sql,...args);
+  if(sql.startsWith('SELECT s.*,c.provider')&&!sql.includes('s.id IN'))candidateIds.push(...(rows as {id:string}[]).map(row=>row.id));
+  return rows;
+ });
+ const guardedReader=vi.fn<ArchiveReader>(async(key,deadline)=>{const archive=await reader(key,deadline);if(timing==='after-verification')await point();return archive;});
+ const result=await pruneArchivedMaterializations(store,scope,{...options(),readArchive:guardedReader});
+ expect(candidateIds).toContain(oldId);
+ expect(result).toMatchObject({rowsDeleted:0,prunedSnapshots:0,projectionChunksDeleted:0});
+ if(timing==='before-selection')expect(guardedReader).not.toHaveBeenCalled();else expect(guardedReader).toHaveBeenCalledOnce();
+ expect(await store.all('SELECT * FROM observations ORDER BY snapshotId,date,rowKey')).toEqual(facts);
+ expect(await store.all('SELECT * FROM snapshots ORDER BY id')).toEqual(metadata);expect([...archives.entries()]).toEqual(raw);
+ expect(await store.first('SELECT snapshotId FROM current_snapshots WHERE organizationId=? AND clientId=?','other-org','beam')).toEqual({snapshotId:oldId});
+ expect(await store.all('SELECT * FROM audit')).toEqual([]);
+});
 it('continues through protected candidate pages without starving a later recoverable capture',async()=>{
  const sample=await store.first<{date:string;rowKey:string;payload:string}>('SELECT date,rowKey,payload FROM observations WHERE snapshotId=? LIMIT 1',oldId),protectedIds:string[]=[];
  for(let index=0;index<22;index++){
@@ -125,6 +154,17 @@ it('restores exactly the original values and retrieval provenance from the verif
 });
 it('bounds each maintenance call and retains projections until all corresponding raw rows are pruned',async()=>{
  const result=await pruneArchivedMaterializations(store,scope,{...options(),maxRows:1});expect(result.rowsDeleted).toBe(1);expect(await store.first('SELECT COUNT(*) AS n FROM observations WHERE snapshotId=?',oldId)).toEqual({n:2});expect(await store.first('SELECT COUNT(*) AS n FROM snapshot_day_projection_entries WHERE snapshotId=?',oldId)).toEqual({n:1});
+});
+it('reclaims a larger capture across guarded fact pages of at most 500 rows within the total row budget',async()=>{
+ const large={...oldBatch,dimensions:['page'],rows:Array.from({length:1251},(_,index)=>({...oldBatch.rows[0],dimensions:{page:String(index)}}))},hash=await fingerprint(large);
+ const id=await store.persistBatch('o','source',large,hash,'2026-10-13T09:00:00Z',undefined,{restoreMaterialization:true});archives.set(`snapshots/${id}.json`,JSON.stringify(large));
+ const metadata=await store.all('SELECT * FROM snapshots ORDER BY id'),pointers=await store.all('SELECT * FROM current_snapshots'),current=await store.all('SELECT * FROM observations WHERE snapshotId=?',currentId),entries=await store.all('SELECT * FROM snapshot_day_projection_entries ORDER BY snapshotId,date,codecVersion'),chunks=await store.all('SELECT * FROM snapshot_day_projection_chunks ORDER BY snapshotId,date,codecVersion,generation,chunkIndex'),raw=[...archives.entries()],run=store.run.bind(store),pages:number[]=[];
+ vi.spyOn(store,'run').mockImplementation(async(sql,...args)=>{if(sql.startsWith('DELETE FROM observations'))pages.push((JSON.parse(String(args[1])) as number[]).length);return run(sql,...args);});
+ const result=await pruneArchivedMaterializations(store,scope,{...options(),maxRows:1203,maxSnapshots:1});
+ expect(result).toMatchObject({verifiedSnapshots:1,prunedSnapshots:1,rowsDeleted:1203,projectionChunksDeleted:0});expect(pages).toEqual([500,500,203]);
+ expect(await store.first('SELECT COUNT(*) n FROM observations WHERE snapshotId=?',id)).toEqual({n:48});
+ expect(await store.all('SELECT * FROM snapshot_day_projection_entries ORDER BY snapshotId,date,codecVersion')).toEqual(entries);expect(await store.all('SELECT * FROM snapshot_day_projection_chunks ORDER BY snapshotId,date,codecVersion,generation,chunkIndex')).toEqual(chunks);
+ expect(await store.all('SELECT * FROM snapshots ORDER BY id')).toEqual(metadata);expect(await store.all('SELECT * FROM current_snapshots')).toEqual(pointers);expect(await store.all('SELECT * FROM observations WHERE snapshotId=?',currentId)).toEqual(current);expect([...archives.entries()]).toEqual(raw);
 });
 it('uses direct rowid lookups for each guarded delete instead of rescanning the whole capture',async()=>{
  const run=store.run.bind(store),all=store.all.bind(store),deletions:any[]=[],selections:any[]=[];
@@ -254,8 +294,8 @@ it('yields between fact pages when current work becomes due after confirmed prog
  await store.run("UPDATE snapshots SET status='writing' WHERE id=?",oldId);
  const metadata=await store.first('SELECT * FROM snapshots WHERE id=?',oldId),pointer=await store.all('SELECT * FROM current_snapshots'),run=store.run.bind(store);let pages=0;
  vi.spyOn(store,'run').mockImplementation(async(sql,...args)=>{const result=await run(sql,...args);if(sql.startsWith('DELETE FROM observations')&&++pages===1)await currentWork();return result;});
- expect(await pruneArchivedMaterializations(store,scope,{...options(),maxRows:5000})).toMatchObject({verifiedSnapshots:1,prunedSnapshots:1,rowsDeleted:2000,deferred:'current-source-work'});
- expect(await store.first('SELECT COUNT(*) n FROM observations WHERE snapshotId=?',oldId)).toEqual({n:1001});
+ expect(await pruneArchivedMaterializations(store,scope,{...options(),maxRows:5000})).toMatchObject({verifiedSnapshots:1,prunedSnapshots:1,rowsDeleted:500,deferred:'current-source-work'});
+ expect(await store.first('SELECT COUNT(*) n FROM observations WHERE snapshotId=?',oldId)).toEqual({n:2501});
  expect(await store.first('SELECT * FROM snapshots WHERE id=?',oldId)).toEqual(metadata);expect(await store.all('SELECT * FROM current_snapshots')).toEqual(pointer);
 });
 it('does not claim unknown deletion counts after a committed write loses its response and restores exact facts',async()=>{
