@@ -169,7 +169,14 @@ export class Store {
     const readPointer=async(pointer:typeof pointers[number],cursor:string|null=null)=>{const scope=scopedRead(pointer);for(;;){const page=await readPage<{payload:string;rowKey:string}>(`SELECT o.payload,o.rowKey FROM observations o${scope.index} WHERE o.snapshotId=? AND o.date=?${scope.clause}${cursor?' AND o.rowKey>?':''} ORDER BY o.rowKey LIMIT 2000`,pointer.snapshotId,pointer.date,...scope.values,...cursor?[cursor]:[]);add(page);if(page.length<2000)return;cursor=page[page.length-1].rowKey;}};
     const scopedRead=(pointer:typeof pointers[number])=>{
       const registered=profiles.get(pointer.sourceId);
-      if(!filters||!registered||detailWindows.some(window=>inWindow(pointer.date,window)))return {clause,values,index:selectionIndex,datasets:null};
+      if(!filters||!registered||detailWindows.some(window=>inWindow(pointer.date,window))){
+        // One qualified dataset fixes the index prefix, so row-key paging does
+        // not sort every page of a broad workspace selection. Incomplete or
+        // multi-dataset profile histories retain the conservative predicate.
+        const datasets=filters&&registered&&selectedDatasets?[...new Set(registered.map(profile=>profile.dataset))].filter(dataset=>selectedDatasets.includes(dataset)):[];
+        if(datasets.length===1)return {clause:clause+" AND json_extract(o.payload,'$.dataset')=?",values:[...values,datasets[0]],index:selectionIndex,datasets:null};
+        return {clause,values,index:selectionIndex,datasets:null};
+      }
       // Outside detail windows only headline/renewal/market history and global
       // inventory metrics can qualify. Narrow the indexed dataset seek before
       // decoding payloads, rather than scanning every historical funnel row.
