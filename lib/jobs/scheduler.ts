@@ -19,8 +19,22 @@ export class DailyScheduler {
  constructor(private store:Store){}
  async acquire(id:string,now:string,durationMs=360000){
   const token=crypto.randomUUID(),until=new Date(Date.parse(now)+durationMs).toISOString();
-  const r=await this.store.run('INSERT INTO runner_leases(id,token,leaseUntil) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET token=excluded.token,leaseUntil=excluded.leaseUntil WHERE runner_leases.leaseUntil<=?',id,token,until,now);
-  return r.meta.changes?token:null;
+  try{
+   const r=await this.store.run('INSERT INTO runner_leases(id,token,leaseUntil) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET token=excluded.token,leaseUntil=excluded.leaseUntil WHERE runner_leases.leaseUntil<=?',id,token,until,now);
+   return r.meta.changes?token:null;
+  }catch(error){
+   const timeout=error instanceof Error&&(error.name==='TimeoutError'||error.message==='Database request timed out'),remaining=Date.parse(until)-Date.now();
+   if(!timeout||remaining<=0)throw error;
+   let timer:ReturnType<typeof setTimeout>|undefined;
+   try{
+    // A committed acquisition can lose its acknowledgment. Recover only this
+    // exact still-live owner; one short read never replays or steals the lease.
+    const owned=await Promise.race([this.store.first<{token:string;leaseUntil:string}>('SELECT token,leaseUntil FROM runner_leases WHERE id=? AND token=? AND leaseUntil=? AND leaseUntil>?',id,token,until,new Date().toISOString()),new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(error),Math.min(5000,remaining));})]);
+    if(owned?.token===token&&owned.leaseUntil===until&&Date.parse(owned.leaseUntil)>Date.now())return token;
+   }catch{/* Unverified ownership retains the original acquisition failure. */}
+   finally{if(timer)clearTimeout(timer);}
+   throw error;
+  }
  }
  async release(id:string,token:string){await this.store.run('DELETE FROM runner_leases WHERE id=? AND token=?',id,token);}
  async enqueue(org:string,client:string,due:DueReview,now:string){

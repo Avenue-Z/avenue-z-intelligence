@@ -18,7 +18,7 @@ beforeEach(async()=>{
  const store=state.store=new Store({prepare,batch:async statements=>Promise.all(statements.map(statement=>statement.run()))});
  await store.run("INSERT INTO organizations VALUES('o','Avenue Z',1)");const client=initial[0];await store.run('INSERT INTO clients VALUES(?,?,?,?,?,?,?,?,?)',client.id,'o',client.name,client.slug,client.timezone,client.currency,client.color,JSON.stringify(client.config),1);
 });
-afterEach(()=>{sqlite.close();vi.useRealTimers();vi.unstubAllGlobals();});
+afterEach(()=>{vi.restoreAllMocks();sqlite.close();vi.useRealTimers();vi.unstubAllGlobals();});
 async function job(bucket:string,client='kind-patches',organization='o',dueAt='2026-10-13T17:00:00Z',complete=true){const store=state.store!;await store.enqueue(organization,client,'source',bucket,dueAt);if(complete)await store.finish(`${organization}:source:${bucket}`);}
 it('warms only recent completed current-source jobs for the initialized Kind workspace with its own 15-minute lease and 700-second budget',async()=>{
  for(let index=0;index<15;index++)await job(`current-${index}`,'kind-patches','o',`2026-10-13T17:${String(index).padStart(2,'0')}:00Z`);
@@ -41,4 +41,10 @@ it('requires the existing cron credential and releases its lease on failures',as
  expect((await GET(new Request('https://app.example/api/cron/cache'))).status).toBe(401);expect(state.warm).not.toHaveBeenCalled();
  await job('current');state.warm.mockRejectedValueOnce(Error('Warm failed'));await expect(cacheTick()).rejects.toThrow('Warm failed');expect(await state.store!.all('SELECT * FROM runner_leases')).toEqual([]);
  const response=await GET(new Request('https://app.example/api/cron/cache',{headers:{authorization:`Bearer ${'a'.repeat(32)}`}}));expect(response.status).toBe(200);expect(response.headers.get('cache-control')).toBe('no-store');
+});
+it('continues cache warming and releases its actual durable lease after a committed acquisition response times out',async()=>{
+ await job('current');const store=state.store!,run=store.run.bind(store),before=await store.all('SELECT id,status,attempts FROM jobs ORDER BY id');
+ vi.spyOn(store,'run').mockImplementationOnce(async(sql,...values)=>{await run(sql,...values);vi.setSystemTime(Date.now()+30002);throw new DOMException('Database request timed out','TimeoutError');});
+ expect(await cacheTick()).toMatchObject({failed:[],cacheWarm:{attempted:9,completed:9}});
+ expect(await store.all('SELECT * FROM runner_leases')).toEqual([]);expect(await store.all('SELECT id,status,attempts FROM jobs ORDER BY id')).toEqual(before);
 });
