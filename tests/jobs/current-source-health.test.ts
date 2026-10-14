@@ -1,4 +1,4 @@
-import {DatabaseSync} from 'node:sqlite';
+import {DatabaseSync,type SQLInputValue} from 'node:sqlite';
 import {readFileSync,readdirSync} from 'node:fs';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {Store} from '../../lib/server/store';
@@ -6,13 +6,14 @@ import initial from '../../data/initial-clients.json';
 import type {AccessScope,Client,SourceBatch} from '../../lib/analytics/contracts';
 import {kindQualification,observation,sourceBatch} from '../../lib/sources/kind-patches';
 
-const state=vi.hoisted(()=>({store:null as Store|null,sqlite:null as DatabaseSync|null,batch:null as SourceBatch|null,mode:'tail' as 'tail'|'before'|'success'|'settling',platform:'sites',healthAtTail:null as any,puts:0,skips:null as string[]|null,requests:[] as {kind:'current'|'history';provider:string;window:{from:string;to:string}}[]}));
+const state=vi.hoisted(()=>({store:null as Store|null,sqlite:null as DatabaseSync|null,batch:null as SourceBatch|null,mode:'tail' as 'tail'|'before'|'success'|'settling',platform:'sites',healthAtTail:null as {lastSuccess:string|null;coverageThrough:string|null;error:string|null}|null,puts:0,skips:null as string[]|null,requests:[] as {kind:'current'|'history';provider:string;window:{from:string;to:string}}[]}));
 vi.mock('@avenue/runtime',()=>({env:{BUCKET:{put:async()=>{state.puts++;}}},get runtimePlatform(){return state.platform;}}));
 vi.mock('../../lib/server/access',()=>({getStore:()=>state.store}));
 vi.mock('../../lib/server/secrets',()=>({serverSecret:()=> 'server-only-test-secret'}));
 vi.mock('../../lib/ai/server',()=>({generateAIReview:vi.fn()}));
 vi.mock('../../lib/sources/kind-fetch',async importOriginal=>({
  kindSourceDates:(await importOriginal<typeof import('../../lib/sources/kind-fetch')>()).kindSourceDates,
+ effectiveKindWindow:(await importOriginal<typeof import('../../lib/sources/kind-fetch')>()).effectiveKindWindow,
  fetchKindSource:async(source:{provider:string},_client:unknown,window:{from:string;to:string})=>{state.requests.push({kind:'history',provider:source.provider,window});return state.batch!;},
  fetchKindBatches:async function*(source:{provider:string},_client:unknown,window:{from:string;to:string},_secret:string,_fetch:unknown,_deadline:number,skips?:ReadonlySet<string>){
   state.skips=skips?[...skips]:null;
@@ -30,11 +31,11 @@ const scope:AccessScope={organizationId:'o',actorId:'scheduler',role:'service',p
 beforeEach(async()=>{
  vi.useFakeTimers();vi.setSystemTime('2026-10-13T13:00:00Z');state.mode='tail';state.platform='sites';state.healthAtTail=null;state.puts=0;state.skips=null;state.requests=[];
  const sqlite=state.sqlite=new DatabaseSync(':memory:');for(const file of readdirSync('drizzle').filter(file=>file.endsWith('.sql')))sqlite.exec(readFileSync(`drizzle/${file}`,'utf8'));
- const prepare=(sql:string)=>{let values:unknown[]=[];const statement={sql,bind(...input:unknown[]){values=input;return statement;},async all(){return {results:sqlite.prepare(sql).all(...values as any[])};},async first(){return sqlite.prepare(sql).get(...values as any[])??null;},async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...values as any[]).changes)}};}};return statement;};
+ const prepare=(sql:string)=>{let values:unknown[]=[];const statement={sql,bind(...input:unknown[]){values=input;return statement;},async all(){return {results:sqlite.prepare(sql).all(...values as SQLInputValue[])};},async first(){return sqlite.prepare(sql).get(...values as SQLInputValue[])??null;},async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...values as SQLInputValue[]).changes)}};}};return statement;};
  const store=state.store=new Store({prepare,batch:async statements=>Promise.all(statements.map(statement=>statement.run()))}),client={...initial[0],version:1};
  await store.run('INSERT INTO clients(id,organizationId,name,slug,timezone,currency,color,config,version) VALUES(?,?,?,?,?,?,?,?,?)',client.id,'o',client.name,client.id,client.timezone,client.currency,client.color,JSON.stringify(client.config),1);
  await store.run("INSERT INTO connections(id,organizationId,clientId,name,provider,endpoint,secretRef,pollMinutes,enabled,version,lastSuccess,coverageThrough,error) VALUES('source','o','kind-patches','Source','kind-shopify-sales','https://bright-patches.myshopify.com/admin/api/2026-07/graphql.json','PRIVATE',60,1,1,'2026-10-13T11:00:00Z','2026-10-13T10:00:00Z','OLD_SOURCE_ERROR')");
- state.batch=sourceBatch(client as any,[observation('2026-10-13','revenue','revenue',42.25,'shopify_net_sales_all_channels','shopify_sales','USD',{stream:'Online Store'},{start:'2026-10-13T11:00:00Z',end:'2026-10-13T12:00:00Z'})],'2026-10-13T12:00:00Z',[],'hourly');
+ state.batch=sourceBatch(client as Client,[observation('2026-10-13','revenue','revenue',42.25,'shopify_net_sales_all_channels','shopify_sales','USD',{stream:'Online Store'},{start:'2026-10-13T11:00:00Z',end:'2026-10-13T12:00:00Z'})],'2026-10-13T12:00:00Z',[],'hourly');
  await store.saveQualification('o',client.id,'source',1,1,kindQualification(state.batch,'kind-shopify-sales'),'scheduler');
  await store.enqueue('o',client.id,'source','hourly-test',new Date().toISOString());
 });

@@ -7,20 +7,23 @@ import {durableObservationPayload} from './durable-observation-cache';
 import {trendCutoffEnd,type TrendCutoff} from '../analytics/trend-context';
 type Pointer={snapshotId:string;sourceId:string;date:string};
 const dimensions=['market','stream','source','device','page'] as const;
+const checkBudget=(deadline?:number)=>{if(deadline!==undefined&&Date.now()>=deadline)throw Error('Observation cache warm budget elapsed');};
 /** Compact immutable historical facts for daily chart cohorts. Ready day
  * projections are preferred; legacy facts use bounded indexed pages. */
-export async function readTrendObservations(store:Store,pointers:Pointer[],datasets:string[],filters:QueryFilters,scope:{organizationId:string;clientId:string},cutoff?:TrendCutoff):Promise<Observation[]>{
+export async function readTrendObservations(store:Store,pointers:Pointer[],datasets:string[],filters:QueryFilters,scope:{organizationId:string;clientId:string},cutoff?:TrendCutoff,deadline?:number):Promise<Observation[]>{
  if(!pointers.length||!datasets.length)return [];
  if(filters.mode==='partial'&&(!cutoff||trendCutoffEnd(filters.to,cutoff)===null))return [];
+ checkBudget(deadline);
  const key=JSON.stringify(['daily-chart-context-v3',pointers.map(({snapshotId,date})=>[snapshotId,date]).sort(),[...datasets].sort(),filters.mode,...filters.mode==='partial'?[cutoff?.timezone,cutoff?.cutoff,cutoff?.anchorDate]:[],dimensions.map(dimension=>[dimension,filters[dimension]])]);
- const payload=await durableObservationPayload(store.db,scope.organizationId,scope.clientId,key,async()=>observationCodec.encode(await computeTrendObservations(store,pointers,datasets,filters,scope,cutoff)),undefined,{publish:true});
- return observationCodec.decode(payload);
+ const payload=await durableObservationPayload(store.db,scope.organizationId,scope.clientId,key,async()=>observationCodec.encode(await computeTrendObservations(store,pointers,datasets,filters,scope,cutoff,deadline)),deadline,{publish:true});
+ checkBudget(deadline);const rows=observationCodec.decode(payload);checkBudget(deadline);return rows;
 }
-async function computeTrendObservations(store:Store,pointers:Pointer[],datasets:string[],filters:QueryFilters,scope:{organizationId:string;clientId:string},cutoff?:TrendCutoff):Promise<Observation[]>{
- const manifests=await snapshotDayManifests(store.db,scope.organizationId,scope.clientId,pointers),accumulator=new TrendRollupAccumulator(filters,cutoff),missing:Pointer[]=[];
+async function computeTrendObservations(store:Store,pointers:Pointer[],datasets:string[],filters:QueryFilters,scope:{organizationId:string;clientId:string},cutoff?:TrendCutoff,deadline?:number):Promise<Observation[]>{
+ const manifests=await snapshotDayManifests(store.db,scope.organizationId,scope.clientId,pointers,deadline),accumulator=new TrendRollupAccumulator(filters,cutoff),missing:Pointer[]=[];
  let next=0;
- const worker=async()=>{for(;;){const pointer=pointers[next++];if(!pointer)return;const manifest=snapshotDayManifest(manifests,pointer),payload=manifest?await readSnapshotDayProjection(store.db,scope.organizationId,scope.clientId,manifest):null;if(!payload){missing.push(pointer);continue;}try{observationCodec.visit(payload,row=>{if(datasets.includes(row.dataset))accumulator.add(row);},pointer);}catch{missing.push(pointer);}}};
+ const worker=async()=>{for(;;){checkBudget(deadline);const pointer=pointers[next++];if(!pointer)return;const manifest=snapshotDayManifest(manifests,pointer),payload=manifest?await readSnapshotDayProjection(store.db,scope.organizationId,scope.clientId,manifest,deadline):null;if(!payload){missing.push(pointer);continue;}try{observationCodec.visit(payload,row=>{if(datasets.includes(row.dataset))accumulator.add(row);},pointer);}catch{missing.push(pointer);}}};
  await Promise.all(Array.from({length:4},worker));
+ checkBudget(deadline);
  if(!missing.length)return accumulator.finish();
  // A legacy day without a projection can contain tens of thousands of UTM
  // facts. Bound the SQL aggregation before decoding them and return compact
@@ -35,13 +38,15 @@ async function computeTrendObservations(store:Store,pointers:Pointer[],datasets:
  const timeClause=filters.mode==='partial'?" WHERE json_type(payload,'$.end')='text' AND julianday(json_extract(payload,'$.end'))<=julianday(?)":'';
  const pageSql=(cursor:boolean)=>`WITH page AS MATERIALIZED (SELECT o.payload,o.rowKey,o.date FROM observations o INDEXED BY idx_observations_snapshot_date_dataset_rowkey WHERE o.snapshotId=? AND o.date=? AND json_extract(o.payload,'$.dataset')=?${cursor?' AND o.rowKey>?':''} ORDER BY o.rowKey LIMIT 2000), raw AS (SELECT date,rowKey,${fields},${selectedDimensions} AS dimensions,json_type(payload,'$.value') AS valueType,CASE WHEN ${extract('numerator')} IS NOT NULL OR ${extract('denominator')} IS NOT NULL THEN rowKey ELSE '' END AS component,CASE WHEN ${extract('start')} IS NULL AND ${extract('end')} IS NULL THEN 'daily' WHEN julianday(${extract('end')})>julianday(${extract('start')}) THEN CASE WHEN ROUND((julianday(${extract('end')})-julianday(${extract('start')}))*86400)<=7200 THEN 'hourly' ELSE 'interval' END ELSE 'unknown' END AS grain FROM page${timeClause}), grouped AS (SELECT grain,json_object('date',date,'dataset',dataset,'metric',metric,'value',CASE WHEN COUNT(value)<>COUNT(*) OR MIN(valueType IN ('integer','real'))<>1 OR (${count} AND (MIN(value)<0 OR MAX(value<>CAST(value AS INTEGER))=1 OR ABS(SUM(value))>9007199254740991)) OR (${rate} AND COUNT(*)>1) THEN NULL ELSE SUM(value) END,'definition',definition,'population',population,'currency',currency,'quality',quality,'sourceId',sourceId,'retrievedAt',MAX(retrievedAt),'coverageThrough',CASE WHEN COUNT(coverageThrough)=COUNT(*) THEN MIN(coverageThrough) ELSE NULL END,'start',CASE WHEN COUNT(start)=COUNT(*) THEN MIN(start) ELSE NULL END,'end',CASE WHEN COUNT(end)=COUNT(*) THEN MAX(end) ELSE NULL END,'channels',json(channels),'dimensions',json(dimensions),'numerator',numerator,'denominator',denominator) AS payload FROM raw GROUP BY date,dataset,metric,definition,population,currency,quality,sourceId,channels,dimensions,grain,component) SELECT (SELECT MAX(rowKey) FROM page) AS lastRowKey,(SELECT COUNT(*) FROM page) AS pageCount,grain,payload FROM grouped UNION ALL SELECT (SELECT MAX(rowKey) FROM page),(SELECT COUNT(*) FROM page),NULL,NULL WHERE NOT EXISTS (SELECT 1 FROM grouped)`;
  const reads=missing.flatMap(pointer=>[...new Set(datasets)].map(dataset=>({pointer,dataset})));let nextRead=0;
- const readMissing=async()=>{for(;;){const item=reads[nextRead++];if(!item)return;let cursor:string|null=null;
-  for(;;){const end=filters.mode==='partial'&&cutoff?trendCutoffEnd(item.pointer.date,cutoff):null;
+ const readMissing=async()=>{for(;;){checkBudget(deadline);const item=reads[nextRead++];if(!item)return;let cursor:string|null=null;
+  for(;;){checkBudget(deadline);const end=filters.mode==='partial'&&cutoff?trendCutoffEnd(item.pointer.date,cutoff):null;
    const page:{payload:string|null;lastRowKey:string;pageCount:number;grain:'daily'|'hourly'|'interval'|'unknown'}[]=await store.all(pageSql(!!cursor),item.pointer.snapshotId,item.pointer.date,item.dataset,...cursor?[cursor]:[],...filters.mode==='partial'?[new Date(end!).toISOString()]:[]);
+   checkBudget(deadline);
    for(const row of page){if(!row.payload)continue;const observation=JSON.parse(row.payload);for(const key of ['start','end','population','channels','numerator','denominator'])if(observation[key]===null)delete observation[key];accumulator.add(observation as Observation,row.grain);}
    if(!page.length||page[0].pageCount<2000)break;cursor=page[0].lastRowKey;
   }
  }};
  await Promise.all(Array.from({length:Math.min(2,reads.length)},readMissing));
+ checkBudget(deadline);
  return accumulator.finish();
 }

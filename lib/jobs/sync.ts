@@ -40,10 +40,15 @@ export async function runSyncBatch(scope:AccessScope,budget={maxJobs:7,deadline:
     try{const source=(await s.connections(scope.organizationId,j.clientId)).find(c=>c.id===j.sourceId&&c.enabled),client=clients.find(c=>c.id===j.clientId);if(!source||!client)throw new Error('Source is disabled or unavailable');const qualified=assertSourceActivation(source,await s.qualification(scope.organizationId,source.id),client);const secret=serverSecret(source.secretRef);if(!secret)throw new Error(`Server secret ${source.secretRef} is not configured`);
       const date=todayIn(client.timezone);if(historyDate&&(!/^\d{4}-\d{2}-\d{2}$/.test(historyDate)||historyDate>=date||historyDate<shiftDate(date,source.provider==='kind-applovin'?-28:-61)||!['kind-shopify-sales','kind-shopify-products','kind-shopify-traffic','kind-meta-performance','kind-applovin'].includes(source.provider)))throw Error('Historical source window is invalid');
       const window=historyDate?{from:historyDate,to:historyDate}:client.id==='kind-patches'&&INDEPENDENT_HISTORY_PROVIDERS.has(source.provider)?{from:date,to:date}:{from:shiftDate(date,source.provider==='kind-shopify-hourly'?-1:source.lastSuccess?-6:-59),to:date};if(!env.BUCKET)throw new Error('Snapshot archive unavailable');let coverage:string|null=null;
+      let currentAnchor:string|null=null;
+      const closedRepairs=runtimePlatform==='vercel'&&!historyDate&&!j.id.includes(':manual:')&&source.lastSuccess?{deadline:null as number|null}:undefined;
       const skipClosedDates=runtimePlatform==='vercel'&&!historyDate&&!j.id.includes(':manual:')&&source.lastSuccess&&['kind-shopify-hourly','kind-shopify-funnels'].includes(source.provider)?await closedSessionDatesToSkip(s,scope.organizationId,client,source,qualified,kindSourceDates(source,client,window),new Date()):undefined;
       if(skipClosedDates?.size)console.info('Reusing settled session captures',{provider:source.provider,closedDays:skipClosedDates.size});
-      const batches=historyDate?(async function*(){yield {batch:await fetchKindSource(source,client,window,secret,fetch,budget.deadline),window};})():source.provider==='gateway'?(async function*(){yield {batch:await fetchGateway(source,client,window,secret,fetch,budget.deadline),window};})():fetchKindBatches(source,client,window,secret,fetch,budget.deadline,skipClosedDates);
+      const batches=historyDate?(async function*(){yield {batch:await fetchKindSource(source,client,window,secret,fetch,budget.deadline),window};})():source.provider==='gateway'?(async function*(){yield {batch:await fetchGateway(source,client,window,secret,fetch,budget.deadline),window};})():fetchKindBatches(source,client,window,secret,fetch,budget.deadline,skipClosedDates,closedRepairs);
       for await(const {batch,window:actualWindow} of batches){
+        // The generator selects the mandatory anchor after optional reuse reads;
+        // use its actual date if those reads crossed a completed-hour boundary.
+        currentAnchor??=actualWindow.to;
         validateRegisteredBatch(batch,qualified);const hash=await fingerprint(batch),key=`snapshots/${scope.organizationId}:${client.id}:${source.id}:${hash}.json`;
         await env.BUCKET.put(key,JSON.stringify(batch),{httpMetadata:{contentType:'application/json'}});
         const capturedAt=new Date().toISOString();
@@ -51,9 +56,10 @@ export async function runSyncBatch(scope:AccessScope,budget={maxJobs:7,deadline:
         if(batch.coverageThrough&&(!coverage||Date.parse(batch.coverageThrough)>Date.parse(coverage)))coverage=batch.coverageThrough;
         // Once today's complete query is durably archived and published, its
         // freshness is independent of optional historical repairs that follow.
-        if(!historyDate&&batch.complete&&actualWindow.to===date&&batch.coverageThrough&&Date.parse(batch.coverageThrough)>Date.parse(dayWindow(date,client.timezone).start)){
+        if(!historyDate&&batch.complete&&actualWindow.to===currentAnchor&&batch.coverageThrough&&Date.parse(batch.coverageThrough)>Date.parse(dayWindow(currentAnchor,client.timezone).start)){
           const publishedAt=new Date().toISOString();
           await retryPublication('source.freshness',budget.deadline,()=>s.run('UPDATE connections SET lastSuccess=?,coverageThrough=?,error=NULL WHERE id=? AND organizationId=?',publishedAt,batch.coverageThrough,source.id,scope.organizationId));currentPublished=true;
+          if(closedRepairs)closedRepairs.deadline??=Math.min(Date.now()+60000,budget.deadline-MINIMUM_SOURCE_CLAIM_BUDGET_MS);
         }
       }
       if(!historyDate){const publishedAt=new Date().toISOString();await retryPublication('source.freshness',budget.deadline,()=>s.run('UPDATE connections SET lastSuccess=?,coverageThrough=?,error=NULL WHERE id=? AND organizationId=?',publishedAt,coverage,source.id,scope.organizationId));}

@@ -10,7 +10,8 @@ vi.mock('@avenue/runtime',()=>({env:{BUCKET:{put:async()=>{state.archives++;awai
 vi.mock('../../lib/server/access',()=>({getStore:()=>state.store}));
 vi.mock('../../lib/server/secrets',()=>({serverSecret:()=> 'private-test-secret'}));
 vi.mock('../../lib/ai/server',()=>({generateAIReview:vi.fn()}));
-vi.mock('../../lib/sources/kind-fetch',()=>({
+vi.mock('../../lib/sources/kind-fetch',async importOriginal=>({
+ effectiveKindWindow:(await importOriginal<typeof import('../../lib/sources/kind-fetch')>()).effectiveKindWindow,
  kindSourceDates:()=>[],
  fetchKindSource:async()=>state.batch!,
  fetchKindBatches:async function*(_source:unknown,_client:unknown,window:{from:string;to:string},_secret:string,_fetch:unknown,deadline:number){state.captures++;if(state.captureOffset!==null)vi.setSystemTime(deadline+state.captureOffset);if(state.captureError)throw state.captureError;yield {batch:state.batch!,window};},

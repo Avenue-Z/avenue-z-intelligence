@@ -86,18 +86,24 @@ export function kindSourceDates(connection:Connection,client:Client,w:KindWindow
  const earliest=connection.provider==='kind-applovin'?shiftDate(todayIn('UTC',asOf),-29):null;
  return [...new Set(dates)].filter(date=>!earliest||dayWindow(date,client.timezone).start.slice(0,10)>=earliest).sort((a,b)=>b.localeCompare(a));
 }
-export async function* fetchKindBatches(connection:Connection,client:Client,w:KindWindow,secret:string,fetcher:typeof fetch=fetch,deadline=Date.now()+180000,skipClosedDates?:ReadonlySet<string>){
+export async function* fetchKindBatches(connection:Connection,client:Client,w:KindWindow,secret:string,fetcher:typeof fetch=fetch,deadline=Date.now()+180000,skipClosedDates?:ReadonlySet<string>,closedRepairs?:{deadline:number|null}){
  const asOf=new Date(),actualWindow=effectiveKindWindow(connection,client,w,asOf);
  if(hourlyProviders.has(connection.provider)){
   const dates=kindSourceDates(connection,client,w,asOf);
   const historicalHeadroom=connection.provider==='kind-shopify-traffic'?120000:connection.provider==='kind-shopify-products'?60000:connection.provider==='kind-shopify-sales'?20000:connection.provider==='kind-meta-performance'?120000:connection.provider==='kind-applovin'?10000:10000;
   for(const [index,day] of dates.entries()){
-   if(day<todayIn(client.timezone,asOf)&&skipClosedDates?.has(day))continue;
+   if(index>0&&day<todayIn(client.timezone,asOf)&&skipClosedDates?.has(day))continue;
    // Current data must reach durable storage before optional historical repairs.
    // Missing history is handled by independent single-day history jobs; running
    // out of historical headroom is a successful current source refresh.
-   if(index>0&&deadline-Date.now()<historicalHeadroom)break;
-   for(let attempt=0;attempt<3;attempt++)try{yield {batch:await fetchKindSource(connection,client,{from:day,to:day},secret,fetcher,deadline,asOf),window:{from:day,to:day}};break;}catch(error){if(attempt===2||!(error as Error).message.includes('reconcile')||Date.now()+5000>=deadline)throw error;}
+   // The consumer activates this one shared budget only after the mandatory
+   // current anchor and its freshness have reached durable storage.
+   const optionalDeadline=index>0?closedRepairs?.deadline:null,fetchDeadline=optionalDeadline==null?deadline:Math.min(deadline,optionalDeadline);
+   if(index>0&&fetchDeadline-Date.now()<historicalHeadroom)break;
+   for(let attempt=0;attempt<3;attempt++)try{yield {batch:await fetchKindSource(connection,client,{from:day,to:day},secret,fetcher,fetchDeadline,asOf),window:{from:day,to:day}};break;}catch(error){
+    if(optionalDeadline!=null&&error instanceof Error&&['Provider request timed out or could not be reached','Source synchronization deadline reached'].includes(error.message)){console.info('Optional closed source repair deferred',{provider:connection.provider,date:day,reason:error.message});return;}
+    if(attempt===2||!(error as Error).message.includes('reconcile')||Date.now()+5000>=fetchDeadline)throw error;
+   }
   }
   // A current Meta report can take most of one source-run budget. Prioritize
   // today, then refresh one retained benchmark only when a full report fits.

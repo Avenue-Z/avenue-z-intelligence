@@ -13,6 +13,7 @@ import {TrendRollupAccumulator} from '../analytics/trend-rollup';
 import {readTrendObservations} from './trend-observations';
 import {reviewIndexFields} from '../reviews/index';
 import {retryPublication} from '../jobs/publication-retry';
+import {fingerprint} from '../reviews/build';
 import {assertSourceActivation} from '../sources/registered-contract';
 import {expiredRechargeEventDay,completeRechargeEventDay,rechargeExactEventMetrics} from './recharge-event-retention';
 type Db={prepare:(sql:string)=>any;batch:(statements:any[])=>Promise<any[]>;allowCrossRequestCoalescing?:boolean};
@@ -130,7 +131,7 @@ export class Store {
     const contextualDatasets=trendDatasets.filter(dataset=>['traffic','funnels','products','markets'].includes(dataset));
     const contextualPointers=filters&&contextualDatasets.length?pointers.filter(pointer=>!detailWindows.some(window=>inWindow(pointer.date,window))&&trendWindows.some(window=>inWindow(pointer.date,window))&&(!profiles.get(pointer.sourceId)||profiles.get(pointer.sourceId)!.some(profile=>contextualDatasets.includes(profile.dataset)))):[];
     const contextKeys=new Set(contextualPointers.map(pointer=>JSON.stringify([pointer.snapshotId,pointer.date])));
-    const contextRows=filters?await readTrendObservations(this,contextualPointers,contextualDatasets,filters,{organizationId:org,clientId:client},temporalContext):[];
+    const contextRows=filters?await readTrendObservations(this,contextualPointers,contextualDatasets,filters,{organizationId:org,clientId:client},temporalContext,options?.deadline):[];
     const rows:Observation[]=[];
     const addRow=(row:Observation)=>{if(fullDayContext&&row.date!==filters!.to&&trendDatasets.includes(row.dataset)&&['traffic','funnels'].includes(row.dataset))fullDayContext.add(row);if(accumulator)accumulator.add(row);else rows.push(row);};
     const add=(page:{payload:string}[])=>{for(const r of page)addRow(JSON.parse(r.payload));};
@@ -218,6 +219,9 @@ export class Store {
     // Retried missing facts must not mix their retry timestamp with old rows.
     const existing=await publish('source.snapshot.read',()=>this.first('SELECT id,status,retrievedAt,coverageThrough,complete FROM snapshots WHERE id=?',id));
     const ready=existing?.status==='ready'?existing:null;
+    // Generic same-key replays preserve first-wins values, even when their
+    // incoming batch differs. Only the native immutable hash proves these rows.
+    const canonicalWriting=existing?.status==='writing'&&await fingerprint(batch)===key;
     const created=await publish('source.snapshot.create',()=>this.run('INSERT INTO snapshots(id,organizationId,clientId,sourceId,retrievedAt,coverageThrough,complete,status,objectKey) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',id,org,batch.clientId,source,now,batch.coverageThrough,Number(batch.complete),'writing',`snapshots/${id}.json`));
     const complete=existing?!!existing.complete:batch.complete;
     const rows=batch.rows.map(r=>({...r,channels:batch.channels,sourceId:source,retrievedAt:existing?.retrievedAt??now,coverageThrough:existing?existing.coverageThrough:batch.coverageThrough,quality:complete?(r.quality??'complete'):(r.quality==='historical'?'historical':'partial')}));
@@ -268,11 +272,28 @@ export class Store {
     // Archived copies can be only partly pruned when a bounded maintenance
     // run ends. Replay every original row for those captures; first-wins
     // inserts fill gaps while preserving the immutable capture metadata.
-    const archived=ready?await publish('source.snapshot.archive',()=>this.first("SELECT id FROM audit WHERE id=? AND organizationId=? AND clientId=? AND action='snapshot.materialization.archive_verified'",`archive-materialization:${id}`,org,batch.clientId)):null;
+    // The cleaner accepts stale writing captures too. Keep the entire bounded
+    // resume newer than its two-hour cutoff; old/unbounded captures replay fully.
+    const originalRetrieval=existing?Date.parse(existing.retrievedAt):NaN;
+    const resume=canonicalWriting&&!options?.restoreMaterialization&&options?.publicationDeadline!==undefined&&Number.isFinite(originalRetrieval)&&originalRetrieval+2*3600000>options.publicationDeadline;
+    const archived=ready||resume?await publish('source.snapshot.archive',()=>this.first("SELECT id FROM audit WHERE id=? AND organizationId=? AND clientId=? AND action='snapshot.materialization.archive_verified'",`archive-materialization:${id}`,org,batch.clientId)):null;
     const materialized=new Set<string>(ready&&!archived?(await publish('source.snapshot.materialized',()=>this.all<{date:string}>("SELECT value AS date FROM json_each(?) d WHERE EXISTS (SELECT 1 FROM observations o WHERE o.snapshotId=? AND o.date=d.value LIMIT 1)",JSON.stringify(dates),id))).map(value=>value.date):[]);
-    const writeRows=options?.restoreMaterialization?rows:rows.filter(row=>!retained.has(row.date)&&!materialized.has(row.date));
+    const rowKey=(row:Observation)=>JSON.stringify([row.dataset,row.metric,row.start,row.end,Object.entries(row.dimensions).sort()]);
+    let writeRows=options?.restoreMaterialization?rows:rows.filter(row=>!retained.has(row.date)&&!materialized.has(row.date));
+    if(resume&&!archived&&writeRows.length){
+      const committed=new Set<string>();let cursor:{date:string;rowKey:string}|undefined;
+      for(;;){
+        const page=await publish('source.facts.resume',()=>this.all<{date:string;rowKey:string}>(`SELECT date,rowKey FROM observations WHERE snapshotId=?${cursor?' AND (date,rowKey)>(?,?)':''} ORDER BY date,rowKey LIMIT 2000`,id,...cursor?[cursor.date,cursor.rowKey]:[]));
+        if(Date.now()>=options!.publicationDeadline!)throw Error('Source publication budget elapsed');
+        for(const row of page)committed.add(JSON.stringify([row.date,row.rowKey]));
+        if(page.length<2000)break;cursor=page[page.length-1];
+      }
+      // Presence of exact pairs is authoritative; counts and prefixes cannot
+      // prove completion when prior pages contain holes or span multiple dates.
+      writeRows=writeRows.filter(row=>!committed.has(JSON.stringify([row.date,rowKey(row)])));
+    }
     const factPageSize=options?.factPageSize??2000;
-    for(let n=0;n<writeRows.length;n+=factPageSize){const inserts:ReturnType<Db['prepare']>[]=[];for(let start=n;start<Math.min(n+factPageSize,writeRows.length);start+=500){const values=writeRows.slice(start,start+500).map(r=>({date:r.date,rowKey:JSON.stringify([r.dataset,r.metric,r.start,r.end,Object.entries(r.dimensions).sort()]),payload:JSON.stringify(r)}));inserts.push(this.db.prepare("INSERT INTO observations(snapshotId,date,rowKey,payload) SELECT ?,json_extract(value,'$.date'),json_extract(value,'$.rowKey'),json_extract(value,'$.payload') FROM json_each(?) WHERE 1 ON CONFLICT DO NOTHING").bind(id,JSON.stringify(values)));}await publish('source.facts.page',()=>this.db.batch(inserts));}
+    for(let n=0;n<writeRows.length;n+=factPageSize){const inserts:ReturnType<Db['prepare']>[]=[];for(let start=n;start<Math.min(n+factPageSize,writeRows.length);start+=500){const values=writeRows.slice(start,start+500).map(r=>({date:r.date,rowKey:rowKey(r),payload:JSON.stringify(r)}));inserts.push(this.db.prepare("INSERT INTO observations(snapshotId,date,rowKey,payload) SELECT ?,json_extract(value,'$.date'),json_extract(value,'$.rowKey'),json_extract(value,'$.payload') FROM json_each(?) WHERE 1 ON CONFLICT DO NOTHING").bind(id,JSON.stringify(values)));}await publish('source.facts.page',()=>this.db.batch(inserts));}
     const pointers=[];
     for(const date of dates){const {dataHash,coveredThrough}=dayHashes.get(date)!;
       // Pin the retained immutable id, even if a concurrent older publication
@@ -289,10 +310,10 @@ export class Store {
     const publication=[...pointers,this.db.prepare('UPDATE snapshots SET status=? WHERE id=?').bind('ready',id)];
     await publish('source.snapshot.publish',()=>this.db.batch(publication));
     // Derived materialization happens after authoritative publication. A replay
-    // must retain the raw snapshot's original retrieval/coverage metadata; only
-    // the newly created immutable snapshot can use this in-memory batch. Closed
+    // must retain the raw snapshot's original retrieval/coverage metadata. A
+    // new capture or hash-verified writing retry can use this batch. Closed
     // unchanged dates may still point at an older snapshot and need no duplicate.
-    if(created.meta.changes)try{
+    if(created.meta.changes||canonicalWriting)try{
       const published=await publish('source.projection.days',()=>this.all<{date:string}>('SELECT date FROM current_snapshots WHERE organizationId=? AND clientId=? AND sourceId=? AND snapshotId=?',org,batch.clientId,source,id));
       for(const {date} of published){const day={snapshotId:id,date,sourceId:source};await writeSnapshotDayProjection(this.db,org,batch.clientId,day,snapshotDayPayload(grouped.get(date)??[],day),options?.publicationDeadline);}
     }catch{/* Optional projections must never fail a completed source job. */}

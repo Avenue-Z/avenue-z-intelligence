@@ -29,3 +29,17 @@ it('keeps the original historical headroom rule after publishing today',async()=
  for await(const capture of fetchKindBatches(KIND_SOURCES.find(source=>source.provider==='kind-shopify-hourly')! as Connection,client,window,secret,fixture(queries),deadline,new Set(['2026-10-13'])))dates.push(capture.window.to);
  expect(dates).toEqual(['2026-10-14']);expect(queries).toHaveLength(5);
 });
+it('shares one closed-tail budget activated after mandatory current publication instead of resetting it per date',async()=>{
+ vi.useFakeTimers();vi.setSystemTime('2026-10-14T13:00:00Z');const queries:string[]=[],dates:string[]=[],started=Date.now(),budget={deadline:null as number|null},base=fixture(queries);
+ const fetcher:typeof fetch=async(url,options)=>{if(budget.deadline!==null)vi.setSystemTime(Date.now()+10000);return base(url,options);};
+ for await(const capture of fetchKindBatches(KIND_SOURCES.find(source=>source.provider==='kind-shopify-hourly')! as Connection,client,window,secret,fetcher,started+240000,undefined,budget)){
+  dates.push(capture.window.to);if(dates.length===1){vi.setSystemTime(Date.now()+90000);budget.deadline=Date.now()+60000;}else vi.setSystemTime(Date.now()+11000);
+ }
+ expect(dates).toEqual(['2026-10-14','2026-10-13']);expect(queries).toHaveLength(10);expect(budget.deadline).toBe(started+150000);
+});
+it('requires the real midnight closed-day anchor even when it appears in the skip set, then defers only its older repair',async()=>{
+ vi.useFakeTimers();vi.setSystemTime('2026-10-13T22:35:00Z');const queries:string[]=[],dates:string[]=[],budget={deadline:null as number|null},base=fixture(queries);
+ const fetcher:typeof fetch=async(url,options)=>{const query=JSON.parse(String(options?.body)).query;if(query.includes('SINCE')&&!query.includes('SINCE 2026-10-13'))throw new DOMException('Request timed out','TimeoutError');return base(url,options);};
+ for await(const capture of fetchKindBatches(KIND_SOURCES.find(source=>source.provider==='kind-shopify-hourly')! as Connection,client,window,secret,fetcher,Date.now()+180000,new Set(['2026-10-13']),budget)){dates.push(capture.window.to);expect(capture.batch.coverageThrough).toBe('2026-10-13T22:00:00Z');budget.deadline=Date.now()+60000;}
+ expect(dates).toEqual(['2026-10-13']);expect(queries.some(query=>query.includes('SINCE 2026-10-13'))).toBe(true);
+});
