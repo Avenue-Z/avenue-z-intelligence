@@ -1,4 +1,5 @@
-import {expect,it} from 'vitest';
+import {expect,it,vi} from 'vitest';
+import * as intervalSource from '../../lib/sources/kind-patches';
 import {hourlyTrafficQueries,normalizeHourlyTraffic,HOURLY_TRAFFIC_GROUP_LIMIT} from '../../lib/sources/shopify-hourly-traffic';
 import initial from '../../data/initial-clients.json';
 import type {Client} from '../../lib/analytics/contracts';
@@ -58,4 +59,27 @@ it('accepts more than the old 9,999 daily groups without relaxing non-traffic so
  const detail=Array.from({length:12666},(_,i)=>({...row,utm_campaign:`campaign ${i}`})),totals=Object.fromEntries(Object.entries(counts).map(([key,n])=>[key,n*detail.length]));
  const batch=normalizeHourlyTraffic({detail,hourly:[{day:date,hour_of_day:16,...totals}],daily:[{day:date,...totals}]},client,window,now);
  expect(batch.rows).toHaveLength(63330);expect(batch.rows.filter(r=>r.metric==='sessions').reduce((sum,r)=>sum+r.value!,0)).toBe(1266600);
+});
+
+it('bounds Temporal conversions to the distinct capture hours while preserving every dimensional group and count',()=>{
+ const interval=vi.spyOn(intervalSource,'localHourInterval');
+ try{
+  const detail=Array.from({length:100},(_,i)=>({...row,utm_campaign:`distinct campaign ${i}`})),totals=Object.fromEntries(Object.entries(counts).map(([key,value])=>[key,value*100]));
+  const batch=normalizeHourlyTraffic({detail,hourly:[{day:date,hour_of_day:16,...totals}],daily:[{day:date,...totals}]},client,window,now);
+  expect(batch.rows).toHaveLength(500);expect(new Set(batch.rows.map(value=>value.dimensions.utm_campaign)).size).toBe(100);
+  expect(batch.rows.every(value=>value.start==='2026-10-13T14:00:00Z'&&value.end==='2026-10-13T15:00:00Z')).toBe(true);
+  expect(batch.rows.filter(value=>value.metric==='sessions').reduce((sum,value)=>sum+value.value!,0)).toBe(10000);
+  expect(interval.mock.calls).toHaveLength(1);
+ }finally{interval.mockRestore();}
+});
+
+it('revalidates each raw date, hour, count and cutoff after a good row has populated its hour interval',()=>{
+ for(const[bad,reason]of[
+  [{day:'2026-10-12'},'date outside requested window'],
+  [{hour_of_day:''},'hour'],
+  [{hour_of_day:16.5},'hour'],
+  [{sessions:-1},'count'],
+  [{sessions_with_cart_additions:1.5},'count'],
+  [{hour_of_day:17},'last full store hour'],
+ ] as const)expect(()=>normalizeHourlyTraffic({...input,detail:[row,{...row,utm_campaign:'second campaign',...bad}]},client,window,now)).toThrow(reason);
 });
