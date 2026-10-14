@@ -147,6 +147,10 @@ export class Store {
     // otherwise preserve the SQL seek that transfers only the chosen datasets.
     const denseDatasets=new Set(['funnels','traffic','products','creatives']);
     const projectionPointers=pointers.filter(pointer=>{
+      // A named landing-page drill needs a small cohort, not every page's
+      // dense day projection. The indexed raw path retains the same complete
+      // dimension predicates, including missing-dimension qualification evidence.
+      if(selection?.dimensions&&filters?.page)return false;
       const registeredContext=profiles.get(pointer.sourceId);if(contextKeys.has(JSON.stringify([pointer.snapshotId,pointer.date]))&&registeredContext?.every(profile=>contextualDatasets.includes(profile.dataset)))return false;
       if(!filters&&!selectedDatasets&&!headlinesOnly)return true;
       const detailRequested=!filters||detailWindows.some(window=>inWindow(pointer.date,window));
