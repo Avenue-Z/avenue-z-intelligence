@@ -133,6 +133,6 @@ export async function restoreArchivedMaterialization(store:Store,scope:AccessSco
  try{
   const snapshot=await store.first<ArchivedSnapshot>("SELECT s.*,c.provider FROM snapshots s LEFT JOIN connections c ON c.id=s.sourceId AND c.organizationId=s.organizationId WHERE s.id=? AND s.organizationId=? AND s.clientId='kind-patches' AND s.status='ready'",snapshotId,scope.organizationId);if(!snapshot)throw Error('Recoverable snapshot is unavailable');
   const verified=await verifiedArchive(store,snapshot,options.readArchive??privateArchive,options.deadline);
-  return await store.persistBatch(scope.organizationId,snapshot.sourceId,verified.batch,verified.hash,snapshot.retrievedAt,undefined,{restoreMaterialization:true});
+  return await store.persistBatch(scope.organizationId,snapshot.sourceId,verified.batch,verified.hash,snapshot.retrievedAt,undefined,{restoreMaterialization:true,...(['kind-shopify-traffic','kind-meta-performance'].includes(snapshot.provider??'')?{factPageSize:500 as const}:{})});
  }finally{await scheduler.release(leaseId,token);}
 }

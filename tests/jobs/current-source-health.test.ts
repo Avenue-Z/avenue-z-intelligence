@@ -75,6 +75,11 @@ it('leaves current health unchanged when archive or persistence fails before dur
 it('marks a fully successful current capture complete and clears the former health error',async()=>{
  state.mode='success';const result=await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000});expect(result.failed).toEqual([]);expect(result.completed).toEqual(['o:source:hourly-test']);expect(await state.store!.first('SELECT status,error FROM jobs')).toEqual({status:'complete',error:null});expect(state.healthAtTail?.error).toBeNull();
 });
+it.each(['kind-shopify-traffic','kind-meta-performance','kind-shopify-sales'])('selects the dense transaction bound only for a current %s publication',async provider=>{
+ const store=state.store!,persist=vi.spyOn(store,'persistBatch');await store.run('UPDATE connections SET provider=?',provider);state.mode='success';
+ const result=await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+700000});expect(result.failed).toEqual([]);expect(persist).toHaveBeenCalledOnce();
+ const options=persist.mock.calls[0][6];if(provider==='kind-shopify-sales')expect(options).not.toHaveProperty('factPageSize');else expect(options).toHaveProperty('factPageSize',500);
+});
 it('publishes native current data without reading or planning historical facts before its source claim',async()=>{
  state.platform='vercel';state.mode='success';const store=state.store!,read=store.all.bind(store);
  vi.spyOn(store,'all').mockImplementation(async(sql,...args)=>{if(sql.startsWith('SELECT c.date'))throw Error('Historical fact reads unavailable');return read(sql,...args);});

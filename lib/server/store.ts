@@ -205,7 +205,7 @@ export class Store {
       freshOperationalPointers.length?readPage<{payload:string}>(`SELECT json_extract(o.payload,'$') AS payload FROM json_each(?) p JOIN observations o ON o.snapshotId=json_extract(p.value,'$.snapshotId') AND o.date=json_extract(p.value,'$.date') WHERE json_extract(o.payload,'$.metric') IN ('active_customers','active_ads','active_creatives') ORDER BY o.date,o.rowKey`,JSON.stringify(freshOperationalPointers)).then(rows=>rows.map(row=>JSON.parse(row.payload) as Observation)):Promise.resolve([])]);
     return operations.length?[...cached,...operations]:cached;
   }
-  async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string},options?:{restoreMaterialization?:boolean;publicationDeadline?:number}) {
+  async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string},options?:{restoreMaterialization?:boolean;publicationDeadline?:number;factPageSize?:500}) {
     // A fact page is replay-safe even when the database committed before its
     // response timed out. Retry that exact page, not the entire large capture.
     const publish=<T>(operation:string,work:()=>Promise<T>):Promise<T>=>{
@@ -271,7 +271,8 @@ export class Store {
     const archived=ready?await publish('source.snapshot.archive',()=>this.first("SELECT id FROM audit WHERE id=? AND organizationId=? AND clientId=? AND action='snapshot.materialization.archive_verified'",`archive-materialization:${id}`,org,batch.clientId)):null;
     const materialized=new Set<string>(ready&&!archived?(await publish('source.snapshot.materialized',()=>this.all<{date:string}>("SELECT value AS date FROM json_each(?) d WHERE EXISTS (SELECT 1 FROM observations o WHERE o.snapshotId=? AND o.date=d.value LIMIT 1)",JSON.stringify(dates),id))).map(value=>value.date):[]);
     const writeRows=options?.restoreMaterialization?rows:rows.filter(row=>!retained.has(row.date)&&!materialized.has(row.date));
-    for(let n=0;n<writeRows.length;n+=2000){const inserts:ReturnType<Db['prepare']>[]=[];for(let start=n;start<Math.min(n+2000,writeRows.length);start+=500){const values=writeRows.slice(start,start+500).map(r=>({date:r.date,rowKey:JSON.stringify([r.dataset,r.metric,r.start,r.end,Object.entries(r.dimensions).sort()]),payload:JSON.stringify(r)}));inserts.push(this.db.prepare("INSERT INTO observations(snapshotId,date,rowKey,payload) SELECT ?,json_extract(value,'$.date'),json_extract(value,'$.rowKey'),json_extract(value,'$.payload') FROM json_each(?) WHERE 1 ON CONFLICT DO NOTHING").bind(id,JSON.stringify(values)));}await publish('source.facts.page',()=>this.db.batch(inserts));}
+    const factPageSize=options?.factPageSize??2000;
+    for(let n=0;n<writeRows.length;n+=factPageSize){const inserts:ReturnType<Db['prepare']>[]=[];for(let start=n;start<Math.min(n+factPageSize,writeRows.length);start+=500){const values=writeRows.slice(start,start+500).map(r=>({date:r.date,rowKey:JSON.stringify([r.dataset,r.metric,r.start,r.end,Object.entries(r.dimensions).sort()]),payload:JSON.stringify(r)}));inserts.push(this.db.prepare("INSERT INTO observations(snapshotId,date,rowKey,payload) SELECT ?,json_extract(value,'$.date'),json_extract(value,'$.rowKey'),json_extract(value,'$.payload') FROM json_each(?) WHERE 1 ON CONFLICT DO NOTHING").bind(id,JSON.stringify(values)));}await publish('source.facts.page',()=>this.db.batch(inserts));}
     const pointers=[];
     for(const date of dates){const {dataHash,coveredThrough}=dayHashes.get(date)!;
       // Pin the retained immutable id, even if a concurrent older publication

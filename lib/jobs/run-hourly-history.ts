@@ -98,7 +98,7 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
     await publish(async()=>{
      const storage=await storageBytes(store);out.storageBytes=storage;
      if(storage>=STORAGE_SAFETY_BYTES&&!(smallRecharge&&recentRechargeHistoryDate(date,today)&&rechargeHistoryFits(storage)))throw new HistoryCapacityDeferral('Historical storage capacity reserved for current ingestion');
-     return store.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,window,{publicationDeadline:budget.deadline});
+     return store.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,window,{publicationDeadline:budget.deadline,...(['kind-shopify-traffic','kind-meta-performance'].includes(source.provider)?{factPageSize:500 as const}:{})});
     });
     completing=true;await retryPublication('history.complete',budget.deadline,()=>store.finish(job.id));out.completed.push(job.id);
    }catch(error){

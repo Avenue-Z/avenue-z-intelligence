@@ -42,6 +42,10 @@ it('captures two different historical providers concurrently and publishes archi
  expect(result.failed).toEqual([]);expect(result.completed).toHaveLength(2);expect(state.peak).toBe(2);expect(state.archives).toHaveLength(2);expect(await store.all('SELECT * FROM connections')).toEqual(before);
  expect(await store.all('SELECT status FROM snapshots')).toEqual([{status:'ready'},{status:'ready'}]);expect(await store.all('SELECT date FROM current_snapshots')).toEqual([{date:'2026-10-12'},{date:'2026-10-12'}]);
 });
+it.each(['kind-shopify-traffic','kind-meta-performance','kind-shopify-sales'])('selects the dense transaction bound only for a historical %s publication',async provider=>{
+ await source('history',provider);const store=state.store!,persist=vi.spyOn(store,'persistBatch'),result=await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+700000});
+ expect(result.failed).toEqual([]);expect(result.completed).toHaveLength(1);expect(persist).toHaveBeenCalledOnce();const options=persist.mock.calls[0][6];if(provider==='kind-shopify-sales')expect(options).not.toHaveProperty('factPageSize');else expect(options).toHaveProperty('factPageSize',500);
+});
 it('stops before claiming a new historical job at the 22 GB safety threshold',async()=>{
  await source('sales');const store=state.store!,original=store.first.bind(store);vi.spyOn(store,'first').mockImplementation(async(sql,...args)=>sql==='PRAGMA page_count'?{page_count:Math.ceil(22000000000/4096)}:sql==='PRAGMA freelist_count'?{freelist_count:0}:original(sql,...args));
  const result=await runHourlyHistoryBatch(store,scope,{maxJobs:2,deadline:Date.now()+700000});expect(result).toMatchObject({completed:[],failed:[],skipped:'storage-capacity'});expect(state.captures).toEqual([]);expect(await store.first('SELECT status,attempts FROM jobs')).toEqual({status:'pending',attempts:0});

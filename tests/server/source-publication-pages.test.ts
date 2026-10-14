@@ -16,6 +16,32 @@ const batch=():SourceBatch=>({clientId:'kind-patches',timezone:'UTC',currency:'U
 const timeout=()=>new DOMException('Database request timed out','TimeoutError');
 afterEach(()=>vi.restoreAllMocks());
 
+it('bounds explicitly dense fact transactions to 500 rows while publishing every fact before its pointer',async()=>{
+ const {store,db,sqlite}=database(),original=db.batch,pages:number[]=[];
+ db.batch=async statements=>{const facts=statements[0]?.sql.startsWith('INSERT INTO observations');if(facts){pages.push(statements.reduce((n,statement)=>n+JSON.parse(String(statement.values[1])).length,0));expect(statements).toHaveLength(1);const result=await original(statements);expect(sqlite.prepare('SELECT count(*) n FROM current_snapshots').get()?.n).toBe(0);expect(sqlite.prepare('SELECT status FROM snapshots').get()?.status).toBe('writing');return result;}return original(statements);};
+ const id=await store.persistBatch('o','dense-source',batch(),'capture','2026-10-13T17:05:00Z',undefined,{factPageSize:500,publicationDeadline:Date.now()+120000});
+ expect(pages).toEqual([500,500,500,500,500,500,500,500,1]);expect(sqlite.prepare('SELECT count(*) n FROM observations WHERE snapshotId=?').get(id)?.n).toBe(4001);expect(sqlite.prepare('SELECT snapshotId FROM current_snapshots').get()?.snapshotId).toBe(id);expect(sqlite.prepare('SELECT status FROM snapshots WHERE id=?').get(id)?.status).toBe('ready');
+});
+it('keeps the 2000-row transaction default for other publications',async()=>{
+ const {store,db}=database(),original=db.batch,pages:number[]=[];
+ db.batch=async statements=>{if(statements[0]?.sql.startsWith('INSERT INTO observations'))pages.push(statements.reduce((n,statement)=>n+JSON.parse(String(statement.values[1])).length,0));return original(statements);};
+ await store.persistBatch('o','source',batch(),'capture','2026-10-13T17:05:00Z');expect(pages).toEqual([2000,2000,1]);
+});
+it('replays only a committed 500-row page after a lost acknowledgment without moving the prior pointer early',async()=>{
+ const {store,db,sqlite}=database(),old={...batch(),rows:[batch().rows[0]]};await store.persistBatch('o','dense-source',old,'prior','2026-10-13T16:05:00Z');
+ const original=db.batch,pages:number[]=[];let failed=false;
+ db.batch=async statements=>{const facts=statements[0]?.sql.startsWith('INSERT INTO observations');if(facts)pages.push(JSON.parse(String(statements[0].values[1]))[0].payload?JSON.parse(JSON.parse(String(statements[0].values[1]))[0].payload).value:0);const result=await original(statements);if(facts){expect(sqlite.prepare('SELECT snapshotId FROM current_snapshots').get()?.snapshotId).toBe('o:kind-patches:dense-source:prior');expect(sqlite.prepare("SELECT status FROM snapshots WHERE id='o:kind-patches:dense-source:next'").get()?.status).toBe('writing');if(pages.at(-1)===1001&&!failed){failed=true;throw timeout();}}return result;};
+ const id=await store.persistBatch('o','dense-source',batch(),'next','2026-10-13T17:05:00Z',undefined,{factPageSize:500,publicationDeadline:Date.now()+120000});
+ expect(pages).toEqual([1,501,1001,1001,1501,2001,2501,3001,3501,4001]);expect(sqlite.prepare('SELECT count(*) n FROM observations WHERE snapshotId=?').get(id)?.n).toBe(4001);expect(sqlite.prepare("SELECT count(*) n FROM observations WHERE snapshotId=? AND json_extract(payload,'$.retrievedAt')<>?").get(id,'2026-10-13T17:05:00Z')?.n).toBe(0);expect(sqlite.prepare('SELECT snapshotId FROM current_snapshots').get()?.snapshotId).toBe(id);
+});
+it('leaves later failed dense pages writing with the prior pointer and confirmed earlier facts intact',async()=>{
+ const {store,db,sqlite}=database(),old={...batch(),rows:[batch().rows[0]]};await store.persistBatch('o','dense-source',old,'prior','2026-10-13T16:05:00Z');
+ const original=db.batch,pages:number[]=[];
+ db.batch=async statements=>{if(statements[0]?.sql.startsWith('INSERT INTO observations')){const first=JSON.parse(JSON.parse(String(statements[0].values[1]))[0].payload).value;pages.push(first);if(first===1501)throw Error('Fact page rejected');}return original(statements);};
+ await expect(store.persistBatch('o','dense-source',batch(),'next','2026-10-13T17:05:00Z',undefined,{factPageSize:500,publicationDeadline:Date.now()+120000})).rejects.toThrow('Fact page rejected');
+ expect(pages).toEqual([1,501,1001,1501]);expect(sqlite.prepare('SELECT snapshotId FROM current_snapshots').get()?.snapshotId).toBe('o:kind-patches:dense-source:prior');expect(sqlite.prepare("SELECT status,retrievedAt FROM snapshots WHERE id='o:kind-patches:dense-source:next'").get()).toEqual({status:'writing',retrievedAt:'2026-10-13T17:05:00Z'});expect(sqlite.prepare("SELECT count(*) n FROM observations WHERE snapshotId='o:kind-patches:dense-source:next'").get()?.n).toBe(1500);
+});
+
 it('retries only the failed fact page after an ambiguous committed timeout and publishes all facts once',async()=>{
  const {store,db,sqlite}=database(),original=db.batch;let failed=false;const pages:number[]=[];
  db.batch=async statements=>{

@@ -152,6 +152,11 @@ it('restores exactly the original values and retrieval provenance from the verif
  await pruneArchivedMaterializations(store,scope,options());await restoreArchivedMaterialization(store,scope,oldId,{readArchive:reader,deadline:Date.now()+60000});
  expect(await store.all('SELECT * FROM observations WHERE snapshotId=? ORDER BY date,rowKey',oldId)).toEqual(facts);expect(await store.first('SELECT * FROM snapshots WHERE id=?',oldId)).toEqual(metadata);expect(await store.all('SELECT * FROM current_snapshots')).toEqual(pointer);
 });
+it.each(['kind-shopify-traffic','kind-meta-performance','kind-shopify-sales'])('selects the dense transaction bound only for known %s archive recovery',async provider=>{
+ await store.run('UPDATE connections SET provider=? WHERE id=?',provider,'source');const facts=await store.all('SELECT * FROM observations WHERE snapshotId=? ORDER BY date,rowKey',oldId),pointers=await store.all('SELECT * FROM current_snapshots');await pruneArchivedMaterializations(store,scope,options());const persist=vi.spyOn(store,'persistBatch');
+ await restoreArchivedMaterialization(store,scope,oldId,{readArchive:reader,deadline:Date.now()+60000});expect(persist).toHaveBeenCalledOnce();const publication=persist.mock.calls[0][6];if(provider==='kind-shopify-sales')expect(publication).not.toHaveProperty('factPageSize');else expect(publication).toHaveProperty('factPageSize',500);
+ expect(await store.all('SELECT * FROM observations WHERE snapshotId=? ORDER BY date,rowKey',oldId)).toEqual(facts);expect(await store.all('SELECT * FROM current_snapshots')).toEqual(pointers);
+});
 it('bounds each maintenance call and retains projections until all corresponding raw rows are pruned',async()=>{
  const result=await pruneArchivedMaterializations(store,scope,{...options(),maxRows:1});expect(result.rowsDeleted).toBe(1);expect(await store.first('SELECT COUNT(*) AS n FROM observations WHERE snapshotId=?',oldId)).toEqual({n:2});expect(await store.first('SELECT COUNT(*) AS n FROM snapshot_day_projection_entries WHERE snapshotId=?',oldId)).toEqual({n:1});
 });
