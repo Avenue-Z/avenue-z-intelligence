@@ -4,6 +4,12 @@ import {queryClient} from '../../lib/analytics/query';
 import clients from '../../data/initial-clients.json';
 const filters={from:'2026-10-07',to:'2026-10-07',view:'funnels',mode:'closed',compare:'previous',market:'US',source:'facebook',page:'',stream:'',device:''} as const;
 const client=clients[0] as any;
+it('keeps the displayed operational comparison and its actual capture provenance in AI context',()=>{
+ const r=queryClient(client,[],[],filters),comparison={baseline:{value:147803,asOf:'2026-10-13T21:20:30.259Z',retrievedAt:'2026-10-13T21:20:30.979Z',snapshotId:'verified-stock-snapshot'},delta:743,relativeChange:743/147803,alignment:'same-store-hour'};
+ const ctx=buildAIContext([{...r,activeCustomerComparison:comparison,note:{body:''},findings:[],reviews:[]}] as any,filters);
+ expect(ctx.clients[0]).toHaveProperty('activeCustomerComparison',comparison);
+ expect(compactAIContextForModel(ctx).context.clients[0]).toHaveProperty('activeCustomerComparison',comparison);
+});
 it('binds analysis to server-filtered evidence and keeps other dates distinct',()=>{
  const r=queryClient(client,[],[],filters);const ctx=buildAIContext([{...r,note:{body:'Scope note'},findings:[],reviews:[{id:'rev',storeDate:'2026-10-06',revision:1,payload:{text:'Old evidence'},createdAt:'now'}]}] as any,filters,'rev');
  expect(ctx.filters).toEqual(filters);expect(ctx.clients[0].selectedReview?.storeDate).toBe('2026-10-06');expect(ctx.clients[0].warnings.join(' ')).toContain('No source observations');expect(ctx.clients[0]).not.toHaveProperty('connections');

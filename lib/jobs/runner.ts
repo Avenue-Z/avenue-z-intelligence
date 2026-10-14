@@ -47,7 +47,7 @@ export async function syncTick(){
     if(timer)clearTimeout(timer);
     if(pages&&size&&free&&[pages.page_count,size.page_size,free.freelist_count].every(Number.isSafeInteger)&&pages.page_count>=0&&size.page_size>=512&&size.page_size<=65536&&(size.page_size&(size.page_size-1))===0&&free.freelist_count>=0&&free.freelist_count<=pages.page_count){
      const bytes=(pages.page_count-free.freelist_count)*size.page_size;
-     if(Number.isSafeInteger(bytes)&&bytes>=18000000000&&owner?.token===token&&Date.parse(owner.leaseUntil)>Date.now()&&Date.now()<started+730000){maintenance=await pruneArchivedMaterializations(s,scope,{maxSnapshots:8,maxRows:250000,deadline:Math.min(Date.now()+60000,started+730000)});console.info('Post-current archive maintenance',maintenance);}
+     if(Number.isSafeInteger(bytes)&&bytes>=18000000000&&owner?.token===token&&Date.parse(owner.leaseUntil)>Date.now()&&Date.now()<started+730000){maintenance=await pruneArchivedMaterializations(s,scope,{maxSnapshots:8,maxRows:250000,deadline:Math.min(Date.now()+60000,started+730000),monthlyRetention:true});console.info('Post-current archive maintenance',maintenance);}
     }
    }catch(error){console.warn('Post-current archive maintenance deferred',{kind:error instanceof Error&&['Error','TypeError','TimeoutError','AbortError'].includes(error.name)?error.name:'Unknown'});}
    finally{if(timer)clearTimeout(timer);}

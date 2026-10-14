@@ -7,10 +7,12 @@ import {QueryCache} from './query-cache';
 import type {Store} from './store';
 import {intradayConnections} from '../analytics/intraday-coverage';
 import {trendContextWindows} from '../analytics/trend-context';
+import {validActiveCustomerComparison} from '../analytics/active-customer-comparison';
+import type {Observation} from '../analytics/contracts';
 
 type Presentation=ReturnType<typeof workspacePresentation>;
 type Frame=Omit<Presentation,'connections'>;
-const codecVersion='gzip-frame-v10',maximumExpandedBytes=4*1024*1024,maximumCompressedCharacters=512*1024;
+const codecVersion='gzip-frame-v11',maximumExpandedBytes=4*1024*1024,maximumCompressedCharacters=512*1024;
 export type PreparedWorkspaceInput={
  store:Store;organizationId:string;client:Client;filters:QueryFilters;preparedDatasets:string[];
  freshConnections?:Connection[];
@@ -29,7 +31,7 @@ const lastGoodFrames=new Map<string,string>();
 function transientDatabaseFailure(error:unknown):boolean{return error instanceof Error&&(error.name==='TimeoutError'||error.message.includes('Database request timed out')||transientDatabaseFailure(error.cause));}
 // Deliberately enumerate the analytics contract. A caller's workspace fields,
 // browser scope, member records and private notes cannot enter the cache.
-const frameFields=['client','metrics','prior','comparison','verdict','series','datasetSeries','comparisonDatasetSeries','trendDatasetSeries','trendComparisonDatasetSeries','datasetHourlySeries','comparisonDatasetHourlySeries','datasetHistorySeries','details','actions','opportunities','views','preparedDatasets','datasetMetrics','activeIncidents','warnings','cutoff','availableDimensions','evidence','comparisonEvidence','selectedCount','liveOperations','subscriptions','viewMetrics','viewPriorMetrics','experimentDetails','comparisonViews','qualifiedPageAlerts','trafficExplorer','sourceQuality','efficiencyEvidence'] as const satisfies readonly (keyof Frame)[];
+const frameFields=['client','metrics','prior','comparison','verdict','series','datasetSeries','comparisonDatasetSeries','trendDatasetSeries','trendComparisonDatasetSeries','datasetHourlySeries','comparisonDatasetHourlySeries','datasetHistorySeries','details','actions','opportunities','views','preparedDatasets','datasetMetrics','activeIncidents','warnings','cutoff','availableDimensions','evidence','comparisonEvidence','selectedCount','liveOperations','activeCustomerComparison','subscriptions','viewMetrics','viewPriorMetrics','experimentDetails','comparisonViews','qualifiedPageAlerts','trafficExplorer','sourceQuality','efficiencyEvidence'] as const satisfies readonly (keyof Frame)[];
 function analyticsFrame(value:Presentation):Frame{
  // New presentation fields require an explicit decision about cache contents.
  const completeFields:Exclude<keyof Frame,typeof frameFields[number]> extends never?typeof frameFields:never=frameFields;
@@ -56,6 +58,7 @@ function validFrame(frame:unknown,input:PreparedWorkspaceInput):frame is Frame{
  if(Object.keys(value).some(key=>!frameFields.includes(key as typeof frameFields[number])))return false;
  if(JSON.stringify(stable(value.client))!==JSON.stringify(stable(input.client)))return false;
  for(const key of ['warnings','series','details','actions','opportunities','activeIncidents','evidence','comparisonEvidence','liveOperations','experimentDetails','preparedDatasets'])if(!Array.isArray(value[key]))return false;
+ if(value.activeCustomerComparison!==undefined){const current=(value.liveOperations as Observation[]).find(row=>row.metric==='active_customers');if(!validActiveCustomerComparison(value.activeCustomerComparison,current,input.client.timezone,current?`${input.organizationId}:${input.client.id}:${current.sourceId}:`:undefined))return false;}
  if(JSON.stringify([...(value.preparedDatasets as string[])].sort())!==JSON.stringify([...new Set(input.preparedDatasets)].sort()))return false;
  if(!Number.isSafeInteger(value.selectedCount)||(value.selectedCount as number)<0||value.cutoff!==null&&typeof value.cutoff!=='string')return false;
  for(const key of ['metrics','prior','datasetMetrics','viewMetrics','viewPriorMetrics']){const summary=value[key];if(!summary||typeof summary!=='object'||Array.isArray(summary)||Object.values(summary).some(metric=>metric!==null&&(typeof metric!=='number'||!Number.isFinite(metric))))return false;}

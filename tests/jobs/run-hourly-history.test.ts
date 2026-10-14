@@ -78,20 +78,20 @@ it('captures recent Recharge cohorts before older provider queues without changi
  await store.enqueue('o',client.id,'recharge','hourly-history:2026-10-11','2026-10-13T18:00:00.000Z');
  const before=await store.all('SELECT id,dueAt FROM jobs ORDER BY id');
  for(let count=0;count<3;count++)await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+700000});
- expect(state.captures).toEqual([{provider:'kind-recharge-cancellations',date:'2026-10-11'},{provider:'kind-recharge-cancellations',date:'2026-09-15'},{provider:'kind-meta-performance',date:'2026-08-15'}]);
+ expect(state.captures).toEqual([{provider:'kind-recharge-cancellations',date:'2026-10-11'},{provider:'kind-recharge-cancellations',date:'2026-09-15'}]);
  expect(await store.all('SELECT id,dueAt FROM jobs ORDER BY id')).toEqual(before);
 });
 
 it('does not bypass the normal retry due time when a more recent history date is deferred',async()=>{
- await source('meta','kind-meta-performance','2026-08-15');await source('recharge','kind-recharge-cancellations','2026-10-12');const store=state.store!;
+ await source('meta','kind-meta-performance','2026-09-13');await source('recharge','kind-recharge-cancellations','2026-10-12');const store=state.store!;
  await store.run("UPDATE jobs SET dueAt='2026-10-13T19:00:00Z' WHERE sourceId='recharge'");
  await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+700000});
- expect(state.captures).toEqual([{provider:'kind-meta-performance',date:'2026-08-15'}]);
+ expect(state.captures).toEqual([{provider:'kind-meta-performance',date:'2026-09-13'}]);
  expect(await store.first("SELECT status,attempts,dueAt FROM jobs WHERE sourceId='recharge'")).toEqual({status:'pending',attempts:0,dueAt:'2026-10-13T19:00:00Z'});
 });
 it('runs a bounded archive-maintenance phase at 18 GB before continuing historical captures',async()=>{
  const store=state.store!,original=store.first.bind(store);vi.spyOn(store,'first').mockImplementation(async(sql,...args)=>sql==='PRAGMA page_count'?{page_count:Math.ceil(18000000000/4096)}:sql==='PRAGMA freelist_count'?{freelist_count:0}:original(sql,...args));
- const result=await hourlyHistoryTick();expect(state.maintenance).toEqual([{maxSnapshots:8,maxRows:250000,deadline:Date.now()+180000}]);expect(result).toHaveProperty('maintenance.rowsDeleted',12);expect(await store.all('SELECT * FROM runner_leases')).toEqual([]);
+ const result=await hourlyHistoryTick();expect(state.maintenance).toEqual([{maxSnapshots:8,maxRows:250000,deadline:Date.now()+180000,monthlyRetention:true}]);expect(result).toHaveProperty('maintenance.rowsDeleted',12);expect(await store.all('SELECT * FROM runner_leases')).toEqual([]);
 });
 it('defers the shared Shopify budget without burning attempts or claiming its other pending dates while unrelated feeds continue',async()=>{
  await source('sales');await source('products','kind-shopify-products');await source('meta','kind-meta-performance');state.throttled=true;
@@ -146,6 +146,32 @@ it('skips archive maintenance and history planning before heavy writes when an e
 it('plans and captures closed-day history through the independent cron when current ingestion is clear',async()=>{
  await source('sales');const store=state.store!;await store.run('DELETE FROM jobs');const before=await store.all('SELECT * FROM connections');
  const result=await hourlyHistoryTick();
- expect(result.completed).toHaveLength(40);expect(result.failed).toEqual([]);expect(await store.first("SELECT count(*) n FROM jobs WHERE id LIKE '%:hourly-history:____-__-__'")).toEqual({n:61});
- expect(state.captures).toHaveLength(40);expect(await store.all('SELECT * FROM connections')).toEqual(before);expect(await store.all('SELECT * FROM runner_leases')).toEqual([]);
+ expect(result.completed).toHaveLength(30);expect(result.failed).toEqual([]);expect(await store.first("SELECT count(*) n FROM jobs WHERE id LIKE '%:hourly-history:____-__-__'")).toEqual({n:30});
+ expect(state.captures).toHaveLength(30);expect(await store.all('SELECT * FROM connections')).toEqual(before);expect(await store.all('SELECT * FROM runner_leases')).toEqual([]);
+});
+
+it('never claims historical work older than thirty closed store dates or today',async()=>{
+ await source('meta','kind-meta-performance','2026-09-12');const store=state.store!;await store.enqueue('o',client.id,'meta','hourly-history:2026-10-13',new Date().toISOString());const jobs=await store.all('SELECT * FROM jobs');expect((await runHourlyHistoryBatch(store,scope,{maxJobs:2,deadline:Date.now()+700000})).completed).toEqual([]);expect(state.captures).toEqual([]);expect(await store.all('SELECT * FROM jobs')).toEqual(jobs);
+});
+it('rechecks the thirty-day claim window atomically when the clock crosses local midnight',async()=>{
+ vi.setSystemTime('2026-10-13T21:59:59Z');await source('sales','kind-shopify-sales','2026-09-13');const store=state.store!,first=store.first.bind(store);let raced=false;vi.spyOn(store,'first').mockImplementation(async(sql,...args)=>{const result=await first(sql,...args);if(!raced&&sql.startsWith('SELECT j.id,j.sourceId')){raced=true;vi.setSystemTime('2026-10-13T22:00:01Z');}return result;});
+ const result=await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+700000});expect(result.completed).toEqual([]);expect(state.captures).toEqual([]);expect(await store.first('SELECT status,attempts FROM jobs')).toEqual({status:'pending',attempts:0});
+});
+it('does not republish a claimed day that expires during its provider capture',async()=>{
+ vi.setSystemTime('2026-10-13T21:59:59Z');await source('sales','kind-shopify-sales','2026-09-13');const store=state.store!,all=store.first.bind(store);let reads=0;vi.spyOn(store,'first').mockImplementation(async(sql,...args)=>{if(sql==='PRAGMA page_count'&&++reads===2)vi.setSystemTime('2026-10-13T22:00:01Z');return all(sql,...args);});
+ const result=await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+700000});expect(result.completed).toEqual([]);expect(await store.all('SELECT * FROM snapshots')).toEqual([]);expect(await store.first('SELECT status FROM jobs')).toEqual({status:'cancelled'});expect(state.archives).toHaveLength(1);
+});
+
+it('retains the narrower AppLovin provider window even when an older pending date lies inside the monthly policy',async()=>{
+ await source('applovin','kind-applovin','2026-09-13');const store=state.store!,before=await store.all('SELECT * FROM jobs');await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+700000});expect(state.captures).toEqual([]);expect(await store.all('SELECT * FROM jobs')).toEqual(before);
+});
+it('does not cancel a replacement historical owner when a captured date expires before publication',async()=>{
+ vi.setSystemTime('2026-10-13T21:59:59Z');await source('sales','kind-shopify-sales','2026-09-13');const store=state.store!,first=store.first.bind(store),run=store.run.bind(store);let reads=0,replaced=false;
+ vi.spyOn(store,'first').mockImplementation(async(sql,...args)=>{if(sql==='PRAGMA page_count'&&++reads===2)vi.setSystemTime('2026-10-13T22:00:01Z');return first(sql,...args);});vi.spyOn(store,'run').mockImplementation(async(sql,...args)=>{if(!replaced&&sql.startsWith("UPDATE jobs SET status='cancelled'")){replaced=true;await run("UPDATE jobs SET attempts=attempts+1,leaseUntil='2026-10-13T22:15:00Z' WHERE sourceId='sales'");}return run(sql,...args);});
+ await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+700000});expect(await store.first('SELECT status,attempts,leaseUntil FROM jobs')).toEqual({status:'running',attempts:2,leaseUntil:'2026-10-13T22:15:00Z'});expect(await store.all('SELECT * FROM snapshots')).toEqual([]);
+});
+
+it('does not publish an AppLovin oldest eligible capture after it crosses the twenty-eight-day provider boundary at local midnight',async()=>{
+ vi.setSystemTime('2026-10-13T21:59:59Z');await source('applovin','kind-applovin','2026-09-15');const store=state.store!,first=store.first.bind(store);let reads=0;vi.spyOn(store,'first').mockImplementation(async(sql,...args)=>{if(sql==='PRAGMA page_count'&&++reads===2)vi.setSystemTime('2026-10-13T22:00:01Z');return first(sql,...args);});
+ const result=await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+700000});expect(result).toMatchObject({completed:[],failed:[],skipped:'retention-window'});expect(state.captures).toEqual([{provider:'kind-applovin',date:'2026-09-15'}]);expect(state.archives).toHaveLength(1);expect(await store.all('SELECT * FROM snapshots')).toEqual([]);expect(await store.all('SELECT * FROM current_snapshots')).toEqual([]);expect(await store.first('SELECT status FROM jobs')).toEqual({status:'cancelled'});expect(await store.first("SELECT json_extract(payload,'$.retainedFrom') retainedFrom FROM audit WHERE action='history.window.cancel_verified'")).toEqual({retainedFrom:'2026-09-16'});
 });

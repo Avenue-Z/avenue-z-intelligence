@@ -1,4 +1,5 @@
-import type {Observation,QueryFilters,Client,Connection} from './contracts';
+import type {ActiveCustomerComparison,Observation,QueryFilters,Client,Connection} from './contracts';
+import {validActiveCustomerComparison} from './active-customer-comparison';
 import {ratio,change,compatibleTotal,spendVerdict,opportunity} from './metrics';
 import {shiftDate,todayIn,dayWindow,comparisonPeriod} from './windows';
 import {datasetSeries as buildDatasetSeries,datasetHourlySeries as buildDatasetHourlySeries} from './dataset-series';
@@ -97,7 +98,8 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
   const views:Record<string,ReturnType<typeof datasetAnalytics>>=Object.fromEntries([...new Set(datasets)].map(key=>[key,datasetAnalytics(client,currentDatasets.get(key)??[],previousDatasets.get(key)??[],peerDatasets.get(key)??[],key!=='traffic')]));
   const details=views[dataset]?.details??[],actions=views[dataset]?.actions??[],opportunities=views[dataset]?.opportunities??[];
   const operationalIds=['active_customers','active_ads','active_creatives'];
-  const liveOperations=operationalIds.flatMap(metric=>{const rows=all.filter(r=>r.metric===metric&&r.quality==='complete').sort((a,b)=>b.date.localeCompare(a.date)||b.retrievedAt.localeCompare(a.retrievedAt));return rows[0]?[rows[0]]:[];});
+  let activeCustomerComparison:ActiveCustomerComparison|undefined;
+  const liveOperations=operationalIds.flatMap(metric=>{const rows=all.filter(r=>r.metric===metric&&r.quality==='complete').sort((a,b)=>b.date.localeCompare(a.date)||b.retrievedAt.localeCompare(a.retrievedAt));if(!rows[0])return [];const {activeCustomerComparison:comparison,...current}=rows[0];if(metric==='active_customers'&&validActiveCustomerComparison(comparison,current,client.timezone))activeCustomerComparison=comparison;return [current];});
   // Options describe the selected and comparison periods, not unrelated rows
   // loaded for chart history. Ignore active dimension filters so another market
   // remains selectable; preserve genuine historical groups on their own dates.
@@ -143,6 +145,6 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
     return withinTrendHour(row);
   }):[];
   const datasetHistorySeries={...prepareSeries&&dailyDatasets.includes('markets')?buildDatasetSeries(marketHistory,shiftDate(f.from,-1),f.to,['markets']):{},...prepareSeries&&dailyDatasets.includes('revenue')?buildDatasetSeries(revenueHistory,shiftDate(f.to,-29),f.to,['revenue']):{}};
-  return {client,metrics,prior,comparison,verdict,series,datasetSeries,comparisonDatasetSeries,trendDatasetSeries,trendComparisonDatasetSeries,datasetHourlySeries,comparisonDatasetHourlySeries,datasetHistorySeries,details,actions,opportunities,views,preparedDatasets:[...new Set(datasets)],datasetMetrics:views[dataset]?.viewMetrics??summarize([]),activeIncidents,warnings,cutoff,availableDimensions,evidence:current,comparisonEvidence:previous,connections,selectedCount:current.length,liveOperations,subscriptions:subscriptionComparison(filtered(all,{...f,from:undefined,to:undefined}),f.to,client.config.incidents,f.mode==='partial'?{timezone:client.timezone,cutoff}:undefined)};
+  return {client,metrics,prior,comparison,verdict,series,datasetSeries,comparisonDatasetSeries,trendDatasetSeries,trendComparisonDatasetSeries,datasetHourlySeries,comparisonDatasetHourlySeries,datasetHistorySeries,details,actions,opportunities,views,preparedDatasets:[...new Set(datasets)],datasetMetrics:views[dataset]?.viewMetrics??summarize([]),activeIncidents,warnings,cutoff,availableDimensions,evidence:current,comparisonEvidence:previous,connections,selectedCount:current.length,liveOperations,...activeCustomerComparison?{activeCustomerComparison}:{},subscriptions:subscriptionComparison(filtered(all,{...f,from:undefined,to:undefined}),f.to,client.config.incidents,f.mode==='partial'?{timezone:client.timezone,cutoff}:undefined)};
 }
 export type ClientAnalytics=ReturnType<typeof queryClient>;

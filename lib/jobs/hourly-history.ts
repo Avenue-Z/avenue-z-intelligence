@@ -4,6 +4,8 @@ import type {Store} from '../server/store';
 import {assertSourceActivation,type RegisteredContract} from '../sources/registered-contract';
 
 export const historicalHourlyProviders=new Set(['kind-shopify-sales','kind-shopify-products','kind-shopify-traffic','kind-meta-performance','kind-applovin','kind-recharge-cancellations','kind-triple-whale']);
+export const denseHourlyHistoryProviders=new Set(['kind-shopify-traffic','kind-meta-performance','kind-shopify-products']);
+export function hourlyHistoryWindow(timezone:string,now=new Date()){const today=todayIn(timezone,now);return {today,from:shiftDate(today,-30),to:shiftDate(today,-1)};}
 const rechargeCohortMetrics=['new_subscriptions','same_day_subscription_cancellations'];
 const marketMetrics=['revenue','orders','new_orders'];
 export function supportsHourlyHistory(provider:string,contract:RegisteredContract){return contract.hourlyGrain&&contract.profiles.every(profile=>profile.hourly)&&(provider!=='kind-recharge-cancellations'||rechargeCohortMetrics.every(metric=>contract.profiles.some(profile=>profile.dataset==='subscriptionEvents'&&profile.metric===metric)))&&(provider!=='kind-triple-whale'||marketMetrics.every(metric=>contract.profiles.some(profile=>profile.dataset==='markets'&&profile.metric===metric&&profile.dimensions.length===1&&profile.dimensions[0]==='market')));}
@@ -23,7 +25,16 @@ export async function planHistoricalHourlyJobs(store:Store,scope:AccessScope,now
  if(!['admin','service'].includes(scope.role)||!scope.permittedClientIds.includes('kind-patches'))return result;
  const client=(await store.clients(scope.organizationId)).find(value=>value.id==='kind-patches');
  if(!client)return result;
- const today=todayIn(client.timezone,now),jobs:{id:string;clientId:string;sourceId:string;dueAt:string}[]=[],capturedJobIds:string[]=[];
+ const {today,from}=hourlyHistoryWindow(client.timezone,now),jobs:{id:string;clientId:string;sourceId:string;dueAt:string}[]=[],capturedJobIds:string[]=[];
+ // Keep the original job record and its audit evidence; never cancel an active
+ // claim or a current refresh. Bound retirement so an old queue stays cheap.
+ const obsolete=await store.all<{id:string;sourceId:string;attempts:number;dueAt:string;error:string|null}>("SELECT id,sourceId,attempts,dueAt,error FROM jobs WHERE organizationId=? AND clientId=? AND status='pending' AND id=organizationId||':'||sourceId||':hourly-history:'||substr(id,-10) AND substr(id,-10) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND date(substr(id,-10)) IS NOT NULL AND substr(id,-10)<? ORDER BY id LIMIT 500",scope.organizationId,client.id,from);
+ if(obsolete.length){
+  const records=JSON.stringify(obsolete.map(job=>({...job,auditId:`history-window:${job.id}:${from}`,payload:JSON.stringify({jobId:job.id,sourceId:job.sourceId,retainedFrom:from,originalAttempts:job.attempts,originalDueAt:job.dueAt,originalError:job.error})})));
+  await store.run("INSERT INTO audit(id,organizationId,clientId,actorId,action,payload,createdAt) SELECT json_extract(e.value,'$.auditId'),?,?,?,'history.window.cancel_verified',json_extract(e.value,'$.payload'),? FROM json_each(?) e JOIN jobs j ON j.id=json_extract(e.value,'$.id') WHERE j.organizationId=? AND j.clientId=? AND j.status='pending' AND j.attempts=json_extract(e.value,'$.attempts') AND j.dueAt=json_extract(e.value,'$.dueAt') ON CONFLICT(id) DO NOTHING",scope.organizationId,client.id,scope.actorId,now.toISOString(),records,scope.organizationId,client.id);
+  await store.run("UPDATE jobs SET status='cancelled' WHERE organizationId=? AND clientId=? AND status='pending' AND id IN (SELECT json_extract(value,'$.id') FROM json_each(?)) AND EXISTS(SELECT 1 FROM audit a WHERE a.id='history-window:'||jobs.id||':'||? AND a.organizationId=jobs.organizationId AND a.clientId=jobs.clientId AND a.action='history.window.cancel_verified' AND json_extract(a.payload,'$.jobId')=jobs.id AND json_extract(a.payload,'$.retainedFrom')=? AND json_extract(a.payload,'$.originalAttempts')=jobs.attempts AND json_extract(a.payload,'$.originalDueAt')=jobs.dueAt)",scope.organizationId,client.id,records,from,from);
+ }
+
  for(const source of await store.connections(scope.organizationId,client.id)){
   if(!source.enabled||!historicalHourlyProviders.has(source.provider)||!scope.permittedClientIds.includes(source.clientId))continue;
   let contract;
@@ -31,7 +42,7 @@ export async function planHistoricalHourlyJobs(store:Store,scope:AccessScope,now
   if(!supportsHourlyHistory(source.provider,contract))continue;
   result.eligibleSources++;
   const cohortMetrics=source.provider==='kind-recharge-cancellations'?rechargeCohortMetrics:source.provider==='kind-triple-whale'?marketMetrics:[],cohortDataset=source.provider==='kind-triple-whale'?'markets':'subscriptionEvents';
-  const cohortSelect=cohortMetrics.map((metric,index)=>`,(SELECT o.payload FROM observations o WHERE o.snapshotId=c.snapshotId AND o.date=c.date AND json_extract(o.payload,'$.dataset')='${cohortDataset}' AND json_extract(o.payload,'$.metric')='${metric}' ORDER BY o.rowKey LIMIT 1) AS cohort${index}`).join(''),dates=datesByPriority(today,source.provider==='kind-applovin'?28:61),firstFacts=await store.all<{date:string;payload:string|null;complete:number;coverageThrough:string|null;cohort0?:string|null;cohort1?:string|null;cohort2?:string|null}>(
+  const cohortSelect=cohortMetrics.map((metric,index)=>`,(SELECT o.payload FROM observations o WHERE o.snapshotId=c.snapshotId AND o.date=c.date AND json_extract(o.payload,'$.dataset')='${cohortDataset}' AND json_extract(o.payload,'$.metric')='${metric}' ORDER BY o.rowKey LIMIT 1) AS cohort${index}`).join(''),dates=datesByPriority(today,source.provider==='kind-applovin'?28:30),firstFacts=await store.all<{date:string;payload:string|null;complete:number;coverageThrough:string|null;cohort0?:string|null;cohort1?:string|null;cohort2?:string|null}>(
    `SELECT c.date,s.complete,s.coverageThrough,(SELECT o.payload FROM observations o WHERE o.snapshotId=c.snapshotId AND o.date=c.date ORDER BY o.rowKey LIMIT 1) AS payload${cohortSelect} FROM current_snapshots c JOIN snapshots s ON s.id=c.snapshotId AND s.organizationId=c.organizationId AND s.clientId=c.clientId AND s.sourceId=c.sourceId AND s.status='ready' WHERE c.organizationId=? AND c.clientId=? AND c.sourceId=? AND c.date BETWEEN ? AND ?`,
    scope.organizationId,client.id,source.id,shiftDate(today,-dates.length),shiftDate(today,-1)
   );
@@ -43,7 +54,7 @@ export async function planHistoricalHourlyJobs(store:Store,scope:AccessScope,now
     capturedJobIds.push(`${scope.organizationId}:${source.id}:hourly-history:${date}`);continue;
    }
    result.missingDays++;
-   jobs.push({id:`${scope.organizationId}:${source.id}:hourly-history:${date}`,clientId:client.id,sourceId:source.id,dueAt:new Date(now.getTime()-(61-rank)).toISOString()});
+   jobs.push({id:`${scope.organizationId}:${source.id}:hourly-history:${date}`,clientId:client.id,sourceId:source.id,dueAt:new Date(now.getTime()-(30-rank)).toISOString()});
   }
  }
  // A routine qualified capture can satisfy a previously queued repair. Only

@@ -88,8 +88,8 @@ it('publishes native current data without reading or planning historical facts b
  const result=await runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000});expect(result.failed).toEqual([]);expect(result.completed).toEqual(['o:source:hourly-test']);
  expect(await store.first('SELECT status FROM snapshots')).toEqual({status:'ready'});expect(await store.first('SELECT coverageThrough,error FROM connections')).toEqual({coverageThrough:'2026-10-13T12:00:00Z',error:null});
 });
-it('retains bounded historical planning in the Sites scheduler fallback',async()=>{
- await enqueueDue(scope);expect(await state.store!.first("SELECT count(*) n FROM jobs WHERE id LIKE '%:hourly-history:____-__-__'")).toEqual({n:61});
+it('retains thirty closed store dates of historical planning in the Sites scheduler fallback',async()=>{
+ const store=state.store!,original=await store.first('SELECT * FROM jobs WHERE id=?','o:source:hourly-test');await enqueueDue(scope);expect(await store.first("SELECT count(*) n,MIN(substr(id,-10)) firstDate,MAX(substr(id,-10)) lastDate FROM jobs WHERE id LIKE '%:hourly-history:____-__-__'")).toEqual({n:30,firstDate:'2026-09-13',lastDate:'2026-10-12'});expect(await store.first('SELECT * FROM jobs WHERE id=?','o:source:hourly-test')).toEqual(original);expect(await store.first("SELECT count(*) n FROM jobs WHERE id NOT LIKE '%:hourly-history:____-__-__' AND status='pending'")).toEqual({n:2});
 });
 
 it.each(['kind-shopify-sales','kind-shopify-products','kind-shopify-traffic','kind-meta-performance','kind-applovin'])('keeps routine %s captures on today while independent history repairs remain separate',async provider=>{

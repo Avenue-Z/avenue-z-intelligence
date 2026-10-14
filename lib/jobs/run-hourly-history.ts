@@ -7,7 +7,7 @@ import {serverSecret} from '../server/secrets';
 import type {Store} from '../server/store';
 import {fetchKindSource} from '../sources/kind-fetch';
 import {assertSourceActivation,validateRegisteredBatch,type RegisteredContract} from '../sources/registered-contract';
-import {historicalHourlyProviders,planHistoricalHourlyJobs,supportsHourlyHistory} from './hourly-history';
+import {historicalHourlyProviders,hourlyHistoryWindow,planHistoricalHourlyJobs,supportsHourlyHistory} from './hourly-history';
 import {DailyScheduler} from './scheduler';
 import {pruneArchivedMaterializations} from './archive-materialization-retention';
 import {ShopifyRateLimitError} from '../sources/shopify-graphql';
@@ -70,9 +70,9 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
    // Fill recent comparisons before older archives, including sources added
    // after the initial queue. Keep immutable due times and benchmark ordering
    // within each band; AppLovin retains its oldest-date priority in that band.
-   const job=await store.first<HistoryJob>(`SELECT j.id,j.sourceId,j.clientId,j.attempts,j.leaseUntil FROM jobs j JOIN connections c ON c.id=j.sourceId AND c.organizationId=j.organizationId WHERE j.organizationId=? AND j.clientId='kind-patches' AND j.sourceId IN (${sourceIds.map(()=>'?').join(',')}) AND j.id LIKE '%:hourly-history:____-__-__' AND ((j.status='pending' AND j.dueAt<=?) OR (j.status='running' AND j.leaseUntil<?))${limited?' AND substr(j.id,-10)>=? AND substr(j.id,-10)<?':''} ORDER BY CASE WHEN substr(j.id,-10)>=? THEN 0 WHEN substr(j.id,-10)>=? THEN 1 ELSE 2 END,CASE WHEN c.provider='kind-applovin' THEN 0 ELSE 1 END,CASE WHEN c.provider='kind-applovin' THEN substr(j.id,-10) ELSE j.dueAt END,j.dueAt,j.id LIMIT 1`,scope.organizationId,...sourceIds,now,now,...limited?[shiftDate(today,-30),today]:[],shiftDate(today,-7),shiftDate(today,-30));
+   const job=await store.first<HistoryJob>(`SELECT j.id,j.sourceId,j.clientId,j.attempts,j.leaseUntil FROM jobs j JOIN connections c ON c.id=j.sourceId AND c.organizationId=j.organizationId WHERE j.organizationId=? AND j.clientId='kind-patches' AND j.sourceId IN (${sourceIds.map(()=>'?').join(',')}) AND j.id LIKE '%:hourly-history:____-__-__' AND substr(j.id,-10)>=? AND substr(j.id,-10)<? AND (c.provider<>'kind-applovin' OR substr(j.id,-10)>=?) AND ((j.status='pending' AND j.dueAt<=?) OR (j.status='running' AND j.leaseUntil<?)) ORDER BY CASE WHEN substr(j.id,-10)>=? THEN 0 WHEN substr(j.id,-10)>=? THEN 1 ELSE 2 END,CASE WHEN c.provider='kind-applovin' THEN 0 ELSE 1 END,CASE WHEN c.provider='kind-applovin' THEN substr(j.id,-10) ELSE j.dueAt END,j.dueAt,j.id LIMIT 1`,scope.organizationId,...sourceIds,shiftDate(today,-30),today,shiftDate(today,-28),now,now,shiftDate(today,-7),shiftDate(today,-30));
    if(!job)return null;
-   const leaseUntil=new Date(Date.now()+900000).toISOString(),updated=await store.run("UPDATE jobs SET status='running',leaseUntil=?,attempts=attempts+1 WHERE id=? AND organizationId=? AND ((status='pending' AND dueAt<=?) OR (status='running' AND leaseUntil<?))",leaseUntil,job.id,scope.organizationId,now,now);
+   const window=hourlyHistoryWindow(eligible.get(job.sourceId)!.client.timezone),leaseUntil=new Date(Date.now()+900000).toISOString(),updated=await store.run("UPDATE jobs SET status='running',leaseUntil=?,attempts=attempts+1 WHERE id=? AND organizationId=? AND substr(id,-10)>=? AND substr(id,-10)<? AND ((status='pending' AND dueAt<=?) OR (status='running' AND leaseUntil<?))",leaseUntil,job.id,scope.organizationId,eligible.get(job.sourceId)!.source.provider==='kind-applovin'?shiftDate(window.today,-28):window.from,window.today,now,now);
    if(!updated.meta.changes)return null;
    const value=eligible.get(job.sourceId)!;active.add(value.source.provider);claimed++;return {job:{...job,attempts:job.attempts+1,leaseUntil},...value};
   }finally{release();}
@@ -85,7 +85,7 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
   for(;;){const capture=await claim();if(!capture)return;const {job,source,client,contract}=capture;let completing=false;
    try{
     const prefix=`${scope.organizationId}:${source.id}:hourly-history:`,date=job.id.startsWith(prefix)?job.id.slice(prefix.length):'',today=todayIn(client.timezone);
-    if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||date>=today||date<shiftDate(today,source.provider==='kind-applovin'?-28:-61))throw Error('Historical source window is invalid');
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||date>=today||date<shiftDate(today,source.provider==='kind-applovin'?-28:-30))throw Error('Historical source window is invalid');
     const secret=serverSecret(source.secretRef);if(!secret)throw Error(`Server secret ${source.secretRef} is not configured`);if(!env.BUCKET)throw Error('Snapshot archive unavailable');
     const window={from:date,to:date},batch=await fetchKindSource(source,client,window,secret,fetch,budget.deadline);
     const smallRecharge=source.provider==='kind-recharge-cancellations'&&boundedRechargeContract(contract);
@@ -97,12 +97,20 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
     const capturedAt=new Date().toISOString();
     await publish(async()=>{
      const storage=await storageBytes(store);out.storageBytes=storage;
+     const retained=hourlyHistoryWindow(client.timezone),retainedFrom=source.provider==='kind-applovin'?shiftDate(retained.today,-28):retained.from;
+     if(date<retainedFrom){
+      const auditId=`history-window-claimed:${job.id}:${retainedFrom}:${job.attempts}`;
+      await store.run("INSERT INTO audit(id,organizationId,clientId,actorId,action,payload,createdAt) SELECT ?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM jobs WHERE id=? AND organizationId=? AND status='running' AND attempts=? AND leaseUntil=?) ON CONFLICT(id) DO NOTHING",auditId,scope.organizationId,client.id,scope.actorId,'history.window.cancel_verified',JSON.stringify({jobId:job.id,sourceId:source.id,retainedFrom,originalAttempts:job.attempts,originalLeaseUntil:job.leaseUntil}),new Date().toISOString(),job.id,scope.organizationId,job.attempts,job.leaseUntil);
+      await store.run("UPDATE jobs SET status='cancelled',leaseUntil=NULL WHERE id=? AND organizationId=? AND status='running' AND attempts=? AND leaseUntil=? AND EXISTS(SELECT 1 FROM audit WHERE id=? AND organizationId=? AND clientId=? AND action='history.window.cancel_verified' AND json_extract(payload,'$.jobId')=? AND json_extract(payload,'$.retainedFrom')=? AND json_extract(payload,'$.originalLeaseUntil')=?)",job.id,scope.organizationId,job.attempts,job.leaseUntil,auditId,scope.organizationId,client.id,job.id,retainedFrom,job.leaseUntil);
+      throw Error('Historical day left the retained store window');
+     }
      if(storage>=STORAGE_SAFETY_BYTES&&!(smallRecharge&&recentRechargeHistoryDate(date,today)&&rechargeHistoryFits(storage)))throw new HistoryCapacityDeferral('Historical storage capacity reserved for current ingestion');
      return store.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,window,{publicationDeadline:budget.deadline,...(['kind-shopify-traffic','kind-meta-performance'].includes(source.provider)?{factPageSize:500 as const}:{})});
     });
     completing=true;await retryPublication('history.complete',budget.deadline,()=>store.finish(job.id));out.completed.push(job.id);
    }catch(error){
     const message=error instanceof Error?error.message:'Historical capture failed';
+    if(message==='Historical day left the retained store window'){out.skipped='retention-window';continue;}
     if(completing&&budgetFailure(error)){
      // A successful acknowledgment can commit before its response times out.
      // Verify that outcome before any generic retry could change it back.
@@ -149,7 +157,7 @@ export async function hourlyHistoryTick():Promise<HistoryResult>{
   const started=Date.now();let maintenance:HistoryResult['maintenance'];
   if(await storageBytes(store)>=18000000000){
    const maintenanceStarted=Date.now();
-   try{maintenance=await pruneArchivedMaterializations(store,scope,{maxSnapshots:8,maxRows:250000,deadline:started+180000});console.info('Historical archive maintenance',{ms:Date.now()-maintenanceStarted,...maintenance});}
+   try{maintenance=await pruneArchivedMaterializations(store,scope,{maxSnapshots:8,maxRows:250000,deadline:started+180000,monthlyRetention:true});console.info('Historical archive maintenance',{ms:Date.now()-maintenanceStarted,...maintenance});}
    catch(error){console.warn('Historical archive maintenance deferred',{kind:error instanceof Error?error.name:'Unknown',ms:Date.now()-maintenanceStarted});}
   }
   await planHistoricalHourlyJobs(store,scope);const result=await runHourlyHistoryBatch(store,scope,{maxJobs:40,deadline:started+700000});return {...result,...maintenance?{maintenance}:{}};

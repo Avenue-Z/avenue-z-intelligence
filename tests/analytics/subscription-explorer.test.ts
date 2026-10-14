@@ -8,6 +8,8 @@ describe('subscription explorer',()=>{
   const result=buildSubscriptionExplorer({range,comparisonRange,current:[{date:'2026-10-10',metrics:{recurring_revenue:100,recurring_orders:5}},{date:'2026-10-12',metrics:{recurring_revenue:0,recurring_orders:0}}],comparison:[{date:'2026-09-10',metrics:{recurring_revenue:90,recurring_orders:3}},{date:'2026-09-11',metrics:{recurring_revenue:80,recurring_orders:4}}]});
   expect(result.points.map(row=>[row.date,row.comparisonDate,row.selected.recurring_revenue,row.comparison.recurring_revenue])).toEqual([['2026-10-10','2026-09-10',100,90],['2026-10-11','2026-09-11',null,80],['2026-10-12','2026-09-12',0,null]]);
   expect(result.current.coverage.recurring_revenue).toEqual({reportedDays:2,totalDays:3});
+  expect(result.current.metrics.recurring_revenue).toBeNull();
+  expect(result.previous.metrics.recurring_orders).toBeNull();
  });
  it('calculates period refund and cancellation rates from counts, not a mean of daily rates',()=>{
   const result=buildSubscriptionExplorer({range:{from:'2026-10-10',to:'2026-10-11'},comparisonRange:{from:'2026-10-08',to:'2026-10-09'},current:[{date:'2026-10-10',metrics:{recurring_revenue:200,recurring_orders:10,recurring_refund_orders:2,recurring_cancelled_orders:1}},{date:'2026-10-11',metrics:{recurring_revenue:900,recurring_orders:90,recurring_refund_orders:3,recurring_cancelled_orders:4}}],comparison:[]});
@@ -39,6 +41,17 @@ describe('subscription explorer',()=>{
   expect(result.previous.metrics.recurring_orders).toBe(4);
   expect(subscriptionMetricValue({recurring_orders:0,recurring_revenue:0},'aov')).toBeNull();
  });
+});
+it('withholds month totals and rates when matching counts cover only some days, while preserving daily observations',()=>{
+ const result=buildSubscriptionExplorer({range,comparisonRange,current:[{date:range.from,metrics:{recurring_revenue:100,recurring_orders:10,recurring_refund_orders:1,recurring_cancelled_orders:0}}],comparison:[],currentEvents:[{date:range.from,metrics:{new_subscriptions:10,same_day_subscription_cancellation_events:1,subscription_cancellation_events:2}}]});
+ for(const metric of ['recurring_revenue','recurring_orders','recurring_refund_orders','recurring_cancelled_orders','new_subscriptions','aov','refund_rate','cancellation_rate','same_day_cancellation_rate'])expect(result.current.metrics[metric]).toBeNull();
+ expect(result.current.coverage.new_subscriptions).toEqual({reportedDays:1,totalDays:3});
+ expect(result.points[0].selected.new_subscriptions).toBe(10);expect(result.points[0].selected.recurring_revenue).toBe(100);expect(result.points[1].selected.new_subscriptions).toBeNull();
+});
+it('retains explicitly reported zero totals when every selected day is covered',()=>{
+ const current=Array.from({length:3},(_,index)=>({date:`2026-10-${10+index}`,metrics:{recurring_revenue:0,recurring_orders:0,recurring_refund_orders:0,recurring_cancelled_orders:0}})),currentEvents=current.map(day=>({date:day.date,metrics:{new_subscriptions:0,same_day_subscription_cancellation_events:0,subscription_cancellation_events:0}}));
+ const result=buildSubscriptionExplorer({range,comparisonRange,current,comparison:[],currentEvents});
+ expect(result.current.metrics.recurring_revenue).toBe(0);expect(result.current.metrics.new_subscriptions).toBe(0);expect(result.current.metrics.subscription_cancellation_events).toBe(0);expect(result.current.metrics.same_day_cancellation_rate).toBeNull();
 });
 it('weights same-day creation-cohort cancellation rate from matched event counts and retains calendar cancellations separately',()=>{
  const result=buildSubscriptionExplorer({range:{from:'2026-10-12',to:'2026-10-13'},comparisonRange:{from:'2026-10-10',to:'2026-10-11'},current:[],comparison:[],currentEvents:[{date:'2026-10-12',metrics:{new_subscriptions:10,same_day_subscription_cancellation_events:3,subscription_cancellation_events:40}},{date:'2026-10-13',metrics:{new_subscriptions:90,same_day_subscription_cancellation_events:2,subscription_cancellation_events:60}}]});

@@ -1,6 +1,6 @@
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync,readdirSync} from 'node:fs';
-import {expect,it} from 'vitest';
+import {expect,it,vi} from 'vitest';
 import {planHistoricalHourlyJobs} from '../../lib/jobs/hourly-history';
 import {Store} from '../../lib/server/store';
 import initial from '../../data/initial-clients.json';
@@ -29,16 +29,16 @@ async function pointer(store:Store,sourceId:string,date:string,fact:unknown,stat
 }
 
 it('queues bounded closed store days with comparison cuts ahead of other recent history',async()=>{
- const {store}=await setup();expect(await planHistoricalHourlyJobs(store,scope,now)).toEqual({eligibleSources:1,missingDays:61,queued:61});
+ const {store}=await setup();expect(await planHistoricalHourlyJobs(store,scope,now)).toEqual({eligibleSources:1,missingDays:30,queued:30});
  const jobs=await store.all<{id:string;dueAt:string;status:string}>('SELECT id,dueAt,status FROM jobs ORDER BY dueAt');
- expect(jobs.slice(0,8).map(job=>job.id.split(':').at(-1))).toEqual(['2026-10-12','2026-10-06','2026-09-15','2026-09-13','2026-10-11','2026-10-05','2026-09-14','2026-09-12']);
+ expect(jobs.slice(0,7).map(job=>job.id.split(':').at(-1))).toEqual(['2026-10-12','2026-10-06','2026-09-15','2026-09-13','2026-10-11','2026-10-05','2026-09-14']);
  expect(jobs.every(job=>job.id.includes(':hourly-history:')&&job.status==='pending'&&job.dueAt<=now.toISOString())).toBe(true);
- expect(jobs.map(job=>job.id.split(':').at(-1)).sort().at(0)).toBe('2026-08-13');expect(jobs.some(job=>job.id.endsWith('2026-10-13'))).toBe(false);
+ expect(jobs.map(job=>job.id.split(':').at(-1)).sort().at(0)).toBe('2026-09-13');expect(jobs.some(job=>job.id.endsWith('2026-10-13'))).toBe(false);
 });
 it('retains valid hourly facts while scheduling legacy daily, missing and unready pointers',async()=>{
  const {store,sourceId,profile,reads,sqlite}=await setup(),hourly={...profile,start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'};
  await pointer(store,sourceId,'2026-10-12',hourly);await pointer(store,sourceId,'2026-10-11',{...profile,hourly:false});await pointer(store,sourceId,'2026-10-06',hourly,'writing');
- expect(await planHistoricalHourlyJobs(store,scope,now)).toEqual({eligibleSources:1,missingDays:60,queued:60});
+ expect(await planHistoricalHourlyJobs(store,scope,now)).toEqual({eligibleSources:1,missingDays:29,queued:29});
  expect(await store.first("SELECT id FROM jobs WHERE id LIKE '%:2026-10-12'")).toBeNull();expect(await store.first("SELECT id FROM jobs WHERE id LIKE '%:2026-10-11'")).not.toBeNull();
  const lookup=reads.find(read=>read.sql.includes('SELECT o.payload'))!;expect(lookup.sql).toContain('ORDER BY o.rowKey LIMIT 1');
  expect(reads.filter(read=>read.sql.includes('SELECT o.payload'))).toHaveLength(1);
@@ -47,20 +47,20 @@ it('retains valid hourly facts while scheduling legacy daily, missing and unread
 it('repairs a legacy full-day interval despite its matching registered hourly measurement',async()=>{
  const {store,sourceId,profile}=await setup(),date='2026-10-12';
  await pointer(store,sourceId,date,{...profile,start:'2026-10-11T22:00:00Z',end:'2026-10-12T22:00:00Z'});
- expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(61);
+ expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(30);
  expect(await store.first("SELECT status FROM jobs WHERE id LIKE '%:hourly-history:2026-10-12'")).toEqual({status:'pending'});
 });
 it('retains the legitimate two-hour interval in a repeated Stockholm store hour',async()=>{
  const {store,sourceId,profile}=await setup(),date='2026-10-25';
  await pointer(store,sourceId,date,{...profile,start:'2026-10-25T00:00:00Z',end:'2026-10-25T02:00:00Z'});
  await store.run("UPDATE snapshots SET coverageThrough='2026-10-25T23:00:00Z'");
- expect((await planHistoricalHourlyJobs(store,scope,new Date('2026-10-26T15:00:00Z'))).queued).toBe(60);
+ expect((await planHistoricalHourlyJobs(store,scope,new Date('2026-10-26T15:00:00Z'))).queued).toBe(29);
  expect(await store.first("SELECT id FROM jobs WHERE id LIKE '%:hourly-history:2026-10-25'")).toBeNull();
 });
 it.each(['kind-meta-performance','kind-applovin'])('repairs %s legacy definitions even when the first fact contains an interval',async provider=>{
  const {store,sourceId,profile}=await setup(provider),fact={...profile,start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'};
  await pointer(store,sourceId,'2026-10-12',{...fact,definition:'old_daily_measurement'});await pointer(store,sourceId,'2026-10-11',fact);
- const result=await planHistoricalHourlyJobs(store,scope,now);expect(result.queued).toBe(provider==='kind-applovin'?27:60);
+ const result=await planHistoricalHourlyJobs(store,scope,now);expect(result.queued).toBe(provider==='kind-applovin'?27:29);
  expect(await store.first("SELECT id FROM jobs WHERE id LIKE '%:2026-10-12'")).not.toBeNull();expect(await store.first("SELECT id FROM jobs WHERE id LIKE '%:2026-10-11'")).toBeNull();
 });
 it('keeps AppLovin safely inside its 30 UTC-day provider retention',async()=>{
@@ -70,14 +70,14 @@ it('keeps AppLovin safely inside its 30 UTC-day provider retention',async()=>{
 it('repairs a prior-day hourly pointer whose last settling bucket never completed',async()=>{
  const {store,sourceId,profile}=await setup('kind-meta-performance');await pointer(store,sourceId,'2026-10-12',{...profile,start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'});
  await store.run("UPDATE snapshots SET coverageThrough='2026-10-12T21:00:00Z'");
- expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(61);expect(await store.first("SELECT id FROM jobs WHERE id LIKE '%:2026-10-12'")).not.toBeNull();
+ expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(30);expect(await store.first("SELECT id FROM jobs WHERE id LIKE '%:2026-10-12'")).not.toBeNull();
 });
 it('does not alter completed or failed jobs, source health, existing snapshots or observations on repeated ticks',async()=>{
  const {store,sourceId,profile}=await setup();await pointer(store,sourceId,'2026-10-10',profile);
  await store.enqueue('o','kind-patches',sourceId,'hourly-history:2026-10-12',now.toISOString());await store.finish(`o:${sourceId}:hourly-history:2026-10-12`);
  await store.enqueue('o','kind-patches',sourceId,'hourly-history:2026-10-11',now.toISOString());await store.finish(`o:${sourceId}:hourly-history:2026-10-11`,'historical failure');
  const before={sources:await store.all('SELECT * FROM connections'),snapshots:await store.all('SELECT * FROM snapshots'),facts:await store.all('SELECT * FROM observations'),existing:await store.all('SELECT * FROM jobs ORDER BY id')};
- expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(59);expect((await planHistoricalHourlyJobs(store,scope,new Date(now.getTime()+60000))).queued).toBe(0);
+ expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(28);expect((await planHistoricalHourlyJobs(store,scope,new Date(now.getTime()+60000))).queued).toBe(0);
  expect(await store.all('SELECT * FROM connections')).toEqual(before.sources);expect(await store.all('SELECT * FROM snapshots')).toEqual(before.snapshots);expect(await store.all('SELECT * FROM observations')).toEqual(before.facts);
  for(const job of before.existing)expect(await store.first('SELECT * FROM jobs WHERE id=?',job.id)).toEqual(job);
 });
@@ -112,10 +112,10 @@ async function rechargeSetup(expanded=true){
  await store.saveQualification('o','kind-patches',sourceId,1,1,{...contract,profiles},'scheduler');return {...result,profiles};
 }
 it('queues Recharge cohort history when an old calendar-only snapshot exists for a closed day',async()=>{
- const {store,sourceId,profiles}=await rechargeSetup();await pointer(store,sourceId,'2026-10-12',{...profiles[0],start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'});const result=await planHistoricalHourlyJobs(store,scope,now);expect(result.eligibleSources).toBe(1);expect(result.queued).toBe(61);expect(await store.first("SELECT status FROM jobs WHERE id LIKE '%:hourly-history:2026-10-12'")).toEqual({status:'pending'});
+ const {store,sourceId,profiles}=await rechargeSetup();await pointer(store,sourceId,'2026-10-12',{...profiles[0],start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'});const result=await planHistoricalHourlyJobs(store,scope,now);expect(result.eligibleSources).toBe(1);expect(result.queued).toBe(30);expect(await store.first("SELECT status FROM jobs WHERE id LIKE '%:hourly-history:2026-10-12'")).toEqual({status:'pending'});
 });
 it('retains Recharge history only when both creation and same-day cancellation profiles are present and qualified',async()=>{
- const {store,sourceId,profiles}=await rechargeSetup(),date='2026-10-12';await pointer(store,sourceId,date,{...profiles[0],start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'});const snapshotId=`snapshot:o:${sourceId}:${date}`;for(const profile of profiles.slice(1))await store.run('INSERT INTO observations(snapshotId,date,rowKey,payload) VALUES(?,?,?,?)',snapshotId,date,profile.metric,JSON.stringify({...profile,start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'}));expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(60);expect(await store.first("SELECT id FROM jobs WHERE id LIKE '%:hourly-history:2026-10-12'")).toBeNull();
+ const {store,sourceId,profiles}=await rechargeSetup(),date='2026-10-12';await pointer(store,sourceId,date,{...profiles[0],start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'});const snapshotId=`snapshot:o:${sourceId}:${date}`;for(const profile of profiles.slice(1))await store.run('INSERT INTO observations(snapshotId,date,rowKey,payload) VALUES(?,?,?,?)',snapshotId,date,profile.metric,JSON.stringify({...profile,start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'}));expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(29);expect(await store.first("SELECT id FROM jobs WHERE id LIKE '%:hourly-history:2026-10-12'")).toBeNull();
 });
 it('does not activate Recharge history before the creation cohort profile expansion is qualified',async()=>{
  const {store}=await rechargeSetup(false);expect(await planHistoricalHourlyJobs(store,scope,now)).toEqual({eligibleSources:0,missingDays:0,queued:0});expect(await store.all('SELECT id FROM jobs')).toEqual([]);
@@ -126,7 +126,7 @@ async function whaleSetup(){
  await store.saveQualification('o','kind-patches',sourceId,1,1,{...contract,profiles},'scheduler');return {...result,profile,profiles};
 }
 it('queues qualified Triple Whale country-market history independently of optional routine refreshes',async()=>{
- const {store}=await whaleSetup();expect(await planHistoricalHourlyJobs(store,scope,now)).toEqual({eligibleSources:1,missingDays:61,queued:61});
+ const {store}=await whaleSetup();expect(await planHistoricalHourlyJobs(store,scope,now)).toEqual({eligibleSources:1,missingDays:30,queued:30});
  expect((await store.all<{id:string}>('SELECT id FROM jobs ORDER BY dueAt')).slice(0,4).map(job=>job.id.split(':').at(-1))).toEqual(['2026-10-12','2026-10-06','2026-09-15','2026-09-13']);
 });
 it.each(['missing','daily','grouped','unregistered'])('repairs a Triple Whale hourly headline with %s country-market observations',async kind=>{
@@ -136,7 +136,7 @@ it.each(['missing','daily','grouped','unregistered'])('repairs a Triple Whale ho
   const fact={...marketProfile,date,value:1,quality:'complete',dimensions:{market:kind==='grouped'?'Germany / Spain / Mexico / NL':'US'},...kind==='daily'?{}:interval,...kind==='unregistered'?{definition:'legacy_unqualified'}:{}};
   await store.run('INSERT INTO observations(snapshotId,date,rowKey,payload) VALUES(?,?,?,?)',`snapshot:o:${sourceId}:${date}`,date,marketProfile.metric,JSON.stringify(fact));
  }
- expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(61);
+ expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(30);
  expect(await store.first("SELECT status FROM jobs WHERE id LIKE '%:hourly-history:2026-10-12'")).toEqual({status:'pending'});
 });
 it('retains qualified Triple Whale country history only when every required hourly market measure exists',async()=>{
@@ -144,7 +144,26 @@ it('retains qualified Triple Whale country history only when every required hour
  await pointer(store,sourceId,date,{...profile,...interval});
  const id=`snapshot:o:${sourceId}:${date}`;
  for(const marketProfile of profiles.slice(1))await store.run('INSERT INTO observations(snapshotId,date,rowKey,payload) VALUES(?,?,?,?)',id,date,marketProfile.metric,JSON.stringify({...marketProfile,date,value:1,quality:'complete',dimensions:{market:'US'},...interval}));
- expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(60);expect(await store.first("SELECT id FROM jobs WHERE id LIKE '%:hourly-history:2026-10-12'")).toBeNull();
+ expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(29);expect(await store.first("SELECT id FROM jobs WHERE id LIKE '%:hourly-history:2026-10-12'")).toBeNull();
  await store.run("DELETE FROM observations WHERE snapshotId=? AND rowKey='orders'",id);
  expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(1);expect(await store.first("SELECT status FROM jobs WHERE id LIKE '%:hourly-history:2026-10-12'")).toEqual({status:'pending'});
+});
+
+it('cancels only expired pending historical jobs after an auditable marker and preserves other job outcomes',async()=>{
+ const {store,sourceId}=await setup();for(const [date,status] of [['2026-09-12','pending'],['2026-09-11','running'],['2026-09-10','complete'],['2026-09-09','failed'],['2026-09-13','pending']] as const){await store.enqueue('o','kind-patches',sourceId,`hourly-history:${date}`,now.toISOString());await store.run('UPDATE jobs SET status=?,attempts=2,leaseUntil=? WHERE id=?',status,status==='running'?'2026-10-13T16:00:00Z':null,`o:${sourceId}:hourly-history:${date}`);}
+ await store.enqueue('o','kind-patches',sourceId,'current',now.toISOString());const before=await store.all<{id:string;status:string}>('SELECT * FROM jobs ORDER BY id');await planHistoricalHourlyJobs(store,scope,now);
+ const oldId=`o:${sourceId}:hourly-history:2026-09-12`;expect(await store.first('SELECT status,attempts,dueAt FROM jobs WHERE id=?',oldId)).toEqual({status:'cancelled',attempts:2,dueAt:now.toISOString()});
+ for(const job of before.filter(job=>job.id!==oldId))expect(await store.first('SELECT * FROM jobs WHERE id=?',job.id)).toEqual(job);
+ expect(await store.first("SELECT action,json_extract(payload,'$.jobId') jobId,json_extract(payload,'$.retainedFrom') retainedFrom FROM audit WHERE action='history.window.cancel_verified'")).toEqual({action:'history.window.cancel_verified',jobId:oldId,retainedFrom:'2026-09-13'});const audit=await store.all("SELECT * FROM audit WHERE action='history.window.cancel_verified'");await planHistoricalHourlyJobs(store,scope,now);expect(await store.all("SELECT * FROM audit WHERE action='history.window.cancel_verified'")).toEqual(audit);
+});
+it('does not cancel a historical job claimed between its audit and guarded cancellation',async()=>{
+ const {store,sourceId}=await setup(),id=`o:${sourceId}:hourly-history:2026-09-12`;await store.enqueue('o','kind-patches',sourceId,'hourly-history:2026-09-12',now.toISOString());const run=store.run.bind(store);let raced=false;
+ const spy=vi.spyOn(store,'run').mockImplementation(async(sql,...args)=>{if(!raced&&sql.includes("status='cancelled'")){raced=true;await run("UPDATE jobs SET status='running',leaseUntil=? WHERE id=?",'2026-10-13T16:00:00Z',id);}return run(sql,...args);});try{await planHistoricalHourlyJobs(store,scope,now);expect(await store.first('SELECT status,leaseUntil FROM jobs WHERE id=?',id)).toEqual({status:'running',leaseUntil:'2026-10-13T16:00:00Z'});}finally{spy.mockRestore();}
+});
+it.each(['2026-10-25T22:30:00Z','2026-10-25T23:30:00Z'])('uses thirty local calendar days across Stockholm DST at %s',async instant=>{
+ const {store}=await setup();await planHistoricalHourlyJobs(store,scope,new Date(instant));const dates=(await store.all<{id:string}>('SELECT id FROM jobs')).map(job=>job.id.slice(-10)).sort();expect(dates).toHaveLength(30);expect(dates[0]).toBe(instant.includes('22:30')?'2026-09-25':'2026-09-26');expect(dates.at(-1)).toBe(instant.includes('22:30')?'2026-10-24':'2026-10-25');
+});
+
+it('refuses cancellation without its matching durable audit even if the audit response reports success',async()=>{
+ const {store,sourceId}=await setup(),id=`o:${sourceId}:hourly-history:2026-09-12`;await store.enqueue('o','kind-patches',sourceId,'hourly-history:2026-09-12',now.toISOString());const run=store.run.bind(store),spy=vi.spyOn(store,'run').mockImplementation(async(sql,...args)=>sql.startsWith('INSERT INTO audit')?{meta:{changes:0}}:run(sql,...args));try{await planHistoricalHourlyJobs(store,scope,now);expect(await store.first('SELECT status FROM jobs WHERE id=?',id)).toEqual({status:'pending'});}finally{spy.mockRestore();}
 });

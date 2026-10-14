@@ -89,7 +89,7 @@ function chatPreview(input:AIContext,question:string,rowLimit:number,textLimit:n
    if(!namedReference&&!/\b(?:closed|yesterday|prior day|previous day|last week|weekday|historical|reference)\b/.test(q))for(const field of ['priorClosedDetail','closedPriorDay','weekday','previousDay'])removeReference(field);
    if(!/\b(?:channels?|meta|google|snapchat|applovin)\b/.test(q))removeReference('spendChannelTrend');
    if(!focus.has('creatives')&&!/\b(?:campaigns?|creatives?|cpc|cpm|ctr|clicks?|impressions?|pages?|landing|mix|cancellations?|cancel|subscriptions?|refunds?|recurring)\b/.test(q))removeReference('strategyDiagnoses');
-   if(!/\b(?:active|operational|customers?)\b/.test(q))removeReference('liveOperations');
+   if(!/\b(?:active|operational|customers?)\b/.test(q))for(const field of ['liveOperations','activeCustomerComparison'])removeReference(field);
    if(!/\b(?:findings?|reports?|reviews?|recommendations?|action items|watch list)\b/.test(q))removeReference('findings');
   }
   const datasets=(values:typeof client.datasetDetails,path:string)=>Object.fromEntries(Object.entries(values).filter(([dataset])=>{if(focus.has(dataset))return true;omit(`${prefix}.${path}.${dataset}`,'Outside the selected view and question focus; not checked in this chat preview');return false;}));

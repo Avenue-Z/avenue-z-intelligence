@@ -16,6 +16,7 @@ import {retryPublication} from '../jobs/publication-retry';
 import {fingerprint} from '../reviews/build';
 import {assertSourceActivation} from '../sources/registered-contract';
 import {expiredRechargeEventDay,completeRechargeEventDay,rechargeExactEventMetrics} from './recharge-event-retention';
+import {readActiveCustomerComparison} from './active-customer-comparison';
 type Db={prepare:(sql:string)=>any;batch:(statements:any[])=>Promise<any[]>;allowCrossRequestCoalescing?:boolean};
 // Vercel reuses a warm adapter; Sites owns a fresh adapter per Store. This
 // optional memory cache stays isolated while the durable cache is shared.
@@ -210,7 +211,7 @@ export class Store {
     // A warming deadline must never cancel a browser request coalesced on the
     // same key. Warming populates durable storage without joining that promise.
     const [cached,operations]=await Promise.all([pointers.length?(options?load().then(payload=>observationCodec.decode(payload)):observationCache(this.db).getEncoded(key,load)):Promise.resolve([]),
-      freshOperationalPointers.length?readPage<{payload:string}>(`SELECT json_extract(o.payload,'$') AS payload FROM json_each(?) p JOIN observations o ON o.snapshotId=json_extract(p.value,'$.snapshotId') AND o.date=json_extract(p.value,'$.date') WHERE json_extract(o.payload,'$.metric') IN ('active_customers','active_ads','active_creatives') ORDER BY o.date,o.rowKey`,JSON.stringify(freshOperationalPointers)).then(rows=>rows.map(row=>JSON.parse(row.payload) as Observation)):Promise.resolve([])]);
+      freshOperationalPointers.length?readPage<{payload:string}>(`SELECT json_extract(o.payload,'$') AS payload FROM json_each(?) p JOIN observations o ON o.snapshotId=json_extract(p.value,'$.snapshotId') AND o.date=json_extract(p.value,'$.date') WHERE json_extract(o.payload,'$.metric') IN ('active_customers','active_ads','active_creatives') ORDER BY o.date,o.rowKey`,JSON.stringify(freshOperationalPointers)).then(async rows=>{const operations=rows.map(row=>JSON.parse(row.payload) as Observation),current=operations.filter(row=>row.metric==='active_customers'&&row.quality==='complete').sort((a,b)=>b.date.localeCompare(a.date)||b.retrievedAt.localeCompare(a.retrievedAt))[0];if(current){const comparison=await readActiveCustomerComparison(this,org,client,current,options?.deadline);if(comparison)current.activeCustomerComparison=comparison;}return operations;}):Promise.resolve([])]);
     return operations.length?[...cached,...operations]:cached;
   }
   async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string},options?:{restoreMaterialization?:boolean;publicationDeadline?:number;factPageSize?:500}) {

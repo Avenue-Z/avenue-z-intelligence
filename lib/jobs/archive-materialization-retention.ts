@@ -5,14 +5,16 @@ import {serverSecret} from '../server/secrets';
 import type {Store} from '../server/store';
 import {validateBatch} from '../sources/qualification';
 import {DailyScheduler} from './scheduler';
+import {denseHourlyHistoryProviders,hourlyHistoryWindow} from './hourly-history';
+import {dayWindow} from '../analytics/windows';
 
 type ArchivedSnapshot={id:string;organizationId:string;clientId:string;sourceId:string;retrievedAt:string;coverageThrough:string|null;complete:number;status:string;objectKey:string;provider:string|null};
 type ArchiveContent={text:string;bytes:number;pathname:string;etag:string};
 export type ArchiveReader=(key:string,deadline:number)=>Promise<ArchiveContent>;
-type Options={maxSnapshots:number;maxRows:number;deadline:number;readArchive?:ArchiveReader};
+type Options={maxSnapshots:number;maxRows:number;deadline:number;readArchive?:ArchiveReader;monthlyRetention?:boolean};
 const MAX_ARCHIVE_BYTES=200*1024*1024;
 const MAX_CANDIDATE_PAGES=32;
-type MaintenanceResult={verifiedSnapshots:number;prunedSnapshots:number;rowsDeleted:number;charactersDeleted:number;projectionChunksDeleted:number;projectionEntriesDeleted?:number;skipped:number;deferred?:'current-source-work'|'deadline'|'database'|'candidate-page-limit';stage?:string;uncertainWrite?:boolean};
+type MaintenanceResult={verifiedSnapshots:number;prunedSnapshots:number;rowsDeleted:number;charactersDeleted:number;projectionChunksDeleted:number;projectionEntriesDeleted?:number;pointersRetired?:number;skipped:number;deferred?:'current-source-work'|'deadline'|'database'|'candidate-page-limit';stage?:string;uncertainWrite?:boolean};
 
 async function privateArchive(key:string,deadline:number):Promise<ArchiveContent>{
  const token=serverSecret('BLOB_READ_WRITE_TOKEN');if(!token)throw Error('Private archive is unavailable');
@@ -53,6 +55,15 @@ const protection=`s.organizationId=? AND s.clientId='kind-patches' AND s.status 
  AND NOT EXISTS(SELECT 1 FROM reviews r WHERE r.organizationId=s.organizationId AND r.clientId=s.clientId AND (instr(r.payload,s.id)>0 OR (instr(r.payload,s.sourceId)>0 AND instr(r.payload,s.retrievedAt)>0)))
  AND NOT EXISTS(SELECT 1 FROM ai_turns a WHERE a.organizationId=s.organizationId AND (instr(a.payload,s.id)>0 OR (instr(a.payload,s.sourceId)>0 AND instr(a.payload,s.retrievedAt)>0)))`;
 const currentWork=`SELECT 1 FROM jobs j JOIN connections c ON c.id=j.sourceId AND c.organizationId=j.organizationId AND c.clientId=j.clientId WHERE j.organizationId=? AND j.clientId='kind-patches' AND c.enabled=1 AND j.id NOT LIKE '%:hourly-history:____-__-__' AND j.status IN ('pending','running') AND j.dueAt<=?`;
+// Expired detailed date pointers have their own retirement step. This repeats
+// every capture protection except the pointer intentionally being retired;
+// materialization DELETEs continue to require no pointer anywhere.
+const retirementProtection=`s.organizationId=? AND s.clientId='kind-patches' AND s.status='ready' AND s.retrievedAt<?
+ AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.organizationId=s.organizationId AND j.clientId=s.clientId AND j.sourceId=s.sourceId AND j.status='running' AND j.leaseUntil>=?)
+ AND NOT EXISTS(SELECT 1 FROM scheduled_reviews r WHERE r.organizationId=s.organizationId AND r.clientId=s.clientId AND r.status='running' AND r.leaseUntil>=?)
+ AND NOT EXISTS(SELECT 1 FROM snapshot_day_projection_entries e WHERE e.snapshotId=s.id AND e.status='writing')
+ AND NOT EXISTS(SELECT 1 FROM reviews r WHERE r.organizationId=s.organizationId AND r.clientId=s.clientId AND (instr(r.payload,s.id)>0 OR (instr(r.payload,s.sourceId)>0 AND instr(r.payload,s.retrievedAt)>0)))
+ AND NOT EXISTS(SELECT 1 FROM ai_turns a WHERE a.organizationId=s.organizationId AND (instr(a.payload,s.id)>0 OR (instr(a.payload,s.sourceId)>0 AND instr(a.payload,s.retrievedAt)>0)))`;
 // A committed final fact page may lose its response before derived cleanup.
 // Revisit only its original recovery marker plus remaining scoped copies.
 const materialization=`(EXISTS(SELECT 1 FROM observations o WHERE o.snapshotId=s.id LIMIT 1) OR (EXISTS(SELECT 1 FROM audit a WHERE a.id='archive-materialization:'||s.id AND a.organizationId=s.organizationId AND a.clientId=s.clientId AND a.action='snapshot.materialization.archive_verified' AND json_extract(a.payload,'$.objectKey')=s.objectKey AND json_extract(a.payload,'$.originalRetrievedAt')=s.retrievedAt AND json_extract(a.payload,'$.originalCoverageThrough') IS s.coverageThrough) AND (EXISTS(SELECT 1 FROM snapshot_day_projection_chunks d WHERE d.organizationId=s.organizationId AND d.clientId=s.clientId AND d.snapshotId=s.id LIMIT 1) OR EXISTS(SELECT 1 FROM snapshot_day_projection_entries d WHERE d.organizationId=s.organizationId AND d.clientId=s.clientId AND d.snapshotId=s.id AND d.status='ready' LIMIT 1))))`;
@@ -72,6 +83,33 @@ export async function pruneArchivedMaterializations(store:Store,scope:AccessScop
   if(!token)return {...result,skipped:1};
   const cutoff=new Date(Date.now()-2*3600000).toISOString(),now=new Date().toISOString();
   const limit=Math.max(0,Math.min(8,options.maxSnapshots)),pageSize=Math.max(16,limit*4),priority="CASE WHEN c.provider='kind-shopify-traffic' THEN 0 WHEN c.provider='kind-meta-performance' THEN 1 WHEN c.provider IN ('kind-shopify-hourly','kind-shopify-funnels') THEN 2 ELSE 3 END",order=`${priority},s.retrievedAt,s.id`;
+  const client=options.monthlyRetention?(await store.clients(scope.organizationId)).find(value=>value.id==='kind-patches'):undefined;
+  if(options.monthlyRetention&&!client)return {...result,skipped:1};
+  const retained=client?hourlyHistoryWindow(client.timezone):undefined,operationalFrom=client&&retained?dayWindow(retained.from,client.timezone).start:undefined;
+  // Small stock captures support same-hour comparisons after their date pointer
+  // moves. Adding this predicate can only increase the original protections.
+  const operationalProtection=operationalFrom?" AND NOT EXISTS(SELECT 1 FROM connections oc WHERE oc.id=s.sourceId AND oc.organizationId=s.organizationId AND oc.clientId=s.clientId AND oc.provider='kind-recharge' AND s.retrievedAt>=?) AND EXISTS(SELECT 1 FROM clients WHERE organizationId=s.organizationId AND id=s.clientId AND timezone=? AND version=?)":'',safeProtection=protection+operationalProtection,operationalArgs=operationalFrom&&client?[operationalFrom,client.timezone,client.version]:[];
+  if(client&&retained&&limit&&options.maxRows>0){
+   type Pointer=ArchivedSnapshot&{pointerDate:string;pointerPublishedAt:string;pointerDataHash:string|null};
+   const retirementLimit=Math.max(1,Math.floor(limit/2));let cursor:{sourceId:string;date:string;id:string}|undefined,verifiedPointers=0;
+   for(let pages=0;pages<MAX_CANDIDATE_PAGES&&verifiedPointers<retirementLimit&&!result.deferred&&Date.now()<options.deadline;pages++){
+    const after=cursor?' AND (p.sourceId,p.date,s.id)>(?,?,?)':'',values=cursor?[cursor.sourceId,cursor.date,cursor.id]:[];
+    const pointers=await step('pointers.candidates',()=>store.all<Pointer>(`SELECT s.*,c.provider,p.date AS pointerDate,p.publishedAt AS pointerPublishedAt,p.dataHash AS pointerDataHash FROM current_snapshots p JOIN snapshots s ON s.id=p.snapshotId AND s.organizationId=p.organizationId AND s.clientId=p.clientId AND s.sourceId=p.sourceId JOIN connections c ON c.id=s.sourceId AND c.organizationId=s.organizationId AND c.clientId=s.clientId WHERE p.organizationId=? AND p.clientId='kind-patches' AND c.provider IN (SELECT value FROM json_each(?)) AND p.date<? AND s.status='ready' AND s.retrievedAt<? AND ${materialization}${after} ORDER BY p.sourceId,p.date,s.id LIMIT ?`,scope.organizationId,JSON.stringify([...denseHourlyHistoryProviders]),retained.from,cutoff,...values,pageSize));
+    if(!pointers.length)break;const last=pointers.at(-1)!;cursor={sourceId:last.sourceId,date:last.pointerDate,id:last.id};
+    for(const snapshot of pointers){
+     if(verifiedPointers>=retirementLimit||!await canWrite())break;snapshotId=snapshot.id;
+     const safety=()=>({sql:`EXISTS(SELECT 1 FROM snapshots s WHERE s.id=? AND s.objectKey=? AND s.retrievedAt=? AND s.sourceId=? AND s.complete=? AND s.coverageThrough IS ? AND ${retirementProtection}) AND EXISTS(SELECT 1 FROM clients WHERE organizationId=? AND id='kind-patches' AND timezone=? AND version=?) AND EXISTS(SELECT 1 FROM connections WHERE id=? AND organizationId=? AND clientId='kind-patches' AND provider=?) AND EXISTS(SELECT 1 FROM current_snapshots WHERE organizationId=? AND clientId='kind-patches' AND sourceId=? AND date=? AND date<? AND snapshotId=? AND publishedAt=? AND dataHash IS ?) AND EXISTS(SELECT 1 FROM runner_leases WHERE id=? AND token=? AND leaseUntil>=?) AND NOT EXISTS(${currentWork})`,args:[snapshot.id,snapshot.objectKey,snapshot.retrievedAt,snapshot.sourceId,snapshot.complete,snapshot.coverageThrough,scope.organizationId,cutoff,new Date().toISOString(),new Date().toISOString(),scope.organizationId,client.timezone,client.version,snapshot.sourceId,scope.organizationId,snapshot.provider,scope.organizationId,snapshot.sourceId,snapshot.pointerDate,retained.from,snapshot.id,snapshot.pointerPublishedAt,snapshot.pointerDataHash,leaseId,token,new Date().toISOString(),scope.organizationId,new Date().toISOString()]});
+     const before=safety();if(!await step('pointers.protection',()=>store.first(`SELECT 1 AS eligible WHERE ${before.sql}`,...before.args)))continue;
+     let verified;try{verified=await step('pointers.archive.verify',()=>verifiedArchive(store,snapshot,options.readArchive??privateArchive,options.deadline));if(!verified.batch.rows.some(row=>row.date===snapshot.pointerDate))throw Error('Archive does not contain the exact pointed date');verifiedPointers++;result.verifiedSnapshots++;}catch{result.skipped++;continue;}
+     if(!await canWrite())break;
+     const auditId=`archive-current-date:${snapshot.id}:${snapshot.pointerDate}:${await fingerprint([snapshot.pointerPublishedAt,snapshot.pointerDataHash])}`,proof=JSON.stringify({snapshotId:snapshot.id,sourceId:snapshot.sourceId,date:snapshot.pointerDate,publishedAt:snapshot.pointerPublishedAt,dataHash:snapshot.pointerDataHash,retainedFrom:retained.from,objectKey:snapshot.objectKey,archiveHash:verified.hash,archiveBytes:verified.archive.bytes,archiveEtag:verified.archive.etag,originalRetrievedAt:snapshot.retrievedAt,originalCoverageThrough:snapshot.coverageThrough}),auditGuard=safety();
+     await step('pointers.verification.audit',()=>store.run(`INSERT INTO audit(id,organizationId,clientId,actorId,action,payload,createdAt) SELECT ?,?,?,?,?,?,? WHERE ${auditGuard.sql} ON CONFLICT(id) DO NOTHING`,auditId,scope.organizationId,snapshot.clientId,scope.actorId,'snapshot.current_date.archive_verified',proof,new Date().toISOString(),...auditGuard.args));
+     if(!await canWrite())break;const deletionGuard=safety(),deleted=await step('pointers.delete',()=>store.run(`DELETE FROM current_snapshots WHERE organizationId=? AND clientId='kind-patches' AND sourceId=? AND date=? AND snapshotId=? AND publishedAt=? AND dataHash IS ? AND ${deletionGuard.sql} AND EXISTS(SELECT 1 FROM audit WHERE id=? AND organizationId=? AND clientId=? AND action='snapshot.current_date.archive_verified' AND payload=?)`,scope.organizationId,snapshot.sourceId,snapshot.pointerDate,snapshot.id,snapshot.pointerPublishedAt,snapshot.pointerDataHash,...deletionGuard.args,auditId,scope.organizationId,snapshot.clientId,proof));
+     if(deleted.meta.changes)result.pointersRetired=(result.pointersRetired??0)+deleted.meta.changes;
+    }
+    if(pointers.length<pageSize)break;
+   }
+  }
   // Bound expensive review/AI payload checks before evaluating protection.
   // A LIMIT after those correlated checks scans every old capture first.
   // Protected or unverifiable captures cannot starve a later valid archive.
@@ -81,10 +119,10 @@ export async function pruneArchivedMaterializations(store:Store,scope:AccessScop
    while(limit&&pages<MAX_CANDIDATE_PAGES&&!result.deferred&&result.verifiedSnapshots<limit&&result.rowsDeleted<options.maxRows&&Date.now()<options.deadline){
     pages++;
     const after:string=cursor?` AND (${priority},s.retrievedAt,s.id)>(?,?,?)`:'',values:(number|string)[]=cursor?[cursor.priority,cursor.retrievedAt,cursor.id]:[];
-    const page:ArchivedSnapshot[]=await step('candidates.read',()=>store.all<ArchivedSnapshot>(`SELECT s.*,c.provider FROM snapshots s LEFT JOIN connections c ON c.id=s.sourceId AND c.organizationId=s.organizationId WHERE s.organizationId=? AND s.clientId='kind-patches' AND s.status IN ('ready','writing') AND s.retrievedAt<? AND NOT EXISTS(SELECT 1 FROM current_snapshots p WHERE p.organizationId=s.organizationId AND p.clientId=s.clientId AND p.sourceId=s.sourceId AND p.snapshotId=s.id) AND ${materialization}${after} ORDER BY ${order} LIMIT ?`,scope.organizationId,cutoff,...values,pageSize));
+    const page:ArchivedSnapshot[]=await step('candidates.read',()=>store.all<ArchivedSnapshot>(`SELECT s.*,c.provider FROM snapshots s LEFT JOIN connections c ON c.id=s.sourceId AND c.organizationId=s.organizationId WHERE s.organizationId=? AND s.clientId='kind-patches' AND s.status IN ('ready','writing') AND s.retrievedAt<?${operationalProtection} AND NOT EXISTS(SELECT 1 FROM current_snapshots p WHERE p.organizationId=s.organizationId AND p.clientId=s.clientId AND p.sourceId=s.sourceId AND p.snapshotId=s.id) AND ${materialization}${after} ORDER BY ${order} LIMIT ?`,scope.organizationId,cutoff,...operationalArgs,...values,pageSize));
     if(!page.length||Date.now()>=options.deadline)return;
     const last:ArchivedSnapshot=page.at(-1)!;cursor={priority:last.provider==='kind-shopify-traffic'?0:last.provider==='kind-meta-performance'?1:['kind-shopify-hourly','kind-shopify-funnels'].includes(last.provider??'')?2:3,retrievedAt:last.retrievedAt,id:last.id};
-    const eligible=await step('candidates.protection',()=>store.all<ArchivedSnapshot>(`SELECT s.*,c.provider FROM snapshots s LEFT JOIN connections c ON c.id=s.sourceId AND c.organizationId=s.organizationId WHERE s.id IN (SELECT value FROM json_each(?)) AND ${protection} AND ${materialization} ORDER BY ${order} LIMIT ?`,JSON.stringify(page.map(snapshot=>snapshot.id)),scope.organizationId,cutoff,now,now,pageSize));
+    const eligible=await step('candidates.protection',()=>store.all<ArchivedSnapshot>(`SELECT s.*,c.provider FROM snapshots s LEFT JOIN connections c ON c.id=s.sourceId AND c.organizationId=s.organizationId WHERE s.id IN (SELECT value FROM json_each(?)) AND ${safeProtection} AND ${materialization} ORDER BY ${order} LIMIT ?`,JSON.stringify(page.map(snapshot=>snapshot.id)),scope.organizationId,cutoff,now,now,...operationalArgs,pageSize));
     for(const snapshot of eligible)yield snapshot;
     if(page.length<pageSize)return;
    }
@@ -96,7 +134,7 @@ export async function pruneArchivedMaterializations(store:Store,scope:AccessScop
    let verified;try{verified=await step('archive.verify',()=>verifiedArchive(store,snapshot,options.readArchive??privateArchive,options.deadline));result.verifiedSnapshots++;}catch{result.skipped++;continue;}
    let removed=0,characters=0,projectionChunks=0,projectionEntries=0,counted=false;
    const countPruned=()=>{if(!counted){result.prunedSnapshots++;counted=true;}};
-   const guard=(recovery=true)=>({sql:`EXISTS(SELECT 1 FROM snapshots s WHERE s.id=? AND s.objectKey=? AND s.retrievedAt=? AND s.sourceId=? AND s.complete=? AND s.coverageThrough IS ? AND s.status=? AND ${protection}) AND EXISTS(SELECT 1 FROM runner_leases WHERE id=? AND token=? AND leaseUntil>=?) AND NOT EXISTS(${currentWork})${recovery?" AND EXISTS(SELECT 1 FROM audit WHERE id=? AND organizationId=? AND clientId=? AND action='snapshot.materialization.archive_verified')":''}`,args:[snapshot.id,snapshot.objectKey,snapshot.retrievedAt,snapshot.sourceId,snapshot.complete,snapshot.coverageThrough,snapshot.status,scope.organizationId,cutoff,new Date().toISOString(),new Date().toISOString(),leaseId,token,new Date().toISOString(),scope.organizationId,new Date().toISOString(),...recovery?[`archive-materialization:${snapshot.id}`,scope.organizationId,snapshot.clientId]:[]]});
+   const guard=(recovery=true)=>({sql:`EXISTS(SELECT 1 FROM snapshots s WHERE s.id=? AND s.objectKey=? AND s.retrievedAt=? AND s.sourceId=? AND s.complete=? AND s.coverageThrough IS ? AND s.status=? AND ${safeProtection}) AND EXISTS(SELECT 1 FROM runner_leases WHERE id=? AND token=? AND leaseUntil>=?) AND NOT EXISTS(${currentWork})${recovery?" AND EXISTS(SELECT 1 FROM audit WHERE id=? AND organizationId=? AND clientId=? AND action='snapshot.materialization.archive_verified')":''}`,args:[snapshot.id,snapshot.objectKey,snapshot.retrievedAt,snapshot.sourceId,snapshot.complete,snapshot.coverageThrough,snapshot.status,scope.organizationId,cutoff,new Date().toISOString(),new Date().toISOString(),...operationalArgs,leaseId,token,new Date().toISOString(),scope.organizationId,new Date().toISOString(),...recovery?[`archive-materialization:${snapshot.id}`,scope.organizationId,snapshot.clientId]:[]]});
    // Publish the recovery marker before the first bounded delete. Ready replay
    // must fill missing rows even if a timeout leaves part of this day present.
    if(!await canWrite())break;
