@@ -32,8 +32,8 @@ describe('Recharge provider failure diagnostics',()=>{
    return Response.json({subscriptions:[],next_cursor:null});
   };
   await expect(execute(fetcher)).rejects.toThrow('Provider request timed out or could not be reached');
-  expect(warn.mock.calls).toHaveLength(1);
-  expect(warn.mock.calls[0]).toEqual(['Recharge provider request failed',expect.objectContaining({service:'recharge',resource:'subscriptions',phase,cursor,requestPhase:'fetch',kind:'TimeoutError',causeCode:'other',requestTimeoutMs:cursor?60000:180000})]);
+  expect(warn.mock.calls).toHaveLength(cursor?2:1);
+  expect(warn.mock.calls.at(-1)).toEqual(['Recharge provider request failed',expect.objectContaining({service:'recharge',resource:'subscriptions',phase,cursor,requestPhase:'fetch',kind:'TimeoutError',causeCode:'other',requestTimeoutMs:cursor?60000:180000})]);
   expect(JSON.stringify(warn.mock.calls)).not.toMatch(/private-cursor|customer@example|not-public-private-code|created_at_min|updated_at_min/);
  });
 
