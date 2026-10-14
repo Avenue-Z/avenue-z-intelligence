@@ -48,3 +48,15 @@ it('retains context flags and metadata through the observation cache codec',()=>
  const compacted=compact([base,{...base,value:2,start:'2026-10-10T02:00:00Z',end:'2026-10-10T03:00:00Z'}]);
  expect(observationCodec.decode(observationCodec.encode(compacted))).toEqual(compacted);
 });
+it('clips every historical store day before dense hourly rows are collapsed for live trends',()=>{
+ const live={...filters,mode:'partial' as const},rows=[base,{...base,value:900,start:'2026-10-10T01:00:00Z',end:'2026-10-10T02:00:00Z'},{...base,value:50,start:undefined,end:undefined}];
+ const accumulator=new TrendRollupAccumulator(live,{timezone:'UTC',cutoff:'2026-10-12T01:00:00Z',anchorDate:live.to});for(const row of rows)accumulator.add(row);
+ expect(accumulator.finish()).toHaveLength(1);expect(accumulator.finish()[0]).toMatchObject({value:10,start:'2026-10-10T00:00:00Z',end:'2026-10-10T01:00:00Z'});
+ expect(compact(rows,filters).map(row=>row.value)).toEqual([null,null]);expect(rows[1].value).toBe(900);
+});
+it('does not recast dense full-day context as live data without a confirmed hour',()=>{
+ const accumulator=new TrendRollupAccumulator({...filters,mode:'partial'});accumulator.add(base);expect(accumulator.finish()).toEqual([]);
+});
+it('keeps same-day midnight history empty instead of assuming next-midnight completion',()=>{
+ const accumulator=new TrendRollupAccumulator({...filters,mode:'partial'},{timezone:'UTC',cutoff:'2026-10-12T00:00:00Z',anchorDate:filters.to});accumulator.add(base);expect(accumulator.finish()).toEqual([]);
+});

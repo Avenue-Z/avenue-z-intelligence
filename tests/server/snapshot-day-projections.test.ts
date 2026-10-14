@@ -128,7 +128,7 @@ it('preserves qualified Revenue context, stream filtering and exact comparisons 
  expect(projected.queries.some(sql=>sql.includes('snapshot_day_projection_chunks'))).toBe(true);expect(rawReads(projected.queries)).toBeGreaterThan(0);
 });
 
-it('keeps a complete previous-day trend while retaining its separate matched hourly comparison',async()=>{
+it('keeps the previous-day live trend on the same matched hour as its comparison',async()=>{
  const {connect}=database(),store=new Store(connect()),client={...(clients[0] as Client),id:'a',timezone:'UTC'};
  await store.run("INSERT INTO clients(id,organizationId,name,slug,timezone,currency,color,config) VALUES('a','o','A','a','UTC','USD','blue',?)",JSON.stringify(client.config));
  await store.run("INSERT INTO connections(id,organizationId,clientId,name,provider,endpoint,secretRef,pollMinutes,enabled,version,coverageThrough) VALUES('source','o','a','Traffic','kind-shopify-traffic','','',60,1,1,'2026-10-12T01:00:00Z')");
@@ -138,5 +138,17 @@ it('keeps a complete previous-day trend while retaining its separate matched hou
  const observations=await store.observations('o','a',filters,false,undefined,{datasets:['traffic'],trendDatasets:['traffic'],includePriorWeek:false});
  const result=queryClient(client,observations,await store.connections('o','a'),filters,{preparedDatasets:['traffic']});
  expect(result.datasetSeries.traffic[0].summary.sessions).toBe(10);expect(result.comparisonDatasetSeries.traffic[0].summary.sessions).toBe(10);
- expect(result.trendDatasetSeries.traffic.find(point=>point.date==='2026-10-11')?.summary.sessions).toBe(100);
+ expect(result.trendDatasetSeries.traffic.find(point=>point.date==='2026-10-11')?.summary.sessions).toBe(10);
+});
+it('keeps complete earlier selected-period traffic totals alongside matched-hour chart context',async()=>{
+ const {connect}=database(),store=new Store(connect()),client={...(clients[0] as Client),id:'a',timezone:'UTC'};
+ await store.run("INSERT INTO clients(id,organizationId,name,slug,timezone,currency,color,config) VALUES('a','o','A','a','UTC','USD','blue',?)",JSON.stringify(client.config));
+ await store.run("INSERT INTO connections(id,organizationId,clientId,name,provider,endpoint,secretRef,pollMinutes,enabled,version,coverageThrough) VALUES('source','o','a','Traffic','kind-shopify-traffic','','',60,1,1,'2026-10-12T01:00:00Z')");
+ const rows:Observation[]=['2026-10-07','2026-10-08','2026-10-09','2026-10-10','2026-10-11','2026-10-12'].flatMap(date=>[0,1].flatMap(hour=>['sessions','converting_sessions'].map(metric=>({...batch().rows[0],date,metric,dataset:'traffic',currency:null,definition:'shopify_human_public_landing_page_traffic',population:'human_public_landing_page_sessions',value:metric==='sessions'?(hour?90:10):(hour?9:1),dimensions:{page:'/lp',market:'US',device:'mobile',source:'social',utm_source:'meta',utm_medium:'paid',utm_campaign:'c'},start:`${date}T0${hour}:00:00Z`,end:`${date}T0${hour+1}:00:00Z`}))));
+ await store.persistBatch('o','source',{...batch(),rows,grain:'hourly',coverageThrough:'2026-10-12T02:00:00Z'},'multiday-matched','2026-10-12T03:00:00Z');
+ const filters:QueryFilters={from:'2026-10-10',to:'2026-10-12',mode:'partial',compare:'previous',view:'traffic',market:'',device:'',page:'',source:'',stream:''},selection={datasets:['traffic'],trendDatasets:['traffic'],includePriorWeek:false};
+ const observations=await store.observations('o','a',filters,false,undefined,selection),result=queryClient(client,observations,await store.connections('o','a'),filters,{preparedDatasets:['traffic']});
+ expect(result.datasetSeries.traffic.map(point=>point.summary.sessions)).toEqual([100,100,10]);expect(result.comparisonDatasetSeries.traffic.map(point=>point.summary.sessions)).toEqual([100,100,10]);
+ expect(result.trendDatasetSeries.traffic.filter(point=>point.summary.sessions!==null).map(point=>[point.date,point.summary.sessions])).toEqual(['2026-10-07','2026-10-08','2026-10-09','2026-10-10','2026-10-11','2026-10-12'].map(date=>[date,10]));
+ expect(result.trendComparisonDatasetSeries.traffic.filter(point=>point.summary.sessions!==null).map(point=>point.summary.sessions)).toEqual([10,10,10]);
 });

@@ -115,6 +115,16 @@ it('restores exactly the original values and retrieval provenance from the verif
 it('bounds each maintenance call and retains projections until all corresponding raw rows are pruned',async()=>{
  const result=await pruneArchivedMaterializations(store,scope,{...options(),maxRows:1});expect(result.rowsDeleted).toBe(1);expect(await store.first('SELECT COUNT(*) AS n FROM observations WHERE snapshotId=?',oldId)).toEqual({n:2});expect(await store.first('SELECT COUNT(*) AS n FROM snapshot_day_projection_entries WHERE snapshotId=?',oldId)).toEqual({n:1});
 });
+it('uses direct rowid lookups for each guarded delete instead of rescanning the whole capture',async()=>{
+ const run=store.run.bind(store),all=store.all.bind(store),deletions:any[]=[],selections:any[]=[];
+ vi.spyOn(store,'run').mockImplementation(async(sql,...args)=>{if(sql.startsWith('DELETE FROM observations'))deletions.push(...sqlite.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args as any[]));return run(sql,...args);});
+ vi.spyOn(store,'all').mockImplementation(async(sql,...args)=>{if(sql.startsWith('SELECT rowid,length(payload)'))selections.push(...sqlite.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args as any[]));return all(sql,...args);});
+ expect((await pruneArchivedMaterializations(store,scope,options())).rowsDeleted).toBe(3);
+ expect(deletions.some(row=>/SEARCH observations USING INTEGER PRIMARY KEY \(rowid=\?\)/.test(row.detail))).toBe(true);
+ expect(deletions.some(row=>/SEARCH observations.*\(snapshotId=\?\)/.test(row.detail))).toBe(false);
+ expect(selections.some(row=>/SEARCH observations.*\(snapshotId=\?\)/.test(row.detail))).toBe(true);
+ expect(selections.some(row=>/TEMP B-TREE|SCAN observations/.test(row.detail))).toBe(false);
+});
 it('fills a partially pruned capture on verified archive replay without dropping its original provenance',async()=>{
  const before=await store.all('SELECT * FROM observations WHERE snapshotId=? ORDER BY date,rowKey',oldId);
  await pruneArchivedMaterializations(store,scope,{...options(),maxRows:1});await restoreArchivedMaterialization(store,scope,oldId,{readArchive:reader,deadline:Date.now()+60000});

@@ -1,6 +1,7 @@
 import type {Observation,QueryFilters} from './contracts';
 import type {FunnelRollupObservation} from './funnel-rollup';
 import {sanitizePage,sourceMarket} from '../sources/kind-patches';
+import {trendCutoffEnd,type TrendCutoff} from './trend-context';
 
 const dimensions=['market','source','device','page','stream'] as const;
 const denseDatasets=new Set(['traffic','funnels','products','markets']);
@@ -22,8 +23,13 @@ export class TrendRollupAccumulator {
  private groups=new Map<string,Group>();
  private contracts=new Map<string,Map<string,Group>>();
  private rows:FunnelRollupObservation[]=[];
- constructor(filters:QueryFilters){this.active=dimensions.filter(dimension=>!!filters[dimension]);}
+ private ends=new Map<string,number|null>();
+ constructor(private filters:QueryFilters,private cutoff?:TrendCutoff){this.active=dimensions.filter(dimension=>!!filters[dimension]);}
  add(input:Observation,sourceGrain?:ReturnType<typeof grain>){
+  if(this.filters.mode==='partial'){
+   if(!this.ends.has(input.date))this.ends.set(input.date,this.cutoff?trendCutoffEnd(input.date,this.cutoff):null);
+   const end=this.ends.get(input.date);if(end===null||end===undefined||!input.end||!Number.isFinite(Date.parse(input.end))||Date.parse(input.end)>end)return;
+  }
   const selected:Observation['dimensions']={};
   for(const dimension of this.active){const value=input.dimensions[dimension];if(value!==undefined)selected[dimension]=dimension==='market'?sourceMarket(value):dimension==='page'?sanitizePage(value):value;}
   const row:FunnelRollupObservation={...input,dimensions:selected,...input.channels?{channels:[...input.channels]}:{},contextOnly:true};

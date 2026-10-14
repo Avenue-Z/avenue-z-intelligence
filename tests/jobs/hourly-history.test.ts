@@ -44,6 +44,19 @@ it('retains valid hourly facts while scheduling legacy daily, missing and unread
  expect(reads.filter(read=>read.sql.includes('SELECT o.payload'))).toHaveLength(1);
  const plan=sqlite.prepare(`EXPLAIN QUERY PLAN ${lookup.sql}`).all(...lookup.values as any[]).map(row=>String(row.detail));expect(plan.some(detail=>detail.includes('SEARCH o USING INDEX')&&detail.includes('snapshotId=? AND date=?'))).toBe(true);
 });
+it('repairs a legacy full-day interval despite its matching registered hourly measurement',async()=>{
+ const {store,sourceId,profile}=await setup(),date='2026-10-12';
+ await pointer(store,sourceId,date,{...profile,start:'2026-10-11T22:00:00Z',end:'2026-10-12T22:00:00Z'});
+ expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(61);
+ expect(await store.first("SELECT status FROM jobs WHERE id LIKE '%:hourly-history:2026-10-12'")).toEqual({status:'pending'});
+});
+it('retains the legitimate two-hour interval in a repeated Stockholm store hour',async()=>{
+ const {store,sourceId,profile}=await setup(),date='2026-10-25';
+ await pointer(store,sourceId,date,{...profile,start:'2026-10-25T00:00:00Z',end:'2026-10-25T02:00:00Z'});
+ await store.run("UPDATE snapshots SET coverageThrough='2026-10-25T23:00:00Z'");
+ expect((await planHistoricalHourlyJobs(store,scope,new Date('2026-10-26T15:00:00Z'))).queued).toBe(60);
+ expect(await store.first("SELECT id FROM jobs WHERE id LIKE '%:hourly-history:2026-10-25'")).toBeNull();
+});
 it.each(['kind-meta-performance','kind-applovin'])('repairs %s legacy definitions even when the first fact contains an interval',async provider=>{
  const {store,sourceId,profile}=await setup(provider),fact={...profile,start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'};
  await pointer(store,sourceId,'2026-10-12',{...fact,definition:'old_daily_measurement'});await pointer(store,sourceId,'2026-10-11',fact);
@@ -106,4 +119,32 @@ it('retains Recharge history only when both creation and same-day cancellation p
 });
 it('does not activate Recharge history before the creation cohort profile expansion is qualified',async()=>{
  const {store}=await rechargeSetup(false);expect(await planHistoricalHourlyJobs(store,scope,now)).toEqual({eligibleSources:0,missingDays:0,queued:0});expect(await store.all('SELECT id FROM jobs')).toEqual([]);
+});
+async function whaleSetup(){
+ const result=await setup('kind-triple-whale'),{store,sourceId,contract}=result;
+ const profile={...result.profile,dataset:'overview'},profiles=[profile,...['revenue','orders','new_orders'].map(metric=>({...profile,dataset:'markets',metric,currency:metric==='revenue'?'USD':null,dimensions:['market']}))];
+ await store.saveQualification('o','kind-patches',sourceId,1,1,{...contract,profiles},'scheduler');return {...result,profile,profiles};
+}
+it('queues qualified Triple Whale country-market history independently of optional routine refreshes',async()=>{
+ const {store}=await whaleSetup();expect(await planHistoricalHourlyJobs(store,scope,now)).toEqual({eligibleSources:1,missingDays:61,queued:61});
+ expect((await store.all<{id:string}>('SELECT id FROM jobs ORDER BY dueAt')).slice(0,4).map(job=>job.id.split(':').at(-1))).toEqual(['2026-10-12','2026-10-06','2026-09-15','2026-09-13']);
+});
+it.each(['missing','daily','grouped','unregistered'])('repairs a Triple Whale hourly headline with %s country-market observations',async kind=>{
+ const {store,sourceId,profile,profiles}=await whaleSetup(),date='2026-10-12',interval={start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'};
+ await pointer(store,sourceId,date,{...profile,...interval});
+ if(kind!=='missing')for(const marketProfile of profiles.slice(1)){
+  const fact={...marketProfile,date,value:1,quality:'complete',dimensions:{market:kind==='grouped'?'Germany / Spain / Mexico / NL':'US'},...kind==='daily'?{}:interval,...kind==='unregistered'?{definition:'legacy_unqualified'}:{}};
+  await store.run('INSERT INTO observations(snapshotId,date,rowKey,payload) VALUES(?,?,?,?)',`snapshot:o:${sourceId}:${date}`,date,marketProfile.metric,JSON.stringify(fact));
+ }
+ expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(61);
+ expect(await store.first("SELECT status FROM jobs WHERE id LIKE '%:hourly-history:2026-10-12'")).toEqual({status:'pending'});
+});
+it('retains qualified Triple Whale country history only when every required hourly market measure exists',async()=>{
+ const {store,sourceId,profile,profiles}=await whaleSetup(),date='2026-10-12',interval={start:'2026-10-11T22:00:00Z',end:'2026-10-11T23:00:00Z'};
+ await pointer(store,sourceId,date,{...profile,...interval});
+ const id=`snapshot:o:${sourceId}:${date}`;
+ for(const marketProfile of profiles.slice(1))await store.run('INSERT INTO observations(snapshotId,date,rowKey,payload) VALUES(?,?,?,?)',id,date,marketProfile.metric,JSON.stringify({...marketProfile,date,value:1,quality:'complete',dimensions:{market:'US'},...interval}));
+ expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(60);expect(await store.first("SELECT id FROM jobs WHERE id LIKE '%:hourly-history:2026-10-12'")).toBeNull();
+ await store.run("DELETE FROM observations WHERE snapshotId=? AND rowKey='orders'",id);
+ expect((await planHistoricalHourlyJobs(store,scope,now)).queued).toBe(1);expect(await store.first("SELECT status FROM jobs WHERE id LIKE '%:hourly-history:2026-10-12'")).toEqual({status:'pending'});
 });

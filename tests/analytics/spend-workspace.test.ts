@@ -19,3 +19,29 @@ it('colors measurable ad-spend cost declines favorably and increases unfavorably
   const card=html.match(/<span>AD SPEND<\/span>[\s\S]*?<\/div>/)?.[0]??'';expect(card).toContain(`data-tone="${tone}"`);expect(card).toContain('vs yesterday');
  }
 });
+it('compares the actual union of paid channels without replacing absent current or prior spend with zero',()=>{
+ const base={...workspacePresentation(queryClient(client,[],[],filters),filters),reviews:[],findings:[],note:{body:'',version:0}};
+ const spend=(channel:string,value:number)=>({dimensions:{channel},metrics:{spend:value}});
+ const record={...base,views:{...base.views,media:{details:[spend('facebook',30),spend('Meta',50),spend('Google',50)]}},comparisonViews:{...base.comparisonViews,media:{details:[spend('meta',100),spend('TikTok',20)]}}} as unknown as Parameters<typeof SpendWorkspace>[0]['record'];
+ const original=JSON.stringify(record),html=renderToStaticMarkup(createElement(SpendWorkspace,{record,filters}));
+ const channelTable=html.match(/<table[^>]*aria-label="Channel spend comparison"[\s\S]*?<\/table>/)?.[0]??'';
+ const meta=channelTable.match(/<tr><td>Meta<\/td>[\s\S]*?<\/tr>/)?.[0]??'',google=channelTable.match(/<tr><td>Google<\/td>[\s\S]*?<\/tr>/)?.[0]??'',tiktok=channelTable.match(/<tr><td>TikTok<\/td>[\s\S]*?<\/tr>/)?.[0]??'';
+ expect(meta).toContain('$80.00');expect(meta).toContain('$100.00');expect(meta).toContain('Decreased -20.0% vs yesterday');expect(meta).toContain('data-tone="favorable"');
+ expect(google).toContain('$50.00');expect(google).toContain('— vs yesterday');expect(google).not.toContain('Infinity');
+ expect(tiktok).toContain('<td>Unavailable</td>');expect(tiktok).toContain('$20.00');expect(tiktok).not.toContain('-100.0%');
+ expect(channelTable).not.toContain('facebook');expect(JSON.stringify(record)).toBe(original);
+});
+it('retains a confirmed zero channel-spend observation as a measurable decline',()=>{
+ const base={...workspacePresentation(queryClient(client,[],[],filters),filters),reviews:[],findings:[],note:{body:'',version:0}},spend=(value:number)=>({dimensions:{channel:'Snapchat'},metrics:{spend:value}});
+ const record={...base,views:{...base.views,media:{details:[spend(0)]}},comparisonViews:{...base.comparisonViews,media:{details:[spend(10)]}}} as unknown as Parameters<typeof SpendWorkspace>[0]['record'];
+ const html=renderToStaticMarkup(createElement(SpendWorkspace,{record,filters})),channelTable=html.match(/<table[^>]*aria-label="Channel spend comparison"[\s\S]*?<\/table>/)?.[0]??'';
+ expect(channelTable).toContain('$0.00');expect(channelTable).toContain('$10.00');expect(channelTable).toContain('Decreased -100.0% vs yesterday');expect(channelTable).toContain('data-tone="favorable"');
+});
+it('retains qualified prior channel spend through the real analytics presentation pipeline',()=>{
+ const observations=[{date:'2026-10-07',value:80},{date:'2026-10-06',value:100}].map(({date,value})=>({date,value,dataset:'media',metric:'spend',dimensions:{channel:'facebook-ads'},definition:'triple_whale_channel_spend',population:'paid_media',currency:'USD',sourceId:'whale',quality:'complete' as const,retrievedAt:'2026-10-08T10:00:00Z',coverageThrough:'2026-10-08T00:00:00Z'}));
+ const analytics=queryClient(client,observations,[],filters,{preparedDatasets:['overview','subscriptions','subscriptionEvents','media']}),record={...workspacePresentation(analytics,filters),reviews:[],findings:[],note:{body:'',version:0}};
+ const html=renderToStaticMarkup(createElement(SpendWorkspace,{record,filters})),channelTable=html.match(/<table[^>]*aria-label="Channel spend comparison"[\s\S]*?<\/table>/)?.[0]??'';
+ expect(channelTable).toContain('<td>Meta</td>');expect(channelTable).toContain('$80.00');expect(channelTable).toContain('$100.00');
+ expect(channelTable).toContain('Decreased -20.0% vs yesterday');expect(channelTable).toContain('data-tone="favorable"');
+ expect(channelTable).not.toContain('— vs yesterday');
+});

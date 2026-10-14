@@ -9,7 +9,7 @@ import {preferredObservations} from './source-precedence';
 import {sanitizePage,sourceMarket} from '../sources/kind-patches';
 import {compatibleZeroDenominatorRates} from './rate-qualification';
 import {confirmedIntradayCutoff} from './intraday-coverage';
-import {trendContextRange} from './trend-context';
+import {trendContextRange,trendCutoffEnd} from './trend-context';
 import type {FunnelRollupObservation} from './funnel-rollup';
 export function filtered(rows:Observation[],f:Partial<QueryFilters>) {return rows.filter(r=>(!f.from||r.date>=f.from)&&(!f.to||r.date<=f.to)&&['market','stream','source','device','page'].every(k=>!(f as any)[k]||r.dimensions[k]===(f as any)[k]));}
 export function sumMetric(rows:Observation[],metric:string) {const r=rows.filter(x=>x.metric===metric);if(metric.endsWith('_rate')&&r.length>1)return null;if(new Set(r.map(x=>x.population)).size>1||new Set(r.map(x=>JSON.stringify(Object.keys(x.dimensions??{}).sort()))).size>1)return null;const seen=new Set<string>();for(const x of r){const key=JSON.stringify([x.date,x.start,x.end,Object.entries(x.dimensions??{}).sort()]);if(seen.has(key))return null;seen.add(key);}return compatibleTotal(r);}
@@ -106,13 +106,14 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
   const availableDimensions=Object.fromEntries(['market','stream','source','device','page'].map(k=>[k,[...new Set(dimensionRows.flatMap(r=>r.dimensions[k]?[r.dimensions[k]]:[]))].sort()]));
   const dailyDatasetNames=['overview','funnels','traffic','revenue','markets','products','subscriptions','subscriptionEvents','media'],dailyDatasets=options.preparedDatasets?dailyDatasetNames.filter(name=>options.preparedDatasets!.includes(name)):dailyDatasetNames;
   const prepareSeries=options.prepareAllViews||options.preparedDatasets!==undefined;
-  function qualifiedDailySeries(rows:Observation[],from:string,to:string,lastEnd:number){
+  const trendEnds=new Map<string,number|null>(),matchedTrendEnd=(date:string)=>{if(!trendEnds.has(date))trendEnds.set(date,trendCutoffEnd(date,{timezone:client.timezone,cutoff,anchorDate:f.to}));return trendEnds.get(date)??null;};
+  function qualifiedDailySeries(rows:Observation[],from:string,to:string,lastEnd:number,normalizedContext=false){
     const result=buildDatasetSeries(rows,from,to,dailyDatasets),overviewDays=new Map<string,Observation[]>();
     for(const row of rows)if(row.dataset==='overview'){const values=overviewDays.get(row.date);if(values)values.push(row);else overviewDays.set(row.date,[row]);}
-    for(const point of result.overview??[]){const day=overviewDays.get(point.date)??[],spend=day.filter(row=>row.metric==='spend'),end=f.mode==='partial'&&point.date===to?lastEnd:Date.parse(dayWindow(point.date,client.timezone).end);
+    for(const point of result.overview??[]){const day=overviewDays.get(point.date)??[],spend=day.filter(row=>row.metric==='spend'),end=f.mode==='partial'&&normalizedContext?matchedTrendEnd(point.date):f.mode==='partial'&&point.date===to?lastEnd:Date.parse(dayWindow(point.date,client.timezone).end);
       // Use the existing store-day qualification for both current and comparison
       // charts; a raw arithmetic ratio cannot become qualified MER through a view.
-      const qualified=day.length>0&&covered(day,point.date,point.date,end)&&day.filter(row=>row.metric==='revenue').every(row=>row.definition===client.config.revenueDefinition)&&client.config.spendChannels.length>0&&spend.length>0&&spend.every(row=>client.config.spendChannels.every(channel=>(row.channels??[]).includes(channel)));
+      const qualified=end!==null&&day.length>0&&covered(day,point.date,point.date,end)&&day.filter(row=>row.metric==='revenue').every(row=>row.definition===client.config.revenueDefinition)&&client.config.spendChannels.length>0&&spend.length>0&&spend.every(row=>client.config.spendChannels.every(channel=>(row.channels??[]).includes(channel)));
       if(!qualified)point.summary.mer=null;
     }
     return result;
@@ -122,31 +123,24 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
   const contextDates=new Set(fullDayContext.map(row=>`${row.dataset}:${row.date}`));
   const contextualEvidence:Observation[]=[...capable.filter(row=>!contextDates.has(`${row.dataset}:${row.date}`)),...preferredObservations(fullDayContext,{timezone:client.timezone}).map(row=>({...row,dimensions:{...row.dimensions,...row.dimensions.market?{market:sourceMarket(row.dimensions.market)}:{},...row.dimensions.page?{page:sanitizePage(row.dimensions.page)}:{}}}))];
   const unsupportedContext=new Set(contextualEvidence.filter(row=>activeFilters.some(dimension=>row.dimensions[dimension]===undefined)).map(row=>`${row.date}:${row.dataset}:${row.metric}`));
-  const contextualRows=(from:string,to:string,lastEnd:number)=>filtered(contextualEvidence,{...f,from,to}).filter(row=>{
+  const withinTrendHour=(row:Observation)=>{const end=matchedTrendEnd(row.date);return end!==null&&!!row.end&&Date.parse(row.end)<=end;};
+  const contextualRows=(from:string,to:string)=>filtered(contextualEvidence,{...f,from,to}).filter(row=>{
     if(unsupportedContext.has(`${row.date}:${row.dataset}:${row.metric}`))return false;
     if(f.mode==='closed')return row.date<today;
-    if(row.date<to)return !row.end||Date.parse(row.end)<=Date.parse(dayWindow(row.date,client.timezone).end);
-    return !!cutoff&&!!row.end&&Date.parse(row.end)<=lastEnd;
+    return withinTrendHour(row);
   });
-  const trendDatasetSeries=prepareSeries?qualifiedDailySeries(contextualRows(trendRange.from,trendRange.to,currentEnd),trendRange.from,trendRange.to,currentEnd):{};
-  const trendComparisonDatasetSeries=prepareSeries?qualifiedDailySeries(contextualRows(trendRange.comparisonFrom,trendRange.comparisonTo,previousEnd),trendRange.comparisonFrom,trendRange.comparisonTo,previousEnd):{};
+  const trendDatasetSeries=prepareSeries?qualifiedDailySeries(contextualRows(trendRange.from,trendRange.to),trendRange.from,trendRange.to,currentEnd,true):{};
+  const trendComparisonDatasetSeries=prepareSeries?qualifiedDailySeries(contextualRows(trendRange.comparisonFrom,trendRange.comparisonTo),trendRange.comparisonFrom,trendRange.comparisonTo,previousEnd,true):{};
   const datasetHourlySeries=prepareSeries&&f.from===f.to?buildDatasetHourlySeries(current,f.to,client.timezone,dailyDatasets,new Date(currentEnd).toISOString()):{},comparisonDatasetHourlySeries=prepareSeries&&comparison.from===comparison.to?buildDatasetHourlySeries(previous,comparison.to,client.timezone,dailyDatasets,new Date(previousEnd).toISOString()):{};
-  const historyClock=f.mode==='partial'&&cutoff?Temporal.Instant.from(cutoff).toZonedDateTimeISO(client.timezone).toPlainTime():null;
   const marketHistory=prepareSeries&&dailyDatasets.includes('markets')?filtered(capable,{...f,from:shiftDate(f.from,-1)}).filter(row=>{
     if(row.dataset!=='markets')return false;
     if(f.mode==='closed')return row.date<today;
-    if(row.date<f.to)return !row.end||Date.parse(row.end)<=Date.parse(dayWindow(row.date,client.timezone).end);
-    if(!historyClock||!row.end)return false;
-    const end=Temporal.PlainDate.from(row.date).toZonedDateTime({timeZone:client.timezone,plainTime:historyClock});
-    return Date.parse(row.end)<=Number(end.epochMilliseconds);
+    return withinTrendHour(row);
   }):[];
   const revenueHistory=prepareSeries&&dailyDatasets.includes('revenue')?filtered(capable,{...f,from:shiftDate(f.to,-29)}).filter(row=>{
     if(row.dataset!=='revenue')return false;
     if(f.mode==='closed')return row.date<today;
-    if(row.date<f.to)return !row.end||Date.parse(row.end)<=Date.parse(dayWindow(row.date,client.timezone).end);
-    if(!historyClock||!row.end)return false;
-    const end=Temporal.PlainDate.from(row.date).toZonedDateTime({timeZone:client.timezone,plainTime:historyClock});
-    return Date.parse(row.end)<=Number(end.epochMilliseconds);
+    return withinTrendHour(row);
   }):[];
   const datasetHistorySeries={...prepareSeries&&dailyDatasets.includes('markets')?buildDatasetSeries(marketHistory,shiftDate(f.from,-1),f.to,['markets']):{},...prepareSeries&&dailyDatasets.includes('revenue')?buildDatasetSeries(revenueHistory,shiftDate(f.to,-29),f.to,['revenue']):{}};
   return {client,metrics,prior,comparison,verdict,series,datasetSeries,comparisonDatasetSeries,trendDatasetSeries,trendComparisonDatasetSeries,datasetHourlySeries,comparisonDatasetHourlySeries,datasetHistorySeries,details,actions,opportunities,views,preparedDatasets:[...new Set(datasets)],datasetMetrics:views[dataset]?.viewMetrics??summarize([]),activeIncidents,warnings,cutoff,availableDimensions,evidence:current,comparisonEvidence:previous,connections,selectedCount:current.length,liveOperations,subscriptions:subscriptionComparison(filtered(all,{...f,from:undefined,to:undefined}),f.to,client.config.incidents,f.mode==='partial'?{timezone:client.timezone,cutoff}:undefined)};

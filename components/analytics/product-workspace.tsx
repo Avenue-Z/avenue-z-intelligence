@@ -17,7 +17,8 @@ const metrics:ChartMetric[]=[{key:'revenue',label:'Net sales',unit:'currency'},{
 export function productChartContext(record:ProductRecord,filters:QueryFilters,window:TrendContextMode){
  const dates=trendContextRange(filters,window,record.comparison.from),range={from:dates.from,to:dates.to},comparisonRange={from:dates.comparisonFrom,to:dates.comparisonTo};
  const flatten=(rows:ProductDay[]):MetricSeriesPoint[]=>rows.map(point=>({date:point.date,...point.metrics,...point.summary}));
- return {range,comparisonRange,series:flatten(contextSeries(record.datasetSeries?.products??[],record.trendDatasetSeries?.products??[],range)),comparisonSeries:flatten(contextSeries(record.comparisonDatasetSeries?.products??[],record.trendComparisonDatasetSeries?.products??[],comparisonRange))};
+ const matched=filters.mode==='partial'&&window!=='selected';
+ return {range,comparisonRange,series:flatten(contextSeries(record.datasetSeries?.products??[],record.trendDatasetSeries?.products??[],range,matched)),comparisonSeries:flatten(contextSeries(record.comparisonDatasetSeries?.products??[],record.trendComparisonDatasetSeries?.products??[],comparisonRange,matched))};
 }
 
 export function ProductWorkspace({record,filters}:{record:ProductRecord;filters:QueryFilters}){

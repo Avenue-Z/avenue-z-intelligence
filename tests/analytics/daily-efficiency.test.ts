@@ -23,14 +23,15 @@ it('qualifies both matched partial-day MER points against their own normalized c
  const hourly=['2026-10-11','2026-10-12'].flatMap(date=>Array.from({length:13},(_,hour)=>rows(date).map(row=>({...row,start:`${date}T${String(hour).padStart(2,'0')}:00:00Z`,end:`${date}T${String(hour+1).padStart(2,'0')}:00:00Z`,coverageThrough:'2026-10-12T13:00:00Z'}))).flat());
  const result=queryClient(client,hourly,[partialConnection()],{...filters,from:'2026-10-12',to:'2026-10-12',mode:'partial'},{prepareAllViews:true});expect(result.datasetSeries.overview[0].summary.mer).toBe(2);expect(result.comparisonDatasetSeries.overview[0].summary.mer).toBe(2);
 });
-it('retains full closed market totals before the final live calendar day',()=>{
+it('keeps daily-only market totals in closed history without recasting them as matched-hour live values',()=>{
  const market:Observation={...rows('2026-10-10')[0],dataset:'markets',dimensions:{market:'US'},value:990};
- const result=queryClient(client,[...rows(filters.to),market],[partialConnection()],{...filters,mode:'partial',view:'markets'},{prepareAllViews:true});expect(result.datasetHistorySeries.markets[0].summary.revenue).toBe(990);
+ const result=queryClient(client,[...rows(filters.to),market],[partialConnection()],{...filters,mode:'partial',view:'markets'},{prepareAllViews:true});expect(result.datasetHistorySeries.markets[0].summary.revenue).toBeNull();
+ expect(queryClient(client,[market],[],{...filters,view:'markets'},{prepareAllViews:true}).datasetHistorySeries.markets[0].summary.revenue).toBe(990);
 });
-it('shows full prior-day market history while the latest day uses its live cutoff',()=>{
+it('matches prior-day market history to the same live hour instead of retaining later orders',()=>{
  const market:Observation={...rows('2026-10-10')[0],dataset:'markets',dimensions:{market:'US'},value:100,start:'2026-10-10T09:00:00Z',end:'2026-10-10T10:00:00Z'};
  const late={...market,value:200,start:'2026-10-10T18:00:00Z',end:'2026-10-10T19:00:00Z'};
- const result=queryClient(client,[...rows(filters.to),market,late],[partialConnection()],{...filters,mode:'partial',view:'markets'},{prepareAllViews:true});expect(result.datasetHistorySeries.markets[0].summary.revenue).toBe(300);
+ const result=queryClient(client,[...rows(filters.to),market,late],[partialConnection()],{...filters,mode:'partial',view:'markets'},{prepareAllViews:true});expect(result.datasetHistorySeries.markets[0].summary.revenue).toBe(100);
 });
 
 it('qualifies closed periods using each independently captured day end',()=>{

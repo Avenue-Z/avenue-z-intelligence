@@ -16,7 +16,8 @@ vi.mock('../../lib/sources/kind-fetch',()=>({fetchKindSource:async(source:{id:st
  if(state.enqueueCurrentDuringCapture&&state.captures.length===1)await state.store!.enqueue('o','kind-patches',source.id,'current-during-history',new Date().toISOString());
  if(state.parallel){if(state.active.size===2)state.release?.();else await state.waiting;}
  state.active.delete(source.provider);
- return {clientId:client.id,timezone:client.timezone,currency:client.currency,channels:[],dimensions:[],grain:'hourly',complete:!state.partial,coverageThrough:`${window.to}T22:00:00Z`,rows:source.provider==='kind-recharge-cancellations'?['subscription_cancellations','new_subscriptions','same_day_subscription_cancellations'].map(metric=>({date:window.to,dataset:'subscriptionEvents',metric,value:metric==='new_subscriptions'?100:5,definition:'qualified',population:'population',currency:null,dimensions:{},start:`${window.to}T20:00:00Z`,end:`${window.to}T21:00:00Z`,sourceId:source.provider,retrievedAt:new Date().toISOString(),coverageThrough:`${window.to}T22:00:00Z`,quality:'complete' as const})):[{date:window.to,dataset:'revenue',metric:'revenue',value:42.25,definition:'qualified',population:'population',currency:'USD',dimensions:{},start:`${window.to}T20:00:00Z`,end:`${window.to}T21:00:00Z`,sourceId:source.provider,retrievedAt:new Date().toISOString(),coverageThrough:`${window.to}T22:00:00Z`,quality:'complete'}]} satisfies SourceBatch;
+ const base={date:window.to,value:42.25,definition:'qualified',population:'population',start:`${window.to}T20:00:00Z`,end:`${window.to}T21:00:00Z`,sourceId:source.provider,retrievedAt:new Date().toISOString(),coverageThrough:`${window.to}T22:00:00Z`,quality:'complete' as const};
+ return {clientId:client.id,timezone:client.timezone,currency:client.currency,channels:[],dimensions:source.provider==='kind-triple-whale'?['market']:[],grain:'hourly',complete:!state.partial,coverageThrough:`${window.to}T22:00:00Z`,rows:source.provider==='kind-recharge-cancellations'?['subscription_cancellations','new_subscriptions','same_day_subscription_cancellations'].map(metric=>({...base,dataset:'subscriptionEvents',metric,value:metric==='new_subscriptions'?100:5,currency:null,dimensions:{}})):source.provider==='kind-triple-whale'?['revenue','orders','new_orders'].map(metric=>({...base,dataset:'markets',metric,value:metric==='revenue'?42.25:2,currency:metric==='revenue'?'USD':null,dimensions:{market:'US'}})):[{...base,dataset:'revenue',metric:'revenue',currency:'USD',dimensions:{}}]} satisfies SourceBatch;
 }}));
 import {runHourlyHistoryBatch,hourlyHistoryTick} from '../../lib/jobs/run-hourly-history';
 
@@ -31,7 +32,7 @@ beforeEach(async()=>{
 afterEach(()=>{vi.restoreAllMocks();vi.useRealTimers();state.sqlite?.close();});
 async function source(id:string,provider='kind-shopify-sales',date='2026-10-12'){
  const store=state.store!;await store.run("INSERT INTO connections VALUES(?,?,?,?,?,?,?,?,1,?,?,NULL,1)",id,'o',client.id,'Source',provider,'https://example.com','PRIVATE',60,'2026-10-13T17:00:00Z','2026-10-13T17:00:00Z');
- const profile={dataset:'revenue',metric:'revenue',definition:'qualified',population:'population',currency:'USD',dimensions:[],hourly:true};await store.saveQualification('o',client.id,id,1,1,{clientId:client.id,queryId:`${provider}:hourly-v2`,timezone:client.timezone,currency:client.currency,hourlyGrain:true,requiresHourly:true,channels:[],requiredChannels:[],dimensions:[],requiredDimensions:[],paginationComplete:true,reconciled:true,reconciliationEvidence:'Independent same-window reconciliation',profiles:provider==='kind-recharge-cancellations'?['subscription_cancellations','new_subscriptions','same_day_subscription_cancellations'].map(metric=>({...profile,dataset:'subscriptionEvents',metric,currency:null})):[profile]},'scheduler');
+ const profile={dataset:'revenue',metric:'revenue',definition:'qualified',population:'population',currency:'USD',dimensions:[],hourly:true};await store.saveQualification('o',client.id,id,1,1,{clientId:client.id,queryId:`${provider}:hourly-v2`,timezone:client.timezone,currency:client.currency,hourlyGrain:true,requiresHourly:true,channels:[],requiredChannels:[],dimensions:[],requiredDimensions:[],paginationComplete:true,reconciled:true,reconciliationEvidence:'Independent same-window reconciliation',profiles:provider==='kind-recharge-cancellations'?['subscription_cancellations','new_subscriptions','same_day_subscription_cancellations'].map(metric=>({...profile,dataset:'subscriptionEvents',metric,currency:null})):provider==='kind-triple-whale'?['revenue','orders','new_orders'].map(metric=>({...profile,dataset:'markets',metric,currency:metric==='revenue'?'USD':null,dimensions:['market']})):[profile]},'scheduler');
  await store.enqueue('o',client.id,id,`hourly-history:${date}`,new Date().toISOString());
 }
 
@@ -107,6 +108,19 @@ it('captures a qualified Recharge closed day through the existing history worker
 });
 it('leaves Recharge historical cohorts pending below their three-minute start budget',async()=>{
  await source('recharge','kind-recharge-cancellations');const store=state.store!,result=await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+179999});expect(result).toMatchObject({completed:[],failed:[]});expect(state.captures).toEqual([]);expect(await store.first('SELECT status,attempts FROM jobs')).toEqual({status:'pending',attempts:0});
+});
+it('captures qualified closed Triple Whale country history without altering live source freshness',async()=>{
+ await source('whale','kind-triple-whale');const store=state.store!,before=await store.all('SELECT * FROM connections');
+ const result=await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+200000});
+ expect(result).toMatchObject({completed:['o:whale:hourly-history:2026-10-12'],failed:[]});
+ expect(state.captures).toEqual([{provider:'kind-triple-whale',date:'2026-10-12'}]);
+ expect(await store.all('SELECT * FROM connections')).toEqual(before);expect(await store.first('SELECT COUNT(*) n FROM observations')).toEqual({n:3});
+ expect(await store.first('SELECT date FROM current_snapshots')).toEqual({date:'2026-10-12'});
+});
+it('leaves the seven-query Triple Whale history capture pending when its required start budget is unavailable',async()=>{
+ await source('whale','kind-triple-whale');const store=state.store!;
+ const result=await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+199999});
+ expect(result).toMatchObject({completed:[],failed:[]});expect(state.captures).toEqual([]);expect(await store.first('SELECT status,attempts FROM jobs')).toEqual({status:'pending',attempts:0});
 });
 it('refuses legacy Recharge history jobs until both new cohort profiles are qualified',async()=>{
  await source('recharge','kind-recharge-cancellations');const store=state.store!,q=await store.qualification('o','recharge');await store.saveQualification('o',client.id,'recharge',1,1,{...q!.payload,profiles:q!.payload.profiles.slice(0,1)},'scheduler');expect((await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+700000})).completed).toEqual([]);expect(state.captures).toEqual([]);expect(await store.first('SELECT status,attempts FROM jobs')).toEqual({status:'pending',attempts:0});

@@ -89,7 +89,9 @@ export async function pruneArchivedMaterializations(store:Store,scope:AccessScop
     if(Date.now()>=options.deadline||result.rowsDeleted>=options.maxRows)break;
     const limit=Math.min(2000,options.maxRows-result.rowsDeleted),rows=await store.all<{rowid:number;characters:number}>('SELECT rowid,length(payload) AS characters FROM observations WHERE snapshotId=? ORDER BY date,rowKey LIMIT ?',snapshot.id,limit);
     if(!rows.length)break;const safety=guard();
-    const deletion=await store.run(`DELETE FROM observations WHERE snapshotId=? AND rowid IN (SELECT value FROM json_each(?)) AND ${safety.sql}`,snapshot.id,JSON.stringify(rows.map(row=>row.rowid)),...safety.args);
+    // Select by the snapshot index above, then delete only these rowids. The
+    // snapshot index would otherwise rescan every remaining row on each page.
+    const deletion=await store.run(`DELETE FROM observations NOT INDEXED WHERE snapshotId=? AND rowid IN (SELECT value FROM json_each(?)) AND ${safety.sql}`,snapshot.id,JSON.stringify(rows.map(row=>row.rowid)),...safety.args);
     if(!deletion.meta.changes)break;removed+=deletion.meta.changes;result.rowsDeleted+=deletion.meta.changes;
     // A single guarded write removes this exact indexed selection atomically.
     if(deletion.meta.changes===rows.length){const bytes=rows.reduce((sum,row)=>sum+row.characters,0);characters+=bytes;result.charactersDeleted+=bytes;}

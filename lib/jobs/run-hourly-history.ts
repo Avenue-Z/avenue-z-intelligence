@@ -18,7 +18,7 @@ type HistoryBudget={maxJobs:number;deadline:number};
 type HistoryResult={completed:string[];failed:{id:string;error:string}[];skipped?:string;storageBytes?:number;maintenance?:Awaited<ReturnType<typeof pruneArchivedMaterializations>>};
 type EligibleSource={source:Connection;client:Client;contract:RegisteredContract};
 type HistoryJob={id:string;sourceId:string;clientId:string;attempts:number};
-function requiredBudget(provider:string){return provider==='kind-recharge-cancellations'?180000:['kind-meta-performance','kind-shopify-traffic'].includes(provider)?300000:provider==='kind-shopify-products'?90000:30000;}
+function requiredBudget(provider:string){return provider==='kind-recharge-cancellations'?180000:provider==='kind-triple-whale'?200000:['kind-meta-performance','kind-shopify-traffic'].includes(provider)?300000:provider==='kind-shopify-products'?90000:30000;}
 
 async function currentSourcesDue(store:Store,scope:AccessScope){return !!await store.first("SELECT j.id FROM jobs j JOIN connections c ON c.id=j.sourceId AND c.organizationId=j.organizationId AND c.clientId=j.clientId WHERE j.organizationId=? AND j.clientId='kind-patches' AND c.enabled=1 AND j.id NOT LIKE '%:hourly-history:____-__-__' AND j.status IN ('pending','running') AND j.dueAt<=? LIMIT 1",scope.organizationId,new Date().toISOString());}
 

@@ -20,7 +20,8 @@ const EMPTY_DAYS:SubscriptionDay[]=[];
 
 export function subscriptionChartExplorer(record:ExplorerRecord,filters:Filters,window:TrendContextMode){
  const dates=trendContextRange(filters,window,record.comparison.from),range={from:dates.from,to:dates.to},comparisonRange={from:dates.comparisonFrom,to:dates.comparisonTo};
- const selected=(dataset:string)=>contextSeries(record.datasetSeries?.[dataset]??EMPTY_DAYS,record.trendDatasetSeries?.[dataset]??EMPTY_DAYS,range),previous=(dataset:string)=>contextSeries(record.comparisonDatasetSeries?.[dataset]??EMPTY_DAYS,record.trendComparisonDatasetSeries?.[dataset]??EMPTY_DAYS,comparisonRange);
+ const matched=filters.mode==='partial'&&window!=='selected';
+ const selected=(dataset:string)=>contextSeries(record.datasetSeries?.[dataset]??EMPTY_DAYS,record.trendDatasetSeries?.[dataset]??EMPTY_DAYS,range,matched),previous=(dataset:string)=>contextSeries(record.comparisonDatasetSeries?.[dataset]??EMPTY_DAYS,record.trendComparisonDatasetSeries?.[dataset]??EMPTY_DAYS,comparisonRange,matched);
  return buildSubscriptionExplorer({current:selected('subscriptions'),comparison:previous('subscriptions'),currentEvents:selected('subscriptionEvents'),comparisonEvents:previous('subscriptionEvents'),range,comparisonRange});
 }
 

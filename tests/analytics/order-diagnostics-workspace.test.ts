@@ -2,7 +2,7 @@ import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {expect,it,vi} from 'vitest';
 vi.mock('@/lib/utils',async()=>await import('../../lib/utils'));
-import {OrderStreamDiagnostics,RenewalMixDiagnostics} from '../../components/analytics/order-diagnostics';
+import {OrderStreamDiagnostics,RenewalMixDiagnostics,PromotionDiagnostics} from '../../components/analytics/order-diagnostics';
 import type {ClientRecord} from '../../components/analytics/records';
 import type {QueryFilters} from '../../lib/analytics/contracts';
 
@@ -39,6 +39,25 @@ it('uses the primary renewal workspace on subscriptions without changing raw ord
  const revenue=renderToStaticMarkup(createElement(OrderStreamDiagnostics,{filters,record}));
  expect(revenue).toContain('Tagged recurring renewals');
  expect(revenue).toContain('AOV decreased -20.00%; unfavorable');
+});
+it('compares order-type revenue, counts and basket quantities against the matching prior stream',()=>{
+ const current={...row('one_time',180),metrics:{revenue:180,orders:12,units:36}},prior={...row('one_time',100,true),metrics:{revenue:100,orders:10,units:20}};
+ const record={client:{currency:'USD',timezone:'Europe/Stockholm'},comparison:{from:'2026-10-12',to:'2026-10-12'},views:{orderStreams:{details:[current]}},comparisonViews:{orderStreams:{details:[prior]}}} as unknown as ClientRecord;
+ const html=renderToStaticMarkup(createElement(OrderStreamDiagnostics,{filters,record})),cells=[...html.matchAll(/<td>([\s\S]*?)<\/td>/g)].map(match=>match[1]);
+ expect(cells[1]).toContain('Increased +80.0% vs yesterday');expect(cells[1]).toContain('data-tone="favorable"');
+ expect(cells[2]).toContain('Increased +20.0% vs yesterday');expect(cells[2]).toContain('data-tone="favorable"');
+ expect(cells[6]).toContain('Increased +50.0% vs yesterday');expect(cells[6]).toContain('data-tone="neutral"');
+});
+it('compares promotional quantities and AOV without classifying extra zero-value orders as revenue growth',()=>{
+ const promotion=(date:string,current:boolean)=>({dimensions:{promo_code:'ONBRAND',store_date:date},metrics:{promo_orders:current?12:10,promo_zero_orders:current?8:4,promo_cancelled_orders:current?2:4,promo_units:current?60:40,promo_cancelled_units:current?10:20,orders_with_promo:10,revenue_with_promo:current?200:100,orders_without_promo:10,revenue_without_promo:current?300:200}});
+ const record={client:{currency:'USD',timezone:'Europe/Stockholm'},comparison:{from:'2026-10-12',to:'2026-10-12'},views:{orderHygiene:{details:[promotion('2026-10-13',true)]}},comparisonViews:{orderHygiene:{details:[promotion('2026-10-12',false)]}}} as unknown as ClientRecord;
+ const html=renderToStaticMarkup(createElement(PromotionDiagnostics,{filters,record})),cells=[...html.matchAll(/<td>([\s\S]*?)<\/td>/g)].map(match=>match[1]);
+ expect(cells[1]).toContain('Increased +20.0% vs yesterday');expect(cells[1]).toContain('data-tone="neutral"');
+ expect(cells[2]).toContain('Increased +100.0% vs yesterday');expect(cells[2]).toContain('data-tone="neutral"');
+ expect(cells[3]).toContain('Decreased -50.0% vs yesterday');expect(cells[3]).toContain('data-tone="favorable"');
+ expect(cells[4]).toContain('Increased +50.0% vs yesterday');expect(cells[4]).toContain('data-tone="neutral"');
+ expect(cells[5]).toContain('Decreased -50.0% vs yesterday');expect(cells[5]).toContain('data-tone="favorable"');
+ expect(cells[6]).toContain('Increased +100.0% vs yesterday');expect(cells[7]).toContain('Increased +50.0% vs yesterday');
 });
 
 const renewalRender=(current:{orders:number;units:number;billed:number;refund:number},prior:{orders:number;units:number;billed:number;refund:number})=>{

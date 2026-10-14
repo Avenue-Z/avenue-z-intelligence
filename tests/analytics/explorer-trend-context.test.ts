@@ -40,3 +40,9 @@ it('refreshes the ending daily points from the selected current and matched comp
  const model=explorerTrendData({current:selected,previous,context:{current:[point('2026-10-13',999)],previous:[point('2026-10-12',140)]},filters,comparisonFrom:'2026-10-12',metric:'sessions',range:'7d'});
  expect(model.points[6]).toEqual({date:'2026-10-13',current:30,comparisonDate:'2026-10-12',previous:20});
 });
+it('uses matched context for earlier selected dates in live charts while Selected period preserves its totals',()=>{
+ const scope={...filters,from:'2026-10-12',to:'2026-10-13'},current=[point('2026-10-12',140),point('2026-10-13',30)],prior=[point('2026-10-10',120),point('2026-10-11',20)],matched={current:[point('2026-10-12',14),point('2026-10-13',999)],previous:[point('2026-10-10',12),point('2026-10-11',999)]};
+ const model=explorerTrendData({current,previous:prior,context:matched,filters:scope,comparisonFrom:'2026-10-10',metric:'sessions',range:'7d'});
+ expect(model.points.find(day=>day.date==='2026-10-12')).toMatchObject({current:14,previous:12});expect(model.points.at(-1)).toMatchObject({current:30,previous:20});
+ const selected=explorerTrendData({current,previous:prior,context:matched,filters:scope,comparisonFrom:'2026-10-10',metric:'sessions',range:'selected'});expect(selected.points[0]).toMatchObject({current:140,previous:120});
+});
