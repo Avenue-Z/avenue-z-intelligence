@@ -1,7 +1,8 @@
 import {Temporal} from '@js-temporal/polyfill';
 import type {Client,Observation,SourceBatch} from '../analytics/contracts';
 import {dayWindow,todayIn} from '../analytics/windows';
-import {hourlySessionCutoff,localHourInterval,observation,providerJson,sourceBatch,sourceDates,type KindConfig,type KindWindow} from './kind-patches';
+import {hourlySessionCutoff,localHourInterval,observation,sourceBatch,sourceDates,type KindConfig,type KindWindow} from './kind-patches';
+import {rechargeProviderJson} from './recharge-provider-json';
 
 export const rechargeCancellationDefinition='recharge_current_cancelled_subscription_records_cancelled_at_utc_to_store_date_excludes_reactivated';
 export const rechargeCancellationPopulation='recharge_cancelled_subscription_records';
@@ -22,7 +23,7 @@ export async function fetchRechargeCancellations(client:Client,config:KindConfig
   // Larger historical cursor scans sometimes need longer than the normal
   // polling request. The whole source deadline still caps each request/retry.
   const requestTimeout=historical?(cursor?60000:180000):25000;
-  const params=new URLSearchParams(cursor?{limit:'250',cursor}:base),response=await providerJson(fetcher,`https://api.rechargeapps.com/subscriptions?${params}`,{headers},deadline,0,requestTimeout);
+  const params=new URLSearchParams(cursor?{limit:'250',cursor}:base),response=await rechargeProviderJson(fetcher,`https://api.rechargeapps.com/subscriptions?${params}`,{headers},deadline,'cancellation-state',!!cursor,requestTimeout);
   if(!Array.isArray(response.subscriptions)||response.subscriptions.length>250)throw new Error('Recharge subscriptions response exceeds the page limit');
   if(!Object.hasOwn(response,'next_cursor')||response.next_cursor!==null&&typeof response.next_cursor!=='string')throw new Error('Recharge cancellation pagination metadata missing');
   for(const record of response.subscriptions){

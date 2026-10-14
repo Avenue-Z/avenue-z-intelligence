@@ -1,7 +1,8 @@
 import {Temporal} from '@js-temporal/polyfill';
 import type {Client,Observation,SourceBatch} from '../analytics/contracts';
 import {dayWindow,todayIn} from '../analytics/windows';
-import {hourlySessionCutoff,localHourInterval,observation,providerJson,sourceBatch,sourceDates,type KindConfig,type KindWindow} from './kind-patches';
+import {hourlySessionCutoff,localHourInterval,observation,sourceBatch,sourceDates,type KindConfig,type KindWindow} from './kind-patches';
+import {rechargeProviderJson} from './recharge-provider-json';
 import {subscriptionIdentity,utcInstant} from './recharge-cancellations';
 
 export const rechargeNewSubscriptionPopulation='recharge_new_subscription_records';
@@ -16,7 +17,7 @@ async function fetchCancellationEventCounts(client:Client,config:KindConfig,date
  const seen=new Map<string,string>(),first=new Map<string,Temporal.Instant>(),firstCalendar=new Map<string,Temporal.Instant>(),cursors=new Set<string>(),recordLimit=50000;let cursor='',complete=false,seenRows=0;
  for(let page=0;page<recordLimit/250;page++){
   const params=new URLSearchParams(cursor?{limit:'250',cursor}:{limit:'250',object_type:'subscription',verbs:'cancelled',created_at_min:minimum.toString().replace(/Z$/,''),created_at_max:maximum.toString().replace(/Z$/,'')});
-  const response=await providerJson(fetcher,`https://api.rechargeapps.com/events?${params}`,{headers},deadline);
+  const response=await rechargeProviderJson(fetcher,`https://api.rechargeapps.com/events?${params}`,{headers},deadline,'retained-events',!!cursor);
   if(!Array.isArray(response.events)||response.events.length>250)throw Error('Recharge cancellation event page exceeds the limit');
   if(!Object.hasOwn(response,'next_cursor')||response.next_cursor!==null&&typeof response.next_cursor!=='string')throw Error('Recharge cancellation event pagination metadata missing');
   for(const event of response.events){
@@ -46,7 +47,7 @@ export async function fetchRechargeSubscriptionCohort(client:Client,config:KindC
  const historical=window.to<today,recordLimit=historical?250000:50000,createdCounts=new Map<string,number>(),cancelledCounts=new Map<string,number>(),createdSubscriptions=new Map<string,Temporal.Instant>(),seen=new Map<string,string>(),cursors=new Set<string>();let cursor='',complete=false,seenRows=0,createdTotal=0,cancelledTotal=0;
  for(let page=0;page<recordLimit/250;page++){
   const params=new URLSearchParams(cursor?{limit:'250',cursor}:{limit:'250',created_at_min:minimum.toString().replace(/Z$/,''),created_at_max:maximum.toString().replace(/Z$/,'')});
-  const response=await providerJson(fetcher,`https://api.rechargeapps.com/subscriptions?${params}`,{headers},deadline,0,historical?(cursor?60000:180000):25000);
+  const response=await rechargeProviderJson(fetcher,`https://api.rechargeapps.com/subscriptions?${params}`,{headers},deadline,'creation-cohort',!!cursor,historical?(cursor?60000:180000):25000);
   if(!Array.isArray(response.subscriptions)||response.subscriptions.length>250)throw Error('Recharge creation cohort page exceeds the limit');
   if(!Object.hasOwn(response,'next_cursor')||response.next_cursor!==null&&typeof response.next_cursor!=='string')throw Error('Recharge creation cohort pagination metadata missing');
   for(const record of response.subscriptions){
