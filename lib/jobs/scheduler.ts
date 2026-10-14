@@ -25,14 +25,30 @@ export class DailyScheduler {
   }catch(error){
    const timeout=error instanceof Error&&(error.name==='TimeoutError'||error.message==='Database request timed out'),remaining=Date.parse(until)-Date.now();
    if(!timeout||remaining<=0)throw error;
-   let timer:ReturnType<typeof setTimeout>|undefined;
+   const started=Date.now(),deadline=Math.min(started+5000,Date.parse(until));let outcome='absent',reads=0;
    try{
-    // A committed acquisition can lose its acknowledgment. Recover only this
-    // exact still-live owner; one short read never replays or steals the lease.
-    const owned=await Promise.race([this.store.first<{token:string;leaseUntil:string}>('SELECT token,leaseUntil FROM runner_leases WHERE id=? AND token=? AND leaseUntil=? AND leaseUntil>?',id,token,until,new Date().toISOString()),new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(error),Math.min(5000,remaining));})]);
-    if(owned?.token===token&&owned.leaseUntil===until&&Date.parse(owned.leaseUntil)>Date.now())return token;
-   }catch{/* Unverified ownership retains the original acquisition failure. */}
-   finally{if(timer)clearTimeout(timer);}
+    // The original INSERT may commit after its acknowledgment times out.
+    // Pace read-only confirmation within one budget; never replay the write.
+    while(Date.now()<deadline){
+     let timer:ReturnType<typeof setTimeout>|undefined,timedOut=false,readFailed=false,owned:{token:string;leaseUntil:string}|null=null;
+     try{
+      reads++;
+      owned=await Promise.race([this.store.first<{token:string;leaseUntil:string}>('SELECT token,leaseUntil FROM runner_leases WHERE id=?',id),new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>{timedOut=true;reject(error);},Math.max(0,deadline-Date.now()));})]);
+     }catch{readFailed=true;outcome=timedOut?'read-timeout':'read-error';if(timedOut)break;}
+     finally{if(timer)clearTimeout(timer);}
+     if(!readFailed){
+      if(owned){
+       if(owned.token!==token){outcome='other-owner';break;}
+       if(owned.leaseUntil!==until){outcome='expiry-mismatch';break;}
+       if(!(Date.parse(owned.leaseUntil)>Date.now())){outcome='expired';break;}
+       if(Date.now()>=deadline){outcome='window-exhausted';break;}
+       outcome='recovered';return token;
+      }
+      outcome='absent';
+     }
+     const pause=Math.min(250,deadline-Date.now());if(pause>0)await new Promise<void>(resolve=>setTimeout(resolve,pause));
+    }
+   }finally{console.warn('Runner lease acquisition reconciled',{operation:'runner-lease.acquire',outcome,ms:Date.now()-started,reads});}
    throw error;
   }
  }
