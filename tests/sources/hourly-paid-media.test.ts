@@ -61,6 +61,25 @@ it('uses bound authenticated provider endpoints, complete pagination and indepen
  const raw={day:date,hour:'14:00',campaign:'Dream',campaign_id_external:'2',country:'US',cost:'20'},appCalls:URL[]=[];const appFetcher:typeof fetch=async url=>{const u=new URL(String(url));appCalls.push(u);expect(u.hostname).toBe('r.applovin.com');return Response.json({code:200,results:u.searchParams.get('columns')==='day,hour,cost'?[{day:date,hour:'14:00',cost:'20'}]:[raw]});};
  const app=await fetchAppLovinHourlySpend(client,config,w,appFetcher,Date.now()+10000,now);expect(app.rows).toHaveLength(1);expect(appCalls).toHaveLength(2);expect(appCalls.every(url=>url.searchParams.get('start')==='2026-10-12'&&url.searchParams.get('end')===date)).toBe(true);
 });
+it('captures AppLovin spend in one bounded response so unstable offset pages cannot repeat or omit spend',async()=>{
+ const hourly=Array.from({length:1001},(_,i)=>({day:date,hour:'14:00',campaign:`Campaign ${String(i).padStart(4,'0')}`,campaign_id_external:String(i+1),country:'US',cost:'1'}));
+ // The provider's default-order second page can overlap the first while
+ // omitting a different row. A single capped response has no moving boundary.
+ const fetcher:typeof fetch=async url=>{
+  const u=new URL(String(url)),columns=u.searchParams.get('columns')!;
+  if(columns==='day,hour,cost')return Response.json({code:200,results:[{day:date,hour:'14:00',cost:'1001'}]});
+  if(u.searchParams.get('limit')==='40000')return Response.json({code:200,results:hourly});
+  const offset=Number(u.searchParams.get('offset'));
+  return Response.json({code:200,results:offset===0?hourly.slice(0,1000):[hourly[999]]});
+ };
+ const batch=await fetchAppLovinHourlySpend(client,config,w,fetcher,Date.now()+10000,now);
+ expect(batch.rows).toHaveLength(1001);expect(batch.rows.reduce((sum,row)=>sum+row.value!,0)).toBe(1001);
+ expect(new Set(batch.rows.map(row=>row.dimensions.campaign_id)).size).toBe(1001);
+});
+it('rejects an AppLovin response at the row cap instead of accepting a potentially truncated report',async()=>{
+ const fetcher:typeof fetch=async url=>Response.json({code:200,results:new URL(String(url)).searchParams.get('columns')==='day,hour,cost'?[]:Array(40000).fill({})});
+ await expect(fetchAppLovinHourlySpend(client,config,w,fetcher,Date.now()+10000,now)).rejects.toThrow(/row limit/i);
+});
 it('rejects failed or expired asynchronous conversion reports instead of substituting missing purchase metrics',async()=>{
  const failed:typeof fetch=async (url,options)=>options?.method==='POST'?Response.json({report_run_id:'99'}):String(url).includes('/99?')?Response.json({async_status:'Job Failed'}):Response.json({data:[account]});
  await expect(fetchMetaHourlyPerformance(client,config,w,failed,Date.now()+10000,now)).rejects.toThrow(/asynchronous report failed/i);

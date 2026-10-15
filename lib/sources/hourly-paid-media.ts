@@ -118,11 +118,13 @@ export async function fetchMetaHourlyPerformance(client:Client,config:KindConfig
  }
 }
 async function appPages(config:KindConfig,window:{from:string;to:string},columns:string,fetcher:typeof fetch,deadline:number){
- const rows:Raw[]=[];for(let page=0;page<40;page++){
-  const params=new URLSearchParams({api_key:config.APPLOVIN_REPORT_KEY,start:window.from,end:window.to,format:'json',report_type:'advertiser',columns,not_zero:'1',limit:'1000',offset:String(page*1000)}),data=await providerJson(fetcher,`https://r.applovin.com/report?${params}`,{},deadline,0,55000);
-  if(data.code!==200||!Array.isArray(data.results))throw new Error('AppLovin hourly report rejected');rows.push(...data.results);if(rows.length>=40000)throw new Error('AppLovin hourly report exceeds its row limit');if(data.results.length<1000)return rows;
- }
- throw new Error('AppLovin hourly pagination did not complete');
+ // Default report ordering can change between offset requests, repeating some
+ // rows and omitting others. Fetch the existing bounded report in one response;
+ // reaching its cap remains an error, and duplicate/hour-total checks still run.
+ const params=new URLSearchParams({api_key:config.APPLOVIN_REPORT_KEY,start:window.from,end:window.to,format:'json',report_type:'advertiser',columns,not_zero:'1',limit:'40000',offset:'0'}),data=await providerJson(fetcher,`https://r.applovin.com/report?${params}`,{},deadline,0,55000);
+ if(data.code!==200||!Array.isArray(data.results))throw new Error('AppLovin hourly report rejected');
+ if(data.results.length>=40000)throw new Error('AppLovin hourly report exceeds its row limit');
+ return data.results as Raw[];
 }
 export async function fetchAppLovinHourlySpend(client:Client,config:KindConfig,w:KindWindow,fetcher:typeof fetch=fetch,deadline=Date.now()+120000,now=new Date()){
  const window=appLovinUTCWindow(client,w,now),[hourly,totals]=await Promise.all([appPages(config,window,'day,hour,campaign,campaign_id_external,country,cost',fetcher,deadline),appPages(config,window,'day,hour,cost',fetcher,deadline)]);
