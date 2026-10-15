@@ -112,7 +112,7 @@ async function token(input:PreparedWorkspaceInput,connections:Connection[],confi
  // The Today shortcut is resolved to exact store dates before this call. It
  // changes navigation, not these analytics; share the hosted warmer's frame.
  const {period:_period,...resolvedFilters}=input.filters;
- return JSON.stringify(stable(['prepared-workspace-v6',organizationId,client,todayIn(client.timezone),resolvedFilters,[...new Set(input.preparedDatasets)].sort(),{...input.selection,datasets:[...new Set(input.selection.datasets)].sort(),dimensions:!!input.selection.dimensions,includePriorWeek:input.selection.includePriorWeek!==false},sources,selectedPointers,qualifications.filter(qualification=>relevantSources.has(qualification.sourceId)),partialKindCaveat]));
+ return JSON.stringify(stable(['prepared-workspace-v7',organizationId,client,todayIn(client.timezone),resolvedFilters,[...new Set(input.preparedDatasets)].sort(),{...input.selection,datasets:[...new Set(input.selection.datasets)].sort(),dimensions:!!input.selection.dimensions,includePriorWeek:input.selection.includePriorWeek!==false},sources,selectedPointers,qualifications.filter(qualification=>relevantSources.has(qualification.sourceId)),partialKindCaveat]));
 }
 async function digest(value:string){return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))),byte=>byte.toString(16).padStart(2,'0')).join('');}
 type DurableFrame={payload:string;payloadHash:string};

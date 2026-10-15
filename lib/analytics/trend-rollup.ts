@@ -58,3 +58,15 @@ export class TrendRollupAccumulator {
  }
  finish():Observation[]{return this.rows;}
 }
+
+/** Keep each original interval and its qualification in reusable day cohorts.
+ * The request applies its current store-hour cutoff after restoring them. */
+export class TrendIntervalRollupAccumulator {
+ private intervals=new Map<string,{accumulator:TrendRollupAccumulator;grain:ReturnType<typeof grain>;start?:string;end?:string}>();
+ constructor(private filters:QueryFilters){}
+ add(row:Observation,sourceGrain?:ReturnType<typeof grain>){
+  const category=sourceGrain??grain(row),key=JSON.stringify([row.start,row.end,category]);let interval=this.intervals.get(key);
+  if(!interval){interval={accumulator:new TrendRollupAccumulator({...this.filters,mode:'closed'}),grain:category,...row.start!==undefined?{start:row.start}:{},...row.end!==undefined?{end:row.end}:{}};this.intervals.set(key,interval);}interval.accumulator.add(row,category);
+ }
+ finish():FunnelRollupObservation[]{return [...this.intervals.values()].flatMap(interval=>interval.accumulator.finish().map(row=>({...row,...interval.start!==undefined?{start:interval.start}:{},...interval.end!==undefined?{end:interval.end}:{},contextGrain:interval.grain})));}
+}

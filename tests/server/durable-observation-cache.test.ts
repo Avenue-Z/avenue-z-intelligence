@@ -2,7 +2,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync,readdirSync} from 'node:fs';
 import {expect,it} from 'vitest';
 import {Store} from '../../lib/server/store';
-import {durableObservationPayload} from '../../lib/server/durable-observation-cache';
+import {durableObservationPayload,trendDayCacheLimits} from '../../lib/server/durable-observation-cache';
 import {observationCodec} from '../../lib/server/observation-codec';
 import type {QueryFilters,SourceBatch} from '../../lib/analytics/contracts';
 function database(){
@@ -26,6 +26,19 @@ it('retains explicit publication for direct cache utility callers',async()=>{
  const {connect,sqlite}=database(),payload=observationCodec.encode(batch().rows);
  expect(await durableObservationPayload(connect(),'o','a','explicit-cache',async()=>payload)).toBe(payload);expect(sqlite.prepare('SELECT COUNT(*) AS n FROM observation_cache_entries').get()?.n).toBe(1);
  expect(await durableObservationPayload(connect(),'o','a','explicit-cache',async()=>{throw Error('Canonical reload should not be needed');},undefined,{publish:false})).toBe(payload);
+});
+it('separately bounds trend days by conservative UTF-8 bytes and entry count without evicting range entries',async()=>{
+ const {connect,sqlite}=database(),db=connect(),payload=observationCodec.encode(batch().rows);
+ await durableObservationPayload(db,'o','a','range',async()=>payload);
+ const insert=sqlite.prepare("INSERT INTO observation_cache_entries(organizationId,clientId,cacheKey,generation,status,chunkCount,characters,payloadHash,createdAt) VALUES('o','a',?,'fixture','ready',1,?,'fixture',?)");
+ for(let index=0;index<50;index++)insert.run(`trend-day:large-${index}`,500000,'2000-01-01T00:00:00Z');
+ await durableObservationPayload(db,'o','a','bounded-bytes',async()=>payload,undefined,{trendDay:true});
+ expect(Number(sqlite.prepare("SELECT SUM(characters*3) AS bytes FROM observation_cache_entries WHERE cacheKey LIKE 'trend-day:%'").get()?.bytes)).toBeLessThanOrEqual(trendDayCacheLimits.maximumBytes);
+ for(let index=0;index<400;index++)insert.run(`trend-day:small-${index}`,1,'2100-01-01T00:00:00Z');
+ await durableObservationPayload(db,'o','a','bounded-count',async()=>payload,undefined,{trendDay:true});
+ expect(Number(sqlite.prepare("SELECT COUNT(*) AS n FROM observation_cache_entries WHERE cacheKey LIKE 'trend-day:%'").get()?.n)).toBe(trendDayCacheLimits.maximumEntries);
+ expect(Number(sqlite.prepare("SELECT COUNT(*) AS n FROM observation_cache_entries WHERE cacheKey NOT LIKE 'trend-day:%'").get()?.n)).toBe(1);
+ expect(await durableObservationPayload(db,'o','a','range',async()=>{throw Error('Range evicted');},undefined,{publish:false})).toBe(payload);
 });
 it('falls back to canonical facts without repairing corrupt durable chunks in a foreground response',async()=>{
  const {connect,sqlite,batches}=database(),s=new Store(connect());await s.persistBatch('o','source',batch(),'one','2026-10-08T00:00:00Z');await warm(s);sqlite.exec("UPDATE observation_cache_chunks SET payload='corrupt'");batches.length=0;

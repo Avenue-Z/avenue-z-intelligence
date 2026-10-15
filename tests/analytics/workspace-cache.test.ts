@@ -6,6 +6,17 @@ import {workspacePresentation} from '../../lib/analytics/presentation';
 import type {Workspace} from '../../lib/server/workspace';
 import type {Client,Observation,QueryFilters} from '../../lib/analytics/contracts';
 
+it('ends a stalled workspace request instead of leaving navigation loading indefinitely',async()=>{
+ vi.useFakeTimers();
+ try{
+  let signal:AbortSignal|undefined,outcome='pending';
+  const preloader=new navigation.WorkspacePreloader(new navigation.WorkspaceCache(workspace()),async(_params,nextSignal)=>{signal=nextSignal;return new Promise<Workspace>(()=>{});});
+  void preloader.request(new URLSearchParams({clientId:'kind-patches',view:'markets',market:'CA'})).then(()=>{outcome='resolved';},()=>{outcome='rejected';});
+  await vi.advanceTimersByTimeAsync(45000);
+  expect(outcome).toBe('rejected');expect(signal?.aborted).toBe(true);
+ }finally{vi.useRealTimers();}
+});
+
 const client:Client={id:'kind-patches',name:'Kind Patches',slug:'kind-patches',timezone:'UTC',currency:'USD',color:'#2549c5',version:1,config:{markets:['US'],benchmarkMarket:'US',revenueDefinition:'web',spendChannels:[],recurringLabel:'Subscriptions',minSessions:100,minOpportunity:5,maxActions:6,reviewTime:'09:00',reviewTimezone:'UTC',reviewMode:'closed',incidents:[]}};
 const filters:QueryFilters={from:'2026-10-07',to:'2026-10-07',compare:'previous',market:'',stream:'',source:'',device:'',page:'',mode:'closed',view:'overview'};
 function workspace(changes:Partial<QueryFilters>={},organizationId='agency',actorId='analyst',priorRows:Observation[]=[]):Workspace{

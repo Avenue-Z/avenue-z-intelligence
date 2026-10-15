@@ -92,7 +92,12 @@ export class WorkspacePreloader{
   const key=workspaceRequestKey(params),existing=this.pending.get(key);if(existing){if(foreground)existing.foreground=true;return existing.promise;}
   this.queue.delete(key);const controller=new AbortController(),generation=this.generation,hardGeneration=this.hardGeneration,scope=this.scope;
   const requested=new URLSearchParams(params),pending:PendingWorkspace={controller,foreground,promise:undefined!,retryOnNewWave:false};
-  const promise=Promise.resolve().then(()=>this.load(requested,controller.signal)).then(workspace=>{
+  // A queued server read can outlive the request's platform limit. Bound both
+  // foreground navigation and optional preloads so a dropped response cannot
+  // leave this request permanently pending in the browser.
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  const deadline=new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>{reject(new Error('This view is taking longer than expected. Please retry.'));controller.abort();},45000);});
+  const promise=Promise.race([Promise.resolve().then(()=>this.load(requested,controller.signal)),deadline]).then(workspace=>{
    if(controller.signal.aborted||generation!==this.generation)throw new DOMException('Obsolete workspace request','AbortError');
    this.cache.remember(workspace);return workspace;
   }).catch(error=>{
@@ -100,7 +105,7 @@ export class WorkspacePreloader{
    // it can finish through the current wave, but must never receive old data.
    if(pending.retryOnNewWave&&hardGeneration===this.hardGeneration&&scope===this.scope&&selectionKey(requested)===this.selection)return this.request(requested,true);
    throw error;
-  }).finally(()=>{if(this.pending.get(key)?.controller===controller)this.pending.delete(key);});
+  }).finally(()=>{if(timer)clearTimeout(timer);if(this.pending.get(key)?.controller===controller)this.pending.delete(key);});
   pending.promise=promise;this.pending.set(key,pending);return promise;
  }
  preload(workspace:Workspace,params:URLSearchParams,clientId:string,views:readonly string[]=preloadViews){

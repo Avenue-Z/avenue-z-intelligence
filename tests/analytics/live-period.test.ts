@@ -11,8 +11,15 @@ it('clears the live marker when a user picks historical dates and preserves it f
 it('opens closed yesterday from a live view and refreshes today in the store timezone',()=>{
  vi.useFakeTimers();vi.setSystemTime(new Date('2026-10-13T22:30:00Z'));try{
   expect(livePeriodFilterChanges(filters,{mode:'closed'},'Europe/Stockholm')).toEqual({mode:'closed',period:'',from:'2026-10-13',to:'2026-10-13'});
-  expect(livePeriodFilterChanges(filters,{period:'today'},'Europe/Stockholm')).toEqual({period:'today',from:'2026-10-14',to:'2026-10-14',mode:'partial'});
+  expect(livePeriodFilterChanges(filters,{period:'today'},'Europe/Stockholm')).toEqual({period:'today',from:'2026-10-14',to:'2026-10-14',mode:'partial',compare:'previous'});
  }finally{vi.useRealTimers();}
+});
+it('returns Live to day-over-day after opening a link with a weekly or custom comparison',()=>{
+ for(const compare of ['weekday','fourWeeks','custom'] as const){
+  const next=livePeriodFilterChanges({...filters,compare},{period:'today'},'Europe/Stockholm');
+  expect({...filters,compare,...next}).toMatchObject({from:'2026-10-13',to:'2026-10-13',period:'today',mode:'partial',compare:'previous'});
+ }
+ expect(livePeriodFilterChanges(filters,{view:'traffic'},'Europe/Stockholm')).toEqual({view:'traffic'});
 });
 it('does not restore an old live marker during the pending response to an explicit date selection',()=>{
  const historical=workspaceRefreshParams('?from=2026-10-10&to=2026-10-10',filters);

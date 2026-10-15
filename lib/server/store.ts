@@ -36,9 +36,9 @@ export class Store {
     checkBudget();
     const [capturedPointers,clientRow,sources,qualifications]=await Promise.all([
       this.all<{snapshotId:string;sourceId:string;date:string;publishedAt:string}>("SELECT c.snapshotId,c.sourceId,c.date,c.publishedAt FROM current_snapshots c JOIN snapshots s ON s.id=c.snapshotId WHERE c.organizationId=? AND c.clientId=? AND s.status='ready'",org,client),
-      this.first<{timezone:string}>('SELECT timezone FROM clients WHERE organizationId=? AND id=?',org,client),
+      this.first<{timezone:string;version:number;config:string}>('SELECT timezone,version,config FROM clients WHERE organizationId=? AND id=?',org,client),
       filters?.mode==='partial'?this.connections(org,client):Promise.resolve([]),
-      filters||headlinesOnly||selection?this.all<{sourceId:string;profiles:string|null}>("SELECT sourceId,json_extract(payload,'$.profiles') AS profiles FROM qualifications WHERE organizationId=? AND clientId=?",org,client):Promise.resolve([])
+      filters||headlinesOnly||selection?this.all<{sourceId:string;profiles:string|null;connectionVersion:number;clientVersion:number;version:number}>("SELECT sourceId,connectionVersion,clientVersion,version,json_extract(payload,'$.profiles') AS profiles FROM qualifications WHERE organizationId=? AND clientId=?",org,client):Promise.resolve([])
     ]);
     checkBudget();
     if(!capturedPointers.length)return [];
@@ -120,19 +120,28 @@ export class Store {
     // and fresh metadata are part of the key. Published pointers invalidate
     // across refreshes, including refreshes performed by another instance.
     const version=pointers.map(p=>[p.sourceId,p.snapshotId,p.date]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
-    const key=JSON.stringify(['chart-series-v7',org,client,filters?[filters.from,filters.to,filters.compare,filters.compareFrom??null,filters.compareTo??null,filters.mode]:null,headlinesOnly,clientRow?.timezone??null,cutoffClock??null,completePartialDay,...selection?[{datasets:selectedDatasets,dimensions:!!selection.dimensions,includePriorWeek:selection.includePriorWeek!==false,trendDatasets:[...trendDatasets].sort(),filters:dimensionSelection}]:[],version]);
+    // Context cohorts retain each active dimension, even when the selected
+    // detail read keeps all dimensions for navigation. Its layout must not
+    // reuse a cohort previously collapsed across that dimension. All values
+    // remain present, so changing US to CA shares the same captured cohort.
+    const trendDimensions=filters&&trendDatasets.length?(['market','stream','source','device','page'] as const).filter(dimension=>!!filters[dimension]):[];
+    const trendCacheIdentity={timezone:clientRow?.timezone??null,clientVersion:clientRow?.version,config:clientRow?.config,qualifications:[...qualifications].sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)))};
+    const key=JSON.stringify(['chart-series-v9',org,client,filters?[filters.from,filters.to,filters.compare,filters.compareFrom??null,filters.compareTo??null,filters.mode]:null,headlinesOnly,clientRow?.timezone??null,cutoffClock??null,completePartialDay,...selection?[{datasets:selectedDatasets,dimensions:!!selection.dimensions,includePriorWeek:selection.includePriorWeek!==false,trendDatasets:[...trendDatasets].sort(),trendDimensions,...trendDatasets.length?{trendCacheIdentity}:{},filters:dimensionSelection}]:[],version]);
+    const temporalContext=clientRow&&filters?{timezone:clientRow.timezone,cutoff:trendCutoff,anchorDate:filters.to}:undefined;
+    const contextualDatasets=trendDatasets.filter(dataset=>['traffic','funnels','products','markets'].includes(dataset));
+    const contextualPointers=filters&&contextualDatasets.length?pointers.filter(pointer=>!detailWindows.some(window=>inWindow(pointer.date,window))&&trendWindows.some(window=>inWindow(pointer.date,window))&&(!profiles.get(pointer.sourceId)||profiles.get(pointer.sourceId)!.some(profile=>contextualDatasets.includes(profile.dataset)))):[];
+    const contextKeys=new Set(contextualPointers.map(pointer=>JSON.stringify([pointer.snapshotId,pointer.date])));
+    // A range hit must not skip independent day-cohort preparation forever.
+    // Only the hosted warmer owns these writes; browser reads remain read-only.
+    const warmedContext=options&&filters?await readTrendObservations(this,contextualPointers,contextualDatasets,filters,{organizationId:org,clientId:client},temporalContext,options.deadline,trendCacheIdentity):undefined;
     const load=()=>durableObservationPayload(this.db,org,client,key,async()=>{
     checkBudget();
     // Missing partial coverage must retain raw hourly rows so queryClient can
     // decline the comparison; it must never turn a full day into a partial day.
     const cutoffDates=new Set(filters?[filters.to,comparisonPeriod(filters).to,shiftDate(filters.to,-7)]:[]);
     const accumulator=clientRow&&(!filters||filters.mode==='closed'||cutoffClock||completePartialDay)?new FunnelRollupAccumulator({timezone:clientRow.timezone,cutoffClock,...filters?.mode==='partial'?{cutoffDates}:{}}):null;
-    const temporalContext=clientRow&&filters?{timezone:clientRow.timezone,cutoff:trendCutoff,anchorDate:filters.to}:undefined;
     const fullDayContext=clientRow&&filters?.mode==='partial'&&trendDatasets.length?new TrendRollupAccumulator(filters,temporalContext):null;
-    const contextualDatasets=trendDatasets.filter(dataset=>['traffic','funnels','products','markets'].includes(dataset));
-    const contextualPointers=filters&&contextualDatasets.length?pointers.filter(pointer=>!detailWindows.some(window=>inWindow(pointer.date,window))&&trendWindows.some(window=>inWindow(pointer.date,window))&&(!profiles.get(pointer.sourceId)||profiles.get(pointer.sourceId)!.some(profile=>contextualDatasets.includes(profile.dataset)))):[];
-    const contextKeys=new Set(contextualPointers.map(pointer=>JSON.stringify([pointer.snapshotId,pointer.date])));
-    const contextRows=filters?await readTrendObservations(this,contextualPointers,contextualDatasets,filters,{organizationId:org,clientId:client},temporalContext,options?.deadline):[];
+    const contextRows=warmedContext??(filters?await readTrendObservations(this,contextualPointers,contextualDatasets,filters,{organizationId:org,clientId:client},temporalContext,options?.deadline,trendCacheIdentity):[]);
     const rows:Observation[]=[];
     const addRow=(row:Observation)=>{if(fullDayContext&&row.date!==filters!.to&&trendDatasets.includes(row.dataset)&&['traffic','funnels'].includes(row.dataset))fullDayContext.add(row);if(accumulator)accumulator.add(row);else rows.push(row);};
     const add=(page:{payload:string}[])=>{for(const r of page)addRow(JSON.parse(r.payload));};
@@ -300,8 +309,12 @@ export class Store {
       // prove completion when prior pages contain holes or span multiple dates.
       writeRows=writeRows.filter(row=>!committed.has(JSON.stringify([row.date,rowKey(row)])));
     }
-    const factPageSize=options?.factPageSize??2000;
-    for(let n=0;n<writeRows.length;n+=factPageSize){const inserts:ReturnType<Db['prepare']>[]=[];for(let start=n;start<Math.min(n+factPageSize,writeRows.length);start+=500){const values=writeRows.slice(start,start+500).map(r=>({date:r.date,rowKey:rowKey(r),payload:JSON.stringify(r)}));inserts.push(this.db.prepare("INSERT INTO observations(snapshotId,date,rowKey,payload) SELECT ?,json_extract(value,'$.date'),json_extract(value,'$.rowKey'),json_extract(value,'$.payload') FROM json_each(?) WHERE 1 ON CONFLICT DO NOTHING").bind(id,JSON.stringify(values)));}await publish('source.facts.page',()=>this.db.batch(inserts));}
+    const factPageSize=options?.factPageSize??2000,factRows=writeRows.map(row=>({row,key:rowKey(row)}));
+    // Dense captures otherwise scatter each small transaction across both
+    // snapshot indexes. Stable primary-key order keeps consecutive pages local
+    // while retaining the original first value of duplicate source keys.
+    if(options?.factPageSize===500)factRows.sort((a,b)=>a.row.date<b.row.date?-1:a.row.date>b.row.date?1:a.key<b.key?-1:a.key>b.key?1:0);
+    for(let n=0;n<factRows.length;n+=factPageSize){const inserts:ReturnType<Db['prepare']>[]=[];for(let start=n;start<Math.min(n+factPageSize,factRows.length);start+=500){const values=factRows.slice(start,start+500).map(({row,key})=>({date:row.date,rowKey:key,payload:JSON.stringify(row)}));inserts.push(this.db.prepare("INSERT INTO observations(snapshotId,date,rowKey,payload) SELECT ?,json_extract(value,'$.date'),json_extract(value,'$.rowKey'),json_extract(value,'$.payload') FROM json_each(?) WHERE 1 ON CONFLICT DO NOTHING").bind(id,JSON.stringify(values)));}await publish('source.facts.page',()=>this.db.batch(inserts));}
     const pointers=[];
     for(const date of dates){const {dataHash,coveredThrough}=dayHashes.get(date)!;
       // Pin the retained immutable id, even if a concurrent older publication

@@ -20,6 +20,16 @@ function fixture(large=false){
 function resolvedRows(projection:any){return Object.values(projection.evidenceRows) as any[];}
 
 describe('fast scoped chat model input',()=>{
+ it('bounds page-family diagnostics with explicit market and family omission counts',()=>{
+  const context=fixture(),mix=context.clients[0].strategyDiagnoses.pageFamilyMix,counts={sessions:100,convertingSessions:5,cvr:.05,sessionShare:.1};
+  mix.marketCount=40;mix.markets=Array.from({length:40},(_,index)=>({market:index===39?'FR':`Market ${index}`,currentSessions:100,comparisonSessions:110,decomposition:null,families:Array.from({length:12},(_,i)=>({family:`Observed family ${i}`,current:{...counts},comparison:{...counts}}))}));
+  const before=JSON.stringify(context),projection=buildChatModelContext(context,'Which page or offer should we investigate first?'),projected=projection.context.clients[0].strategyDiagnoses.pageFamilyMix as unknown as {marketCount:number;returnedMarketCount:number;omittedMarkets:number;markets:{market:string;familyCount:number;returnedFamilyCount:number;omittedFamilies:number;families:unknown[]}[]};
+  expect(projected.marketCount).toBe(40);expect(projected.returnedMarketCount).toBe(projected.markets.length);expect(projected.omittedMarkets).toBe(40-projected.markets.length);expect(projected.markets.length).toBeLessThan(40);
+  expect(projected.markets[0].familyCount).toBe(12);expect(projected.markets[0].returnedFamilyCount).toBe(projected.markets[0].families.length);expect(projected.markets[0].omittedFamilies).toBe(12-projected.markets[0].families.length);
+  expect(Buffer.byteLength(JSON.stringify(projection))).toBeLessThanOrEqual(80000);expect(JSON.stringify(context)).toBe(before);
+  const named=buildChatModelContext(context,'Explain the France page-family mix').context.clients[0].strategyDiagnoses.pageFamilyMix;
+  expect(named.markets[0].market).toBe('FR');
+ });
  it('prioritizes a named campaign and reports bounded diagnostic rows without changing coverage or totals',()=>{
   const context=fixture(),client=context.clients[0],costs=client.strategyDiagnoses.campaignCosts;context.filters={...filters,view:'media'};
   costs.campaignCount=40;costs.rows=Array.from({length:40},(_,index)=>({campaignId:String(index),campaign:index===39?'Dawn special':`Campaign ${index}`,current:{...costs.total.current},comparison:{...costs.total.comparison},changes:{spend:null,clicks:null,impressions:null,cpc:null,cpm:null,ctr:null},explanation:'A matching qualified comparison is unavailable. '.repeat(120)}));

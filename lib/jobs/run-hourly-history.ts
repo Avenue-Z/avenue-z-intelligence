@@ -9,7 +9,7 @@ import {fetchKindSource} from '../sources/kind-fetch';
 import {assertSourceActivation,validateRegisteredBatch,type RegisteredContract} from '../sources/registered-contract';
 import {historicalHourlyProviders,hourlyHistoryWindow,planHistoricalHourlyJobs,supportsHourlyHistory} from './hourly-history';
 import {DailyScheduler} from './scheduler';
-import {pruneArchivedMaterializations} from './archive-materialization-retention';
+import {pruneArchivedMaterializations,readRecentWritingCapture} from './archive-materialization-retention';
 import {ShopifyRateLimitError} from '../sources/shopify-graphql';
 import {retryPublication} from './publication-retry';
 import {boundedRechargeContract,HistoryCapacityDeferral,recentRechargeHistoryDate,rechargeHistoryFits,validateBoundedRechargeHistory} from './bounded-recharge-history';
@@ -87,14 +87,14 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
     const prefix=`${scope.organizationId}:${source.id}:hourly-history:`,date=job.id.startsWith(prefix)?job.id.slice(prefix.length):'',today=todayIn(client.timezone);
     if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||date>=today||date<shiftDate(today,source.provider==='kind-applovin'?-28:-30))throw Error('Historical source window is invalid');
     const secret=serverSecret(source.secretRef);if(!secret)throw Error(`Server secret ${source.secretRef} is not configured`);if(!env.BUCKET)throw Error('Snapshot archive unavailable');
-    const window={from:date,to:date},batch=await fetchKindSource(source,client,window,secret,fetch,budget.deadline);
+    const window={from:date,to:date},resumed=await readRecentWritingCapture(store,scope,source,client,window,{deadline:budget.deadline}),batch=resumed?.batch??await fetchKindSource(source,client,window,secret,fetch,budget.deadline);
     const smallRecharge=source.provider==='kind-recharge-cancellations'&&boundedRechargeContract(contract);
     if(smallRecharge)validateBoundedRechargeHistory(batch,contract,client,date);
     validateRegisteredBatch(batch,contract);
     if(!batch.complete||!batch.coverageThrough||Date.parse(batch.coverageThrough)<Date.parse(dayWindow(date,client.timezone).end)||batch.rows.some(row=>row.date!==date))throw Error('Historical capture did not cover the complete store day');
-    const hash=await fingerprint(batch),key=`snapshots/${scope.organizationId}:${client.id}:${source.id}:${hash}.json`;
-    await env.BUCKET.put(key,JSON.stringify(batch),{httpMetadata:{contentType:'application/json'}});
-    const capturedAt=new Date().toISOString();
+    const hash=resumed?.hash??await fingerprint(batch),key=`snapshots/${scope.organizationId}:${client.id}:${source.id}:${hash}.json`;
+    if(!resumed)await env.BUCKET.put(key,JSON.stringify(batch),{httpMetadata:{contentType:'application/json'}});
+    const capturedAt=resumed?.retrievedAt??new Date().toISOString();
     await publish(async()=>{
      const storage=await storageBytes(store);out.storageBytes=storage;
      const retained=hourlyHistoryWindow(client.timezone),retainedFrom=source.provider==='kind-applovin'?shiftDate(retained.today,-28):retained.from;

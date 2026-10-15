@@ -1,12 +1,14 @@
 import {get,head} from '@vercel/blob';
-import type {AccessScope,SourceBatch} from '../analytics/contracts';
+import type {AccessScope,Client,Connection,SourceBatch} from '../analytics/contracts';
 import {fingerprint} from '../reviews/build';
 import {serverSecret} from '../server/secrets';
 import type {Store} from '../server/store';
 import {validateBatch} from '../sources/qualification';
 import {DailyScheduler} from './scheduler';
 import {denseHourlyHistoryProviders,hourlyHistoryWindow} from './hourly-history';
-import {dayWindow} from '../analytics/windows';
+import {dayWindow,todayIn} from '../analytics/windows';
+import {assertSourceActivation,validateRegisteredBatch} from '../sources/registered-contract';
+import {hourlySessionCutoff} from '../sources/kind-patches';
 
 type ArchivedSnapshot={id:string;organizationId:string;clientId:string;sourceId:string;retrievedAt:string;coverageThrough:string|null;complete:number;status:string;objectKey:string;provider:string|null};
 type ArchiveContent={text:string;bytes:number;pathname:string;etag:string};
@@ -43,6 +45,35 @@ async function verifiedArchive(store:Store,snapshot:ArchivedSnapshot,reader:Arch
  const client=(await store.clients(snapshot.organizationId)).find(value=>value.id===snapshot.clientId);
  if(!client||parsed.timezone!==client.timezone||parsed.currency!==client.currency||Number(parsed.complete)!==snapshot.complete||parsed.coverageThrough!==snapshot.coverageThrough)throw Error('Archive identity or capture metadata changed');
  return {batch:parsed as SourceBatch,hash,archive};
+}
+
+/** Complete a recent frozen capture before asking a changing provider for a
+ * replacement. Only immutable, currently qualified, same-day hourly evidence
+ * can reuse staged keys; every failed eligibility check falls back to a fresh
+ * capture. This helper does not publish, delete, or change source health. */
+export async function readRecentWritingCapture(store:Store,scope:AccessScope,source:Connection,client:Client,window:{from:string;to:string},options:{deadline:number;readArchive?:ArchiveReader}):Promise<{batch:SourceBatch;hash:string;retrievedAt:string}|null>{
+ const now=Date.now();
+ if(now>=options.deadline||!['admin','service'].includes(scope.role)||!scope.permittedClientIds.includes(client.id)||client.id!=='kind-patches'||source.clientId!==client.id||!source.enabled||!['kind-shopify-traffic','kind-meta-performance'].includes(source.provider)||window.from!==window.to)return null;
+ try{
+  const today=todayIn(client.timezone,new Date(now)),day=dayWindow(window.to,client.timezone);
+  if(window.to>today)return null;
+  const through=window.to<today?day.end:hourlySessionCutoff(client.timezone,new Date(now)).through;
+  if(Date.parse(through)<=Date.parse(day.start))return null;
+  const record=await store.qualification(scope.organizationId,source.id),contract=assertSourceActivation(source,record,client);
+  if(!contract.hourlyGrain||contract.profiles.some(profile=>!profile.hourly)||Date.now()>=options.deadline)return null;
+  const activation="c.id=s.sourceId AND c.organizationId=s.organizationId AND c.clientId=s.clientId AND c.enabled=1 AND c.provider=? AND c.version=? AND cl.id=s.clientId AND cl.organizationId=s.organizationId AND cl.version=? AND cl.timezone=? AND cl.currency=? AND q.organizationId=s.organizationId AND q.sourceId=s.sourceId AND q.connectionVersion=c.version AND q.clientVersion=cl.version AND q.version=? AND q.payload=? AND NOT EXISTS(SELECT 1 FROM qualifications newer WHERE newer.organizationId=q.organizationId AND newer.sourceId=q.sourceId AND newer.version>q.version)",activationArgs=[source.provider,source.version,client.version,client.timezone,client.currency,record!.version,JSON.stringify(record!.payload)];
+  const valid="s.organizationId=? AND s.clientId=? AND s.sourceId=? AND s.status='writing' AND s.complete=1 AND julianday(s.retrievedAt)>julianday(?) AND julianday(s.retrievedAt)<=julianday(?) AND julianday(s.coverageThrough)>julianday(?) AND julianday(s.coverageThrough)<=julianday(?) AND NOT EXISTS(SELECT 1 FROM audit a WHERE a.id='archive-materialization:'||s.id AND a.organizationId=s.organizationId AND a.clientId=s.clientId AND a.action='snapshot.materialization.archive_verified') AND NOT EXISTS(SELECT 1 FROM current_snapshots p WHERE p.organizationId=s.organizationId AND p.clientId=s.clientId AND p.sourceId=s.sourceId AND p.date=? AND julianday(p.publishedAt)>julianday(s.retrievedAt))",validArgs=[scope.organizationId,client.id,source.id,new Date(options.deadline-7200000).toISOString(),new Date(now).toISOString(),day.start,through,window.to];
+  const joins='FROM snapshots s JOIN connections c ON c.id=s.sourceId JOIN clients cl ON cl.id=s.clientId JOIN qualifications q ON q.organizationId=s.organizationId AND q.sourceId=s.sourceId';
+  const snapshot=await store.first<ArchivedSnapshot>(`SELECT s.*,c.provider ${joins} WHERE ${activation} AND ${valid} ORDER BY s.retrievedAt DESC,s.id DESC LIMIT 1`,...activationArgs,...validArgs);
+  if(!snapshot||Date.now()>=options.deadline||Date.parse(snapshot.coverageThrough??'')>Date.parse(snapshot.retrievedAt)||!Number.isInteger((Date.parse(snapshot.coverageThrough??'')-Date.parse(day.start))/3600000)||window.to<today&&Date.parse(snapshot.coverageThrough??'')!==Date.parse(day.end))return null;
+  const verified=await verifiedArchive(store,snapshot,options.readArchive??privateArchive,options.deadline),batch=verified.batch;
+  validateRegisteredBatch(batch,contract);
+  if(batch.grain!=='hourly'||!batch.complete||!batch.rows.length||batch.nextCursor||batch.rows.some(row=>row.date!==window.to||!row.start||!row.end||!Number.isFinite(Date.parse(row.start))||!Number.isFinite(Date.parse(row.end))||Date.parse(row.start)<Date.parse(day.start)||Date.parse(row.end)>Date.parse(snapshot.coverageThrough!)||Date.parse(row.end)-Date.parse(row.start)>7200000)||Date.now()>=options.deadline)return null;
+  const unchanged=await store.first(`SELECT s.id ${joins} WHERE ${activation} AND ${valid} AND s.id=? AND s.objectKey=? AND s.retrievedAt=? AND s.coverageThrough=? LIMIT 1`,...activationArgs,...validArgs,snapshot.id,snapshot.objectKey,snapshot.retrievedAt,snapshot.coverageThrough);
+  if(!unchanged||Date.now()>=options.deadline)return null;
+  console.info('Resuming immutable source capture',{provider:source.provider,storeDate:window.to,coverageThrough:batch.coverageThrough,retrievedAt:snapshot.retrievedAt});
+  return {batch,hash:verified.hash,retrievedAt:snapshot.retrievedAt};
+ }catch{return null;}
 }
 
 // These predicates are repeated inside every DELETE, after remote archive

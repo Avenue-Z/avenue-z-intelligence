@@ -1,7 +1,7 @@
 import {Temporal} from '@js-temporal/polyfill';
 import type {Observation} from './contracts';
 export type FunnelRollupOptions={timezone:string;cutoffClock?:string;cutoffDates?:ReadonlySet<string>};
-export type FunnelRollupObservation=Observation&{aggregation?:'hourly_public_page_funnel_rollup'|'hourly_public_page_traffic_rollup';contributionCount?:number;contextOnly?:true};
+export type FunnelRollupObservation=Observation&{aggregation?:'hourly_public_page_funnel_rollup'|'hourly_public_page_traffic_rollup';contributionCount?:number;contextOnly?:true;contextGrain?:'daily'|'hourly'|'interval'|'unknown'};
 const metrics=new Set(['sessions','atc_sessions','checkouts','converting_sessions','completed_checkouts']);
 const trafficDimensions=['page','market','device','source','utm_source','utm_medium','utm_campaign'];
 type Interval={start:number;end:number};

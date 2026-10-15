@@ -16,6 +16,7 @@ import {generateAIReview} from '../ai/server';
 import type {ScheduledReviewLease} from '../server/store';
 import {retryPublication} from './publication-retry';
 import {AppLovinSettlingHourError} from '../sources/hourly-paid-media';
+import {readRecentWritingCapture} from './archive-materialization-retention';
 export {serverSecret} from '../server/secrets';
 // Leave enough of the shared source-run budget for a bounded provider request
 // (25 seconds) plus setup. Later jobs stay pending for the next native tick.
@@ -60,14 +61,15 @@ export async function runSyncBatch(scope:AccessScope,budget={maxJobs:7,deadline:
       const closedRepairs=runtimePlatform==='vercel'&&!historyDate&&!j.id.includes(':manual:')&&source.lastSuccess?{deadline:null as number|null}:undefined;
       const skipClosedDates=runtimePlatform==='vercel'&&!historyDate&&!j.id.includes(':manual:')&&source.lastSuccess&&['kind-shopify-hourly','kind-shopify-funnels'].includes(source.provider)?await closedSessionDatesToSkip(s,scope.organizationId,client,source,qualified,kindSourceDates(source,client,window),new Date()):undefined;
       if(skipClosedDates?.size)console.info('Reusing settled session captures',{provider:source.provider,closedDays:skipClosedDates.size});
-      const batches=historyDate?(async function*(){yield {batch:await fetchKindSource(source,client,window,secret,fetch,budget.deadline),window};})():source.provider==='gateway'?(async function*(){yield {batch:await fetchGateway(source,client,window,secret,fetch,budget.deadline),window};})():fetchKindBatches(source,client,window,secret,fetch,budget.deadline,skipClosedDates,closedRepairs);
+      const resumed=runtimePlatform==='vercel'?await readRecentWritingCapture(s,scope,source,client,window,{deadline:budget.deadline}):null;
+      const batches=resumed?(async function*(){yield {batch:resumed.batch,window};})():historyDate?(async function*(){yield {batch:await fetchKindSource(source,client,window,secret,fetch,budget.deadline),window};})():source.provider==='gateway'?(async function*(){yield {batch:await fetchGateway(source,client,window,secret,fetch,budget.deadline),window};})():fetchKindBatches(source,client,window,secret,fetch,budget.deadline,skipClosedDates,closedRepairs);
       for await(const {batch,window:actualWindow} of batches){
         // The generator selects the mandatory anchor after optional reuse reads;
         // use its actual date if those reads crossed a completed-hour boundary.
         currentAnchor??=actualWindow.to;
-        validateRegisteredBatch(batch,qualified);const hash=await fingerprint(batch),key=`snapshots/${scope.organizationId}:${client.id}:${source.id}:${hash}.json`;
-        await env.BUCKET.put(key,JSON.stringify(batch),{httpMetadata:{contentType:'application/json'}});
-        const capturedAt=new Date().toISOString();
+        validateRegisteredBatch(batch,qualified);const hash=resumed?.hash??await fingerprint(batch),key=`snapshots/${scope.organizationId}:${client.id}:${source.id}:${hash}.json`;
+        if(!resumed)await env.BUCKET.put(key,JSON.stringify(batch),{httpMetadata:{contentType:'application/json'}});
+        const capturedAt=resumed?.retrievedAt??new Date().toISOString();
         await s.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,actualWindow,{publicationDeadline:budget.deadline,...(['kind-shopify-traffic','kind-meta-performance'].includes(source.provider)?{factPageSize:500 as const}:{})});
         if(batch.coverageThrough&&(!coverage||Date.parse(batch.coverageThrough)>Date.parse(coverage)))coverage=batch.coverageThrough;
         // Once today's complete query is durably archived and published, its
@@ -79,6 +81,13 @@ export async function runSyncBatch(scope:AccessScope,budget={maxJobs:7,deadline:
         }
       }
       if(!historyDate){const publishedAt=new Date().toISOString();await retryPublication('source.freshness',budget.deadline,()=>s.run('UPDATE connections SET lastSuccess=?,coverageThrough=?,error=NULL WHERE id=? AND organizationId=?',publishedAt,coverage,source.id,scope.organizationId));}
+      if(resumed&&!historyDate&&coverage&&Date.parse(coverage)<Date.parse(hourlySessionCutoff(client.timezone).through)){
+        // Completing an older immutable capture does not satisfy this poll
+        // bucket. Keep the exact owned job eligible: enqueueDue cannot reopen
+        // its immutable id after completion, even when coverage is still due.
+        await retryPublication('source.resume.catchup',budget.deadline,()=>s.run("UPDATE jobs SET status='pending',attempts=MAX(0,attempts-1),dueAt=?,error=NULL,leaseUntil=NULL WHERE id=? AND organizationId=? AND status='running' AND attempts=? AND leaseUntil=?",new Date(Date.now()+5*60000).toISOString(),j.id,scope.organizationId,j.attempts,j.leaseUntil));
+        continue;
+      }
       completing=true;
       const completed=await retryPublication('source.complete',budget.deadline,()=>s.run("UPDATE jobs SET status='complete',error=NULL,leaseUntil=NULL WHERE id=? AND organizationId=? AND status='running' AND attempts=? AND leaseUntil=?",j.id,scope.organizationId,j.attempts,j.leaseUntil));
       if(completed.meta.changes)out.completed.push(j.id);

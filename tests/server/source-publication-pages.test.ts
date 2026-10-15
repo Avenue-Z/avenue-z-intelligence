@@ -14,9 +14,28 @@ function database(){
  const db={prepare,async batch(statements:Statement[]){sqlite.exec('BEGIN');try{const results=[];for(const statement of statements)results.push(await statement.run());sqlite.exec('COMMIT');return results;}catch(error){sqlite.exec('ROLLBACK');throw error;}}};
  return {sqlite,db,store:new Store(db)};
 }
-const batch=():SourceBatch=>({clientId:'kind-patches',timezone:'UTC',currency:'USD',channels:[],dimensions:['page'],grain:'daily',complete:true,coverageThrough:'2026-10-13T17:00:00Z',rows:Array.from({length:4001},(_,index)=>({date:'2026-10-13',dataset:'traffic',metric:'sessions',value:index+1,definition:'human',population:'human',currency:null,dimensions:{page:`/page-${index}`},sourceId:'',retrievedAt:'',coverageThrough:null,quality:'complete'}))});
+const batch=():SourceBatch=>({clientId:'kind-patches',timezone:'UTC',currency:'USD',channels:[],dimensions:['page'],grain:'daily',complete:true,coverageThrough:'2026-10-13T17:00:00Z',rows:Array.from({length:4001},(_,index)=>({date:'2026-10-13',dataset:'traffic',metric:'sessions',value:index+1,definition:'human',population:'human',currency:null,dimensions:{page:`/page-${String(index).padStart(4,'0')}`},sourceId:'',retrievedAt:'',coverageThrough:null,quality:'complete'}))});
 const timeout=()=>new DOMException('Database request timed out','TimeoutError');
 afterEach(()=>vi.restoreAllMocks());
+
+it('writes dense pages in primary-key order while retaining exact facts and duplicate first-wins values',async()=>{
+ const dense=database(),legacy=database(),input=batch(),first=input.rows[0];
+ input.rows=[...input.rows].reverse();input.rows.splice(100,0,{...first,value:999});input.rows.push({...first,value:888});
+ input.rows.push(...input.rows.slice(0,20).map(row=>({...row,date:'2026-10-12'})));
+ const original=dense.db.batch,keys:string[]=[];
+ dense.db.batch=async statements=>{if(statements[0]?.sql.startsWith('INSERT INTO observations'))for(const value of JSON.parse(String(statements[0].values[1])))keys.push(JSON.stringify([value.date,value.rowKey]));return original(statements);};
+ const stamp='2026-10-13T17:05:00Z',id=await dense.store.persistBatch('o','source',input,'same',stamp,undefined,{factPageSize:500,publicationDeadline:Date.now()+120000});
+ await legacy.store.persistBatch('o','source',input,'same',stamp);
+ expect(keys).toEqual([...keys].sort());
+ expect(dense.sqlite.prepare('SELECT * FROM observations ORDER BY snapshotId,date,rowKey').all()).toEqual(legacy.sqlite.prepare('SELECT * FROM observations ORDER BY snapshotId,date,rowKey').all());
+ expect(dense.sqlite.prepare('SELECT * FROM current_snapshots ORDER BY date').all()).toEqual(legacy.sqlite.prepare('SELECT * FROM current_snapshots ORDER BY date').all());
+ const rowKey=JSON.stringify([first.dataset,first.metric,first.start,first.end,Object.entries(first.dimensions).sort()]);
+ expect(JSON.parse(String(dense.sqlite.prepare('SELECT payload FROM observations WHERE snapshotId=? AND date=? AND rowKey=?').get(id,first.date,rowKey)?.payload)).value).toBe(999);
+ for(const date of ['2026-10-12','2026-10-13']){
+  const payload=(db:DatabaseSync)=>db.prepare('SELECT payload FROM snapshot_day_projection_chunks WHERE snapshotId=? AND date=? ORDER BY chunkIndex').all(id,date).map(row=>row.payload).join('');
+  expect(observationCodec.decode(payload(dense.sqlite))).toEqual(observationCodec.decode(payload(legacy.sqlite)));
+ }
+});
 
 it('bounds explicitly dense fact transactions to 500 rows while publishing every fact before its pointer',async()=>{
  const {store,db,sqlite}=database(),original=db.batch,pages:number[]=[];

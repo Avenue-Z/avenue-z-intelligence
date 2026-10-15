@@ -2,16 +2,18 @@ import {observationCodec} from './observation-codec';
 import type {Store} from './store';
 type Manifest={generation:string;chunkCount:number;characters:number;payloadHash:string};
 const chunkCharacters=64*1024,maxCharacters=6*1024*1024,chunksPerPage=4;
+export const trendDayCacheLimits={prefix:'trend-day:',maximumCharacters:512*1024,maximumEntries:384,maximumBytes:64*1024*1024} as const;
 async function digest(value:string){return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))),byte=>byte.toString(16).padStart(2,'0')).join('');}
+export async function observationCacheKey(key:string,trendDay=false){return `${trendDay?trendDayCacheLimits.prefix:''}${await digest(`observation-codec-v1:${key}`)}`;}
 function chunks(payload:string){const output:string[]=[];for(let start=0;start<payload.length;){let end=Math.min(start+chunkCharacters,payload.length);if(end<payload.length&&payload.charCodeAt(end-1)>=0xd800&&payload.charCodeAt(end-1)<=0xdbff)end--;output.push(payload.slice(start,end));start=end;}return output;}
 
 /** Optional derived cache in the application's shared SQLite database.
  * Every lookup is tenant-scoped and uses the caller's freshly captured source
  * version. A generation is readable only after all bounded chunks publish.
  */
-export async function durableObservationPayload(db:Store['db'],org:string,client:string,key:string,load:()=>Promise<string>,deadline?:number,options:{publish?:boolean}={}):Promise<string>{
- const publish=options.publish!==false;
- const cacheKey=await digest(`observation-codec-v1:${key}`),scope=[org,client,cacheKey];
+export async function durableObservationPayload(db:Store['db'],org:string,client:string,key:string,load:()=>Promise<string>,deadline?:number,options:{publish?:boolean;trendDay?:boolean;expected?:{date:string;sourceId:string}}={}):Promise<string>{
+ const publish=options.publish!==false,maximumCharacters=options.trendDay?trendDayCacheLimits.maximumCharacters:maxCharacters;
+ const cacheKey=await observationCacheKey(key,options.trendDay),scope=[org,client,cacheKey];
  const checkBudget=()=>{if(deadline!==undefined&&Date.now()>=deadline)throw Error('Observation cache warm budget elapsed');};
  const first=async<T>(sql:string,...values:unknown[]):Promise<T|null>=>{checkBudget();const row=await db.prepare(sql).bind(...values).first();checkBudget();return row;};
  const all=async<T>(sql:string,...values:unknown[]):Promise<T[]>=>{checkBudget();const rows=(await db.prepare(sql).bind(...values).all()).results;checkBudget();return rows;};
@@ -23,7 +25,7 @@ export async function durableObservationPayload(db:Store['db'],org:string,client
  try{
   manifest=await first<Manifest>("SELECT generation,chunkCount,characters,payloadHash FROM observation_cache_entries WHERE organizationId=? AND clientId=? AND cacheKey=? AND status='ready'",...scope);
   if(manifest){
-   if(!Number.isInteger(manifest.chunkCount)||manifest.chunkCount<1||manifest.chunkCount>Math.ceil(maxCharacters/chunkCharacters)+1||!Number.isInteger(manifest.characters)||manifest.characters<1||manifest.characters>maxCharacters)throw Error('Invalid cache manifest');
+   if(!Number.isInteger(manifest.chunkCount)||manifest.chunkCount<1||manifest.chunkCount>Math.ceil(maximumCharacters/chunkCharacters)+1||!Number.isInteger(manifest.characters)||manifest.characters<1||manifest.characters>maximumCharacters)throw Error('Invalid cache manifest');
    const parts:string[]=Array(manifest.chunkCount);
    for(let start=0;start<manifest.chunkCount;start+=chunksPerPage*4){
     const pages=await Promise.all(Array.from({length:Math.min(4,Math.ceil((manifest.chunkCount-start)/chunksPerPage))},(_,index)=>{
@@ -35,6 +37,7 @@ export async function durableObservationPayload(db:Store['db'],org:string,client
    const payload=parts.join('');if(payload.length!==manifest.characters||await digest(payload)!==manifest.payloadHash)throw Error('Cache integrity mismatch');
    // Treat malformed codec data as a miss even when its manifest was altered.
    if(!observationCodec.valid(payload))throw Error('Invalid cache codec');
+   if(options.expected)observationCodec.visit(payload,()=>{},options.expected);
    // Native warming refreshes ready-entry recency so advancing intraday keys
    // cannot evict repeatedly warmed closed scopes. Foreground hits stay read-only.
    if(deadline!==undefined&&publish){checkBudget();try{await db.prepare("UPDATE observation_cache_entries SET createdAt=? WHERE organizationId=? AND clientId=? AND cacheKey=? AND generation=? AND status='ready'").bind(new Date().toISOString(),...scope,manifest.generation).run();}catch{/* Optional recency cannot invalidate correct cached evidence. */}checkBudget();}
@@ -42,12 +45,15 @@ export async function durableObservationPayload(db:Store['db'],org:string,client
   }
  }catch(error){if(deadline!==undefined&&Date.now()>=deadline)throw error;if(manifest&&publish)await discard(manifest.generation);}
  const payload=await load();
- if(!publish||payload.length>maxCharacters||deadline!==undefined&&Date.now()>=deadline)return payload;
+ if(!publish||payload.length>maximumCharacters||deadline!==undefined&&Date.now()>=deadline)return payload;
  const generation=crypto.randomUUID(),createdAt=new Date().toISOString(),expired=new Date(Date.now()-300000).toISOString(),pieces=chunks(payload);
  try{
   const claim=await db.batch([
    db.prepare("INSERT INTO observation_cache_entries(organizationId,clientId,cacheKey,generation,status,chunkCount,characters,payloadHash,createdAt) VALUES(?,?,?,?,'writing',?,?,?,?) ON CONFLICT(organizationId,clientId,cacheKey) DO UPDATE SET generation=excluded.generation,status='writing',chunkCount=excluded.chunkCount,characters=excluded.characters,payloadHash=excluded.payloadHash,createdAt=excluded.createdAt WHERE observation_cache_entries.status='writing' AND observation_cache_entries.createdAt<?").bind(...scope,generation,pieces.length,payload.length,await digest(payload),createdAt,expired),
-   db.prepare('DELETE FROM observation_cache_entries WHERE organizationId=? AND clientId=? AND cacheKey NOT IN (SELECT cacheKey FROM observation_cache_entries WHERE organizationId=? AND clientId=? ORDER BY createdAt DESC,cacheKey LIMIT 24)').bind(org,client,org,client),
+   // Day cohorts have a small separate budget so publishing a range cannot
+   // evict the unchanged days needed by the next hourly range refresh. Three
+   // bytes per UTF-16 character bounds UTF-8 even for non-ASCII page names.
+   options.trendDay?db.prepare("DELETE FROM observation_cache_entries WHERE organizationId=? AND clientId=? AND cacheKey LIKE 'trend-day:%' AND cacheKey NOT IN (SELECT cacheKey FROM (SELECT cacheKey,ROW_NUMBER() OVER (ORDER BY createdAt DESC,cacheKey) AS position,SUM(characters*3) OVER (ORDER BY createdAt DESC,cacheKey ROWS UNBOUNDED PRECEDING) AS bytes FROM observation_cache_entries WHERE organizationId=? AND clientId=? AND cacheKey LIKE 'trend-day:%') WHERE position<=? AND bytes<=?)").bind(org,client,org,client,trendDayCacheLimits.maximumEntries,trendDayCacheLimits.maximumBytes):db.prepare("DELETE FROM observation_cache_entries WHERE organizationId=? AND clientId=? AND cacheKey NOT LIKE 'trend-day:%' AND cacheKey NOT IN (SELECT cacheKey FROM observation_cache_entries WHERE organizationId=? AND clientId=? AND cacheKey NOT LIKE 'trend-day:%' ORDER BY createdAt DESC,cacheKey LIMIT 24)").bind(org,client,org,client),
    db.prepare('DELETE FROM observation_cache_chunks WHERE organizationId=? AND clientId=? AND NOT EXISTS (SELECT 1 FROM observation_cache_entries e WHERE e.organizationId=observation_cache_chunks.organizationId AND e.clientId=observation_cache_chunks.clientId AND e.cacheKey=observation_cache_chunks.cacheKey AND e.generation=observation_cache_chunks.generation)').bind(org,client)
   ]);
   if(!claim[0].meta.changes)return payload;

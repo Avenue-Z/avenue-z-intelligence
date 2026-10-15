@@ -6,6 +6,7 @@ import {workspaceDatasets,workspaceObservationSelection} from '../analytics/work
 import {queryClient} from '../analytics/query';
 import {workspacePresentation} from '../analytics/presentation';
 import {preparedWorkspaceFrame} from './prepared-workspace-cache';
+import {withAnalyticsMemory} from './analytics-memory';
 import type {Store} from './store';
 
 /** Warm one changed client after its source jobs have already completed.
@@ -48,6 +49,10 @@ export async function warmSuccessfulSourceJobs(store:Store,scope:AccessScope,job
    result.attempted++;
    const preparedDatasets=filters.page?['traffic','funnels']:workspaceDatasets(filters.view);
    const selection=filters.page?{datasets:preparedDatasets,dimensions:true,includePriorWeek:false,includeOperations:false,trendDatasets:[]}:workspaceObservationSelection(filters.view);
+   // A ready browser frame can precede the native tick. Prepare immutable
+   // chart days once here even when that full prepared frame is already ready.
+   const trendDeadline=Math.min(deadline,Date.now()+60000);
+   if(native&&filters.view==='traffic'&&filters.mode==='partial'&&filters.compare==='previous'&&!filters.page)await withAnalyticsMemory(async()=>{await store.observations(scope.organizationId,client.id,filters,false,{deadline:trendDeadline},selection);if(Date.now()>=trendDeadline)throw Error('Observation cache warm budget elapsed');});
    if(native){const frame=await preparedWorkspaceFrame({store,organizationId:scope.organizationId,client,filters,preparedDatasets,selection,deadline},async(connections,canonicalFilters)=>{
     const rows=await store.observations(scope.organizationId,client.id,canonicalFilters,false,{deadline},selection);
     if(Date.now()>=deadline)throw Error('Prepared frame warm budget elapsed');

@@ -35,9 +35,9 @@ it.each(['manifest','projection-chunks','legacy-page'])('stops bounded Store tre
 });
 it('stops an expired trend-cache hit without a canonical fallback or republishing its ready generation',async()=>{
  const {sqlite,store,reads,state}=database();try{
-  const pointers=[{snapshotId,sourceId,date}];expect((await readTrendObservations(store,pointers,['traffic'],filters,scope))[0].value).toBe(4101);const manifest=sqlite.prepare('SELECT generation,status,createdAt FROM observation_cache_entries').get();reads.length=0;
-  const started=Date.parse('2026-10-14T12:00:00Z'),deadline=started+1000;let clock=started;vi.spyOn(Date,'now').mockImplementation(()=>clock);state.afterRead=sql=>{if(sql.includes('FROM observation_cache_chunks'))clock=deadline;};
-  await expect(readTrendObservations(store,pointers,['traffic'],filters,scope,undefined,deadline)).rejects.toThrow('Observation cache warm budget elapsed');expect(reads.some(sql=>sql.startsWith('WITH page AS MATERIALIZED')||sql.includes('JOIN snapshot_day_projection_entries'))).toBe(false);expect(sqlite.prepare('SELECT generation,status,createdAt FROM observation_cache_entries').get()).toEqual(manifest);
+  const pointers=[{snapshotId,sourceId,date}];expect((await readTrendObservations(store,pointers,['traffic'],filters,scope,undefined,Date.now()+60000))[0].value).toBe(4101);const manifests=sqlite.prepare('SELECT cacheKey,generation,status,createdAt FROM observation_cache_entries ORDER BY cacheKey').all();expect(manifests).toHaveLength(3);reads.length=0;
+  const started=Date.parse('2026-10-14T12:00:00Z'),deadline=started+1000;let clock=started;vi.spyOn(Date,'now').mockImplementation(()=>clock);state.afterRead=sql=>{if(sql.includes('observation_cache_chunks'))clock=deadline;};
+  await expect(readTrendObservations(store,pointers,['traffic'],filters,scope,undefined,deadline)).rejects.toThrow('Observation cache warm budget elapsed');expect(reads.some(sql=>sql.startsWith('WITH page AS MATERIALIZED')||sql.includes('JOIN snapshot_day_projection_entries'))).toBe(false);expect(sqlite.prepare('SELECT cacheKey,generation,status,createdAt FROM observation_cache_entries ORDER BY cacheKey').all()).toEqual(manifests);
  }finally{sqlite.close();}
 });
 it('rejects an already expired direct trend deadline before any cache or source read',async()=>{
