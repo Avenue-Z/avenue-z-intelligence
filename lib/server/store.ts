@@ -223,7 +223,7 @@ export class Store {
       freshOperationalPointers.length?readPage<{payload:string}>(`SELECT json_extract(o.payload,'$') AS payload FROM json_each(?) p JOIN observations o ON o.snapshotId=json_extract(p.value,'$.snapshotId') AND o.date=json_extract(p.value,'$.date') WHERE json_extract(o.payload,'$.metric') IN ('active_customers','active_ads','active_creatives') ORDER BY o.date,o.rowKey`,JSON.stringify(freshOperationalPointers)).then(async rows=>{const operations=rows.map(row=>JSON.parse(row.payload) as Observation),current=operations.filter(row=>row.metric==='active_customers'&&row.quality==='complete').sort((a,b)=>b.date.localeCompare(a.date)||b.retrievedAt.localeCompare(a.retrievedAt))[0];if(current){const comparison=await readActiveCustomerComparison(this,org,client,current,options?.deadline);if(comparison)current.activeCustomerComparison=comparison;}return operations;}):Promise.resolve([])]);
     return operations.length?[...cached,...operations]:cached;
   }
-  async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string},options?:{restoreMaterialization?:boolean;publicationDeadline?:number;factPageSize?:500;beforeFactPage?:()=>Promise<void>}) {
+  async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string},options?:{restoreMaterialization?:boolean;publicationDeadline?:number;factPageSize?:100|500;beforeFactPage?:()=>Promise<void>}) {
     // A fact page is replay-safe even when the database committed before its
     // response timed out. Retry that exact page, not the entire large capture.
     const publish=<T>(operation:string,work:()=>Promise<T>):Promise<T>=>{
@@ -318,8 +318,10 @@ export class Store {
     // Dense captures otherwise scatter each small transaction across both
     // snapshot indexes. Stable primary-key order keeps consecutive pages local
     // while retaining the original first value of duplicate source keys.
-    if(options?.factPageSize===500)factRows.sort((a,b)=>a.row.date<b.row.date?-1:a.row.date>b.row.date?1:a.key<b.key?-1:a.key>b.key?1:0);
-    for(let n=0;n<factRows.length;n+=factPageSize){const inserts:ReturnType<Db['prepare']>[]=[];for(let start=n;start<Math.min(n+factPageSize,factRows.length);start+=500){const values=factRows.slice(start,start+500).map(({row,key})=>({date:row.date,rowKey:key,payload:JSON.stringify(row)}));inserts.push(this.db.prepare("INSERT INTO observations(snapshotId,date,rowKey,payload) SELECT ?,json_extract(value,'$.date'),json_extract(value,'$.rowKey'),json_extract(value,'$.payload') FROM json_each(?) WHERE 1 ON CONFLICT DO NOTHING").bind(id,JSON.stringify(values)));}await publishFacts('source.facts.page',()=>this.db.batch(inserts));}
+    if(options?.factPageSize)factRows.sort((a,b)=>a.row.date<b.row.date?-1:a.row.date>b.row.date?1:a.key<b.key?-1:a.key>b.key?1:0);
+    // Hosted ingestion yields the writer between 100-row transactions so
+    // subscription events and other hourly sources can commit in between.
+    for(let n=0;n<factRows.length;n+=factPageSize){const inserts:ReturnType<Db['prepare']>[]=[];for(let start=n;start<Math.min(n+factPageSize,factRows.length);start+=500){const values=factRows.slice(start,Math.min(start+500,n+factPageSize)).map(({row,key})=>({date:row.date,rowKey:key,payload:JSON.stringify(row)}));inserts.push(this.db.prepare("INSERT INTO observations(snapshotId,date,rowKey,payload) SELECT ?,json_extract(value,'$.date'),json_extract(value,'$.rowKey'),json_extract(value,'$.payload') FROM json_each(?) WHERE 1 ON CONFLICT DO NOTHING").bind(id,JSON.stringify(values)));}await publishFacts('source.facts.page',()=>this.db.batch(inserts));}
     const pointers=[];
     for(const date of dates){const {dataHash,coveredThrough}=dayHashes.get(date)!;
       // Pin the retained immutable id, even if a concurrent older publication

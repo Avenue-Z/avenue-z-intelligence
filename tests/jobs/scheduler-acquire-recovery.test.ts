@@ -28,9 +28,18 @@ it('keeps the original failure when acquisition did not commit and never retries
  let failure:unknown;const request=new DailyScheduler(store).acquire(id,started,900000).catch(error=>{failure=error;});await vi.advanceTimersByTimeAsync(5000);await request;
  expect(failure).toBe(error);expect(savedLease()).toBeUndefined();expect(writes).toHaveBeenCalledTimes(1);expect(reads).toHaveBeenCalledTimes(20);expect(console.warn).toHaveBeenLastCalledWith('Runner lease acquisition reconciled',{operation:'runner-lease.acquire',outcome:'absent',ms:5000,reads:20});
 });
-it('never claims or alters a replacement owner after an uncertain acquisition',async()=>{
+it('cleanly skips a confirmed live replacement owner after an uncertain acquisition',async()=>{
  const error=timeout(),writes=loseAcquisitionAcknowledgment(error,()=>{sqlite.prepare('UPDATE runner_leases SET token=? WHERE id=?').run('replacement-owner',id);}),reads=vi.spyOn(store,'first');
- await expect(new DailyScheduler(store).acquire(id,started,900000)).rejects.toBe(error);expect(savedLease()).toEqual({id,token:'replacement-owner',leaseUntil:expectedUntil});expect(reads).toHaveBeenCalledTimes(1);expect(writes).toHaveBeenCalledTimes(1);expect(console.warn).toHaveBeenLastCalledWith('Runner lease acquisition reconciled',{operation:'runner-lease.acquire',outcome:'other-owner',ms:0,reads:1});
+ await expect(new DailyScheduler(store).acquire(id,started,900000)).resolves.toBeNull();expect(savedLease()).toEqual({id,token:'replacement-owner',leaseUntil:expectedUntil});expect(reads).toHaveBeenCalledTimes(1);expect(writes).toHaveBeenCalledTimes(1);expect(console.warn).toHaveBeenLastCalledWith('Runner lease acquisition reconciled',{operation:'runner-lease.acquire',outcome:'other-owner',ms:0,reads:1});
+});
+it.each(['2026-10-14T17:28:23.254Z','invalid'])('preserves the failure for an unproven replacement lease expiring at %s',async leaseUntil=>{
+ const error=timeout(),writes=loseAcquisitionAcknowledgment(error,()=>{sqlite.prepare('UPDATE runner_leases SET token=?,leaseUntil=? WHERE id=?').run('replacement-owner',leaseUntil,id);});
+ await expect(new DailyScheduler(store).acquire(id,started,900000)).rejects.toBe(error);expect(savedLease()).toEqual({id,token:'replacement-owner',leaseUntil});expect(writes).toHaveBeenCalledTimes(1);
+});
+it('does not accept another owner read after the confirmation budget expires',async()=>{
+ const error=timeout();loseAcquisitionAcknowledgment(error,()=>{sqlite.prepare('UPDATE runner_leases SET token=? WHERE id=?').run('replacement-owner',id);});const read=store.first.bind(store);
+ vi.spyOn(store,'first').mockImplementationOnce(async(sql,...values)=>{const row=await read(sql,...values);vi.setSystemTime(Date.now()+5001);return row;});
+ await expect(new DailyScheduler(store).acquire(id,started,900000)).rejects.toBe(error);expect(savedLease()?.token).toBe('replacement-owner');
 });
 it('rejects the same token when its durable expiry differs from this acquisition attempt',async()=>{
  const error=timeout(),differentUntil='2026-10-14T17:44:23.254Z';loseAcquisitionAcknowledgment(error,()=>{sqlite.prepare('UPDATE runner_leases SET leaseUntil=? WHERE id=?').run(differentUntil,id);});

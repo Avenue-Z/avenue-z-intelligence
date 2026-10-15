@@ -9,9 +9,7 @@ import {retainedRechargeCreations} from '../server/recharge-creation-retention';
 import {hourlySessionCutoff} from '../sources/kind-patches';
 import {closedSessionDatesToSkip} from './closed-session-dates';
 import {planHistoricalHourlyJobs} from './hourly-history';
-import {fingerprint,reviewPayload} from '../reviews/build';
-import {queryClient} from '../analytics/query';
-import {Temporal} from '@js-temporal/polyfill';
+import {fingerprint} from '../reviews/build';
 import {serverSecret} from '../server/secrets';
 import {generateAIReview} from '../ai/server';
 import type {ScheduledReviewLease} from '../server/store';
@@ -54,8 +52,8 @@ export async function runSyncBatch(scope:AccessScope,budget={maxJobs:7,deadline:
     // measured capture budget against the clock immediately before claiming.
     if(budget.deadline-Date.now()<required)break;
     const j=await s.claim(now,scope.organizationId,scope.permittedClientIds,900000,true);if(!j)break;if(!scope.permittedClientIds.includes(j.clientId)){await s.finish(j.id,'Source access denied');continue;}
-    const historyPrefix=`${scope.organizationId}:${j.sourceId}:hourly-history:`,historyDate=String(j.id).startsWith(historyPrefix)?String(j.id).slice(historyPrefix.length):null;let currentPublished=false,completing=false;
-    try{const source=(await s.connections(scope.organizationId,j.clientId)).find(c=>c.id===j.sourceId&&c.enabled),client=clients.find(c=>c.id===j.clientId);if(!source||!client)throw new Error('Source is disabled or unavailable');const qualified=assertSourceActivation(source,await s.qualification(scope.organizationId,source.id),client);const secret=serverSecret(source.secretRef);if(!secret)throw new Error(`Server secret ${source.secretRef} is not configured`);
+    const historyPrefix=`${scope.organizationId}:${j.sourceId}:hourly-history:`,historyDate=String(j.id).startsWith(historyPrefix)?String(j.id).slice(historyPrefix.length):null;let currentPublished=false,completing=false,provider=next?.provider??'unknown',storagePhase:'facts'|'freshness'|'resume-catchup'|'completion'|null=null;
+    try{const source=(await s.connections(scope.organizationId,j.clientId)).find(c=>c.id===j.sourceId&&c.enabled),client=clients.find(c=>c.id===j.clientId);if(!source||!client)throw new Error('Source is disabled or unavailable');provider=source.provider;const qualified=assertSourceActivation(source,await s.qualification(scope.organizationId,source.id),client);const secret=serverSecret(source.secretRef);if(!secret)throw new Error(`Server secret ${source.secretRef} is not configured`);
       const date=todayIn(client.timezone);if(historyDate&&(!/^\d{4}-\d{2}-\d{2}$/.test(historyDate)||historyDate>=date||historyDate<shiftDate(date,source.provider==='kind-applovin'?-28:-61)||!['kind-shopify-sales','kind-shopify-products','kind-shopify-traffic','kind-meta-performance','kind-applovin'].includes(source.provider)))throw Error('Historical source window is invalid');
       const window=historyDate?{from:historyDate,to:historyDate}:client.id==='kind-patches'&&INDEPENDENT_HISTORY_PROVIDERS.has(source.provider)?{from:date,to:date}:{from:shiftDate(date,source.provider==='kind-shopify-hourly'?-1:source.lastSuccess?-6:-59),to:date};if(!env.BUCKET)throw new Error('Snapshot archive unavailable');let coverage:string|null=null;
       let currentAnchor:string|null=null;
@@ -72,25 +70,29 @@ export async function runSyncBatch(scope:AccessScope,budget={maxJobs:7,deadline:
         validateRegisteredBatch(batch,qualified);const hash=resumed?.hash??await fingerprint(batch),key=`snapshots/${scope.organizationId}:${client.id}:${source.id}:${hash}.json`;
         if(!resumed)await env.BUCKET.put(key,JSON.stringify(batch),{httpMetadata:{contentType:'application/json'}});
         const capturedAt=resumed?.retrievedAt??new Date().toISOString();
-        await s.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,actualWindow,{publicationDeadline:budget.deadline,...(['kind-shopify-traffic','kind-meta-performance'].includes(source.provider)?{factPageSize:500 as const}:{})});
+        storagePhase='facts';
+        await s.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,actualWindow,{publicationDeadline:budget.deadline,...(runtimePlatform==='vercel'?{factPageSize:100 as const}:['kind-shopify-traffic','kind-meta-performance'].includes(source.provider)?{factPageSize:500 as const}:{})});
+        storagePhase=null;
         if(batch.coverageThrough&&(!coverage||Date.parse(batch.coverageThrough)>Date.parse(coverage)))coverage=batch.coverageThrough;
         // Once today's complete query is durably archived and published, its
         // freshness is independent of optional historical repairs that follow.
         if(!historyDate&&batch.complete&&actualWindow.to===currentAnchor&&batch.coverageThrough&&Date.parse(batch.coverageThrough)>Date.parse(dayWindow(currentAnchor,client.timezone).start)){
           const publishedAt=new Date().toISOString();
-          await retryPublication('source.freshness',budget.deadline,()=>s.run('UPDATE connections SET lastSuccess=?,coverageThrough=?,error=NULL WHERE id=? AND organizationId=?',publishedAt,batch.coverageThrough,source.id,scope.organizationId));currentPublished=true;
+          storagePhase='freshness';
+          await retryPublication('source.freshness',budget.deadline,()=>s.run('UPDATE connections SET lastSuccess=?,coverageThrough=?,error=NULL WHERE id=? AND organizationId=?',publishedAt,batch.coverageThrough,source.id,scope.organizationId));currentPublished=true;storagePhase=null;
           if(closedRepairs)closedRepairs.deadline??=Math.min(Date.now()+60000,budget.deadline-MINIMUM_SOURCE_CLAIM_BUDGET_MS);
         }
       }
-      if(!historyDate){const publishedAt=new Date().toISOString();await retryPublication('source.freshness',budget.deadline,()=>s.run('UPDATE connections SET lastSuccess=?,coverageThrough=?,error=NULL WHERE id=? AND organizationId=?',publishedAt,coverage,source.id,scope.organizationId));}
+      if(!historyDate){const publishedAt=new Date().toISOString();storagePhase='freshness';await retryPublication('source.freshness',budget.deadline,()=>s.run('UPDATE connections SET lastSuccess=?,coverageThrough=?,error=NULL WHERE id=? AND organizationId=?',publishedAt,coverage,source.id,scope.organizationId));storagePhase=null;}
       if(resumed&&!historyDate&&coverage&&Date.parse(coverage)<Date.parse(hourlySessionCutoff(client.timezone).through)){
         // Completing an older immutable capture does not satisfy this poll
         // bucket. Keep the exact owned job eligible: enqueueDue cannot reopen
         // its immutable id after completion, even when coverage is still due.
+        storagePhase='resume-catchup';
         await retryPublication('source.resume.catchup',budget.deadline,()=>s.run("UPDATE jobs SET status='pending',attempts=MAX(0,attempts-1),dueAt=?,error=NULL,leaseUntil=NULL WHERE id=? AND organizationId=? AND status='running' AND attempts=? AND leaseUntil=?",new Date(Date.now()+5*60000).toISOString(),j.id,scope.organizationId,j.attempts,j.leaseUntil));
         continue;
       }
-      completing=true;
+      completing=true;storagePhase='completion';
       const completed=await retryPublication('source.complete',budget.deadline,()=>s.run("UPDATE jobs SET status='complete',error=NULL,leaseUntil=NULL WHERE id=? AND organizationId=? AND status='running' AND attempts=? AND leaseUntil=?",j.id,scope.organizationId,j.attempts,j.leaseUntil));
       if(completed.meta.changes)out.completed.push(j.id);
       else if((await s.first<{status:string}>('SELECT status FROM jobs WHERE id=? AND organizationId=?',j.id,scope.organizationId))?.status==='complete')out.completed.push(j.id);
@@ -110,6 +112,15 @@ export async function runSyncBatch(scope:AccessScope,budget={maxJobs:7,deadline:
           continue;
         }
         if(durable?.status!=='running'||durable.attempts!==j.attempts||durable.leaseUntil!==j.leaseUntil)continue;
+      }
+      if(!historyDate&&storagePhase&&e instanceof Error&&(e.name==='TimeoutError'||error==='Database request timed out')){
+        // Only database publication and acknowledgment calls set this phase.
+        // Provider fetch/validation failures keep their bounded failure policy.
+        // Preserve immutable staged facts and refund only this exact claim;
+        // repeated storage stalls must not permanently close its hourly bucket.
+        console.warn('Source storage publication deferred',{provider,phase:storagePhase,kind:'TimeoutError'});
+        await s.run("UPDATE jobs SET status='pending',attempts=MAX(0,attempts-1),dueAt=?,error=?,leaseUntil=NULL WHERE id=? AND organizationId=? AND status='running' AND attempts=? AND leaseUntil=?",new Date(Date.now()+5*60000).toISOString(),error,j.id,scope.organizationId,j.attempts,j.leaseUntil);
+        continue;
       }
       if(e instanceof AppLovinSettlingHourError&&!historyDate&&next?.provider==='kind-applovin'){
         // No reconciled new-day interval exists yet. Preserve the previous

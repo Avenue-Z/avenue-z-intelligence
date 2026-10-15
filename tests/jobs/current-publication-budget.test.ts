@@ -6,7 +6,7 @@ import type {AccessScope,SourceBatch} from '../../lib/analytics/contracts';
 import initial from '../../data/initial-clients.json';
 import {fingerprint} from '../../lib/reviews/build';
 
-const state=vi.hoisted(()=>({store:null as Store|null,sqlite:null as DatabaseSync|null,batch:null as SourceBatch|null,captures:0,archives:0,archiveHook:null as (()=>Promise<void>)|null,captureError:null as Error|null,captureOffset:null as number|null,resumeArchive:null as {key:string;text:string}|null}));
+const state=vi.hoisted(()=>({store:null as Store|null,sqlite:null as DatabaseSync|null,batch:null as SourceBatch|null,captures:0,archives:0,archiveHook:null as (()=>Promise<void>)|null,captureError:null as Error|null,afterCaptureError:null as Error|null,captureOffset:null as number|null,resumeArchive:null as {key:string;text:string}|null}));
 vi.mock('@avenue/runtime',()=>({env:{BUCKET:{put:async()=>{state.archives++;await state.archiveHook?.();}}},runtimePlatform:'vercel'}));
 vi.mock('../../lib/server/access',()=>({getStore:()=>state.store}));
 vi.mock('../../lib/server/secrets',()=>({serverSecret:()=> 'private-test-secret'}));
@@ -16,14 +16,14 @@ vi.mock('../../lib/sources/kind-fetch',async importOriginal=>({
  effectiveKindWindow:(await importOriginal<typeof import('../../lib/sources/kind-fetch')>()).effectiveKindWindow,
  kindSourceDates:()=>[],
  fetchKindSource:async()=>state.batch!,
- fetchKindBatches:async function*(_source:unknown,_client:unknown,window:{from:string;to:string},_secret:string,_fetch:unknown,deadline:number){state.captures++;if(state.captureOffset!==null)vi.setSystemTime(deadline+state.captureOffset);if(state.captureError)throw state.captureError;yield {batch:state.batch!,window};},
+ fetchKindBatches:async function*(_source:unknown,_client:unknown,window:{from:string;to:string},_secret:string,_fetch:unknown,deadline:number){state.captures++;if(state.captureOffset!==null)vi.setSystemTime(deadline+state.captureOffset);if(state.captureError)throw state.captureError;yield {batch:state.batch!,window};if(state.afterCaptureError)throw state.afterCaptureError;},
 }));
 import {runSyncBatch} from '../../lib/jobs/sync';
 const scope:AccessScope={organizationId:'o',actorId:'scheduler',role:'service',permittedClientIds:['kind-patches']},started=Date.parse('2026-10-14T16:00:00Z'),deadline=started+700000,jobId='o:source:current';
 beforeEach(async()=>{
- vi.useFakeTimers();vi.setSystemTime(started);state.captures=0;state.archives=0;state.archiveHook=null;state.captureError=null;state.captureOffset=null;state.resumeArchive=null;
+ vi.useFakeTimers();vi.setSystemTime(started);state.captures=0;state.archives=0;state.archiveHook=null;state.captureError=null;state.afterCaptureError=null;state.captureOffset=null;state.resumeArchive=null;
  const sqlite=state.sqlite=new DatabaseSync(':memory:');for(const file of readdirSync('drizzle').filter(file=>file.endsWith('.sql')))sqlite.exec(readFileSync(`drizzle/${file}`,'utf8'));
- const prepare=(sql:string)=>{let values:unknown[]=[];const statement={sql,bind(...input:unknown[]){values=input;return statement;},async all(){return {results:sqlite.prepare(sql).all(...values as SQLInputValue[])};},async first(){return sqlite.prepare(sql).get(...values as SQLInputValue[])??null;},async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...values as SQLInputValue[]).changes)}};}};return statement;};
+ const prepare=(sql:string)=>{let values:unknown[]=[];const statement={sql,get values(){return values;},bind(...input:unknown[]){values=input;return statement;},async all(){return {results:sqlite.prepare(sql).all(...values as SQLInputValue[])};},async first(){return sqlite.prepare(sql).get(...values as SQLInputValue[])??null;},async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...values as SQLInputValue[]).changes)}};}};return statement;};
  const store=state.store=new Store({prepare,batch:statements=>Promise.all(statements.map(statement=>statement.run()))}),client={...initial[0],version:1};
  await store.run('INSERT INTO clients VALUES(?,?,?,?,?,?,?,?,?)',client.id,'o',client.name,client.id,client.timezone,client.currency,client.color,JSON.stringify(client.config),1);
  await store.run("INSERT INTO connections VALUES('source','o','kind-patches','Source','kind-shopify-sales','https://example.com','PRIVATE',60,1,'2026-10-14T15:00:00Z','2026-10-14T15:00:00Z','Prior provider warning',1)");
@@ -33,6 +33,7 @@ beforeEach(async()=>{
 });
 afterEach(()=>{vi.restoreAllMocks();vi.useRealTimers();state.sqlite?.close();});
 const run=(end=deadline)=>runSyncBatch(scope,{maxJobs:1,deadline:end});
+async function runWithRetries(end=deadline){const pending=run(end);let settled=false;void pending.finally(()=>{settled=true;}).catch(()=>{});await vi.waitFor(()=>expect(settled).toBe(true),{timeout:3000});return pending;}
 
 async function stagedTraffic(){
  const store=state.store!,client={...initial[0],version:1};await store.run("UPDATE connections SET provider='kind-shopify-traffic'");
@@ -54,7 +55,48 @@ it('keeps health and the pointer unchanged if a frozen capture still cannot fini
  const {id}=await stagedTraffic(),store=state.store!,health=await store.all('SELECT * FROM connections'),write=store.db.batch.bind(store.db);
  store.db.batch=async statements=>{const result=await write(statements);if(statements[0]?.sql.startsWith('INSERT INTO observations'))vi.setSystemTime(deadline);return result;};
  expect(await run()).toEqual({completed:[],failed:[]});expect(state.captures).toBe(0);expect(state.archives).toBe(0);expect(await store.all('SELECT * FROM connections')).toEqual(health);expect(await store.all('SELECT * FROM current_snapshots')).toEqual([]);
- expect(await store.first('SELECT status FROM snapshots WHERE id=?',id)).toEqual({status:'writing'});expect(await store.first('SELECT count(*) n FROM observations WHERE snapshotId=?',id)).toEqual({n:1000});expect(await store.first('SELECT status,attempts FROM jobs')).toEqual({status:'pending',attempts:0});
+ expect(await store.first('SELECT status FROM snapshots WHERE id=?',id)).toEqual({status:'writing'});expect(await store.first('SELECT count(*) n FROM observations WHERE snapshotId=?',id)).toEqual({n:600});expect(await store.first('SELECT status,attempts FROM jobs')).toEqual({status:'pending',attempts:0});
+});
+it('defers exhausted storage retries without spending the hourly attempt and resumes exact committed facts on the next tick',async()=>{
+ const {frozen,id,retrieved}=await stagedTraffic(),store=state.store!,health=await store.all('SELECT * FROM connections');
+ const prior={...frozen,coverageThrough:'2026-10-14T15:00:00Z',rows:[{...frozen.rows[0],start:'2026-10-14T14:00:00Z',end:'2026-10-14T15:00:00Z'}]};
+ const priorId=await store.persistBatch('o','source',prior,'prior','2026-10-14T15:00:00Z');await store.run('UPDATE jobs SET attempts=2');
+ const write=store.db.batch.bind(store.db),pages:number[]=[];let stalledAt=0;const warning=vi.spyOn(console,'warn').mockImplementation(()=>{});
+ store.db.batch=async statements=>{const result=await write(statements);if(statements[0]?.sql.startsWith('INSERT INTO observations')){pages.push(JSON.parse(String(statements[0].values[1])).length);stalledAt=Date.now();throw new DOMException('Database request timed out','TimeoutError');}return result;};
+ expect(await runWithRetries()).toEqual({completed:[],failed:[]});
+ expect(await store.first('SELECT status,attempts,leaseUntil,dueAt,error FROM jobs')).toEqual({status:'pending',attempts:2,leaseUntil:null,dueAt:new Date(stalledAt+300000).toISOString(),error:'Database request timed out'});
+ expect(pages).toEqual([100,100,100]);expect(await store.first('SELECT count(*) n FROM observations WHERE snapshotId=?',id)).toEqual({n:600});expect(await store.first('SELECT status FROM snapshots WHERE id=?',id)).toEqual({status:'writing'});
+ expect(await store.first('SELECT snapshotId FROM current_snapshots')).toEqual({snapshotId:priorId});expect(await store.all('SELECT * FROM connections')).toEqual(health);
+ expect(warning).toHaveBeenCalledWith('Source storage publication deferred',{provider:'kind-shopify-traffic',phase:'facts',kind:'TimeoutError'});
+ store.db.batch=write;vi.setSystemTime(stalledAt+300000);
+ expect(await run(Date.now()+700000)).toEqual({completed:[jobId],failed:[]});expect(state.captures).toBe(0);expect(state.archives).toBe(0);
+ expect(await store.first('SELECT status,attempts,error FROM jobs')).toEqual({status:'complete',attempts:3,error:null});expect(await store.first('SELECT count(*) n FROM observations WHERE snapshotId=?',id)).toEqual({n:1001});expect(await store.first('SELECT snapshotId FROM current_snapshots')).toEqual({snapshotId:id});
+ expect(await store.first("SELECT count(*) n FROM observations WHERE snapshotId=? AND (json_extract(payload,'$.retrievedAt')<>? OR json_extract(payload,'$.value')=999999)",id,retrieved)).toEqual({n:0});expect(await store.first('SELECT coverageThrough,error FROM connections')).toEqual({coverageThrough:'2026-10-14T16:00:00Z',error:null});
+});
+it.each(['attempts','leaseUntil','complete','pending','failed'] as const)('does not refund a replacement %s claim after a storage page timeout',async changed=>{
+ const {id}=await stagedTraffic(),store=state.store!,health=await store.all('SELECT * FROM connections'),write=store.db.batch.bind(store.db);let changedOwner=false,expected:unknown;
+ store.db.batch=async statements=>{const result=await write(statements);if(statements[0]?.sql.startsWith('INSERT INTO observations')){if(!changedOwner){changedOwner=true;if(changed==='attempts')await store.run('UPDATE jobs SET attempts=4');else if(changed==='leaseUntil')await store.run("UPDATE jobs SET leaseUntil='2026-10-14T17:00:00Z'");else await store.run('UPDATE jobs SET status=?,leaseUntil=NULL',changed);expected=await store.all('SELECT * FROM jobs');}throw new DOMException('Database request timed out','TimeoutError');}return result;};
+ expect(await runWithRetries()).toEqual({completed:[],failed:[]});expect(await store.all('SELECT * FROM jobs')).toEqual(expected);expect(await store.all('SELECT * FROM connections')).toEqual(health);expect(await store.first('SELECT status FROM snapshots WHERE id=?',id)).toEqual({status:'writing'});
+});
+it.each(['freshness','completion'] as const)('defers repeated %s acknowledgment timeouts while keeping the durable publication',async phase=>{
+ const store=state.store!,write=store.run.bind(store);await store.run('UPDATE jobs SET attempts=2');
+ vi.spyOn(store,'run').mockImplementation(async(sql,...values)=>{if(phase==='freshness'?sql.startsWith('UPDATE connections SET lastSuccess='):sql.startsWith("UPDATE jobs SET status='complete'"))throw new DOMException('Database request timed out','TimeoutError');return write(sql,...values);});
+ expect(await runWithRetries()).toEqual({completed:[],failed:[]});expect(await store.first('SELECT status,attempts,leaseUntil,error FROM jobs')).toEqual({status:'pending',attempts:2,leaseUntil:null,error:'Database request timed out'});
+ expect(await store.first('SELECT status FROM snapshots')).toEqual({status:'ready'});expect(await store.first('SELECT count(*) n FROM observations')).toEqual({n:1});expect(await store.first('SELECT count(*) n FROM current_snapshots')).toEqual({n:1});
+ expect(await store.first('SELECT coverageThrough,error FROM connections')).toEqual(phase==='freshness'?{coverageThrough:'2026-10-14T15:00:00Z',error:'Prior provider warning'}:{coverageThrough:'2026-10-14T16:00:00Z',error:null});
+});
+it('preserves confirmed freshness when the database committed all freshness updates before their acknowledgments timed out',async()=>{
+ const store=state.store!,write=store.run.bind(store);await store.run('UPDATE jobs SET attempts=2');
+ vi.spyOn(store,'run').mockImplementation(async(sql,...values)=>{const result=await write(sql,...values);if(sql.startsWith('UPDATE connections SET lastSuccess='))throw new DOMException('Database request timed out','TimeoutError');return result;});
+ expect(await runWithRetries()).toEqual({completed:[],failed:[]});expect(await store.first('SELECT status,attempts,error FROM jobs')).toEqual({status:'pending',attempts:2,error:'Database request timed out'});expect(await store.first('SELECT coverageThrough,error FROM connections')).toEqual({coverageThrough:'2026-10-14T16:00:00Z',error:null});
+});
+it('retains the bounded failure policy for genuine storage errors',async()=>{
+ const store=state.store!,write=store.db.batch.bind(store.db);await store.run('UPDATE jobs SET attempts=2');store.db.batch=async statements=>{if(statements[0]?.sql.startsWith('INSERT INTO observations'))throw Error('Storage capacity exceeded');return write(statements);};
+ expect(await run()).toEqual({completed:[],failed:[{id:jobId,error:'Storage capacity exceeded'}]});expect(await store.first('SELECT status,attempts,error FROM jobs')).toEqual({status:'failed',attempts:3,error:'Storage capacity exceeded'});
+});
+it('retains provider timeout failures when the next provider batch fails after a successful publication',async()=>{
+ const store=state.store!;await store.run('UPDATE jobs SET attempts=2');state.afterCaptureError=new DOMException('Provider request timed out or could not be reached','TimeoutError');
+ expect(await run()).toEqual({completed:[],failed:[{id:jobId,error:'Provider request timed out or could not be reached'}]});expect(await store.first('SELECT status,attempts,error FROM jobs')).toEqual({status:'failed',attempts:3,error:'Provider request timed out or could not be reached'});expect(await store.first('SELECT coverageThrough,error FROM connections')).toEqual({coverageThrough:'2026-10-14T16:00:00Z',error:null});
 });
 it('keeps the current poll bucket pending after resuming an older hour, then fetches the latest hour on its normal retry',async()=>{
  const {frozen,id,retrieved}=await stagedTraffic(),store=state.store!,later=started+3600000,newJobId=`o:source:${Math.floor(later/3600000)}`;

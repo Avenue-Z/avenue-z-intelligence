@@ -124,16 +124,18 @@ it('retries only idempotent source freshness and completion acknowledgments afte
  const result=await settlePublication(runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000}));
  expect(result).toEqual({completed:['o:source:hourly-test'],failed:[]});expect(state.requests).toHaveLength(1);expect(lost.size).toBe(2);expect(await store.first('SELECT status,error,attempts FROM jobs')).toEqual({status:'complete',error:null,attempts:1});expect((await store.first('SELECT error FROM connections'))?.error).toBeNull();
 });
-it('keeps failed durable storage visible after three database timeout attempts',async()=>{
- state.mode='success';const store=state.store!,write=store.db.batch.bind(store.db);let attempts=0;
- store.db.batch=async statements=>{if(statements[0]?.sql.startsWith('INSERT INTO observations')){attempts++;throw new DOMException('Database request timed out','TimeoutError');}return write(statements);};
+it('defers three database timeout attempts in job state while preserving the last confirmed source health',async()=>{
+ state.mode='success';const store=state.store!,write=store.db.batch.bind(store.db);let attempts=0,stalledAt=0;
+ store.db.batch=async statements=>{if(statements[0]?.sql.startsWith('INSERT INTO observations')){attempts++;stalledAt=Date.now();throw new DOMException('Database request timed out','TimeoutError');}return write(statements);};
  const result=await settlePublication(runSyncBatch(scope,{maxJobs:1,deadline:Date.now()+200000}));
- expect(attempts).toBe(3);expect(result.failed).toEqual([{id:'o:source:hourly-test',error:'Database request timed out'}]);expect(state.requests).toHaveLength(1);expect(await store.first('SELECT status FROM snapshots')).toEqual({status:'writing'});expect(await store.all('SELECT * FROM current_snapshots')).toEqual([]);expect(await store.first('SELECT lastSuccess,error FROM connections')).toEqual({lastSuccess:'2026-10-13T11:00:00Z',error:'Database request timed out'});
+ expect(attempts).toBe(3);expect(result).toEqual({completed:[],failed:[]});expect(state.requests).toHaveLength(1);expect(await store.first('SELECT status FROM snapshots')).toEqual({status:'writing'});expect(await store.all('SELECT * FROM current_snapshots')).toEqual([]);expect(await store.first('SELECT lastSuccess,coverageThrough,error FROM connections')).toEqual({lastSuccess:'2026-10-13T11:00:00Z',coverageThrough:'2026-10-13T10:00:00Z',error:'OLD_SOURCE_ERROR'});
+ expect(await store.first('SELECT status,attempts,dueAt,leaseUntil,error FROM jobs')).toEqual({status:'pending',attempts:0,dueAt:new Date(stalledAt+300000).toISOString(),leaseUntil:null,error:'Database request timed out'});
 });
 it('does not start a publication retry when the native source-run budget is nearly exhausted',async()=>{
  state.mode='success';const started=Date.now(),store=state.store!,write=store.db.batch.bind(store.db);let attempts=0;
  store.db.batch=async statements=>{if(statements[0]?.sql.startsWith('INSERT INTO observations')){attempts++;vi.setSystemTime(started+180000);throw new DOMException('Database request timed out','TimeoutError');}return write(statements);};
- const result=await runSyncBatch(scope,{maxJobs:1,deadline:started+200000});expect(attempts).toBe(1);expect(result.failed).toHaveLength(1);expect(state.requests).toHaveLength(1);
+ const result=await runSyncBatch(scope,{maxJobs:1,deadline:started+200000});expect(attempts).toBe(1);expect(result).toEqual({completed:[],failed:[]});expect(state.requests).toHaveLength(1);
+ expect(await store.first('SELECT status,attempts,dueAt,leaseUntil,error FROM jobs')).toEqual({status:'pending',attempts:0,dueAt:'2026-10-13T13:08:00.000Z',leaseUntil:null,error:'Database request timed out'});expect(await store.first('SELECT lastSuccess,coverageThrough,error FROM connections')).toEqual({lastSuccess:'2026-10-13T11:00:00Z',coverageThrough:'2026-10-13T10:00:00Z',error:'OLD_SOURCE_ERROR'});expect(await store.first('SELECT status FROM snapshots')).toEqual({status:'writing'});expect(await store.all('SELECT * FROM current_snapshots')).toEqual([]);
 });
 
 async function sessionComparisonFixture(provider:'kind-shopify-hourly'|'kind-shopify-funnels'){

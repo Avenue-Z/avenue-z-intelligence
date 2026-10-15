@@ -38,7 +38,13 @@ export class DailyScheduler {
      finally{if(timer)clearTimeout(timer);}
      if(!readFailed){
       if(owned){
-       if(owned.token!==token){outcome='other-owner';break;}
+       if(owned.token!==token){
+        outcome='other-owner';
+        // A confirmed live owner is the normal already-running outcome.
+        // Never replace it or treat an expired/late read as confirmation.
+        if(Date.parse(owned.leaseUntil)>Date.now()&&Date.now()<deadline)return null;
+        break;
+       }
        if(owned.leaseUntil!==until){outcome='expiry-mismatch';break;}
        if(!(Date.parse(owned.leaseUntil)>Date.now())){outcome='expired';break;}
        if(Date.now()>=deadline){outcome='window-exhausted';break;}

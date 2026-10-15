@@ -108,6 +108,35 @@ it('safely accepts a retry after a committed write lost its acknowledgement',asy
  const run=store.run.bind(store);let first=true;vi.spyOn(store,'run').mockImplementation(async(sql,...args)=>{const result=await run(sql,...args);if(first){first=false;throw new DOMException('Database request timed out','TimeoutError');}return result;});
  expect((await receive(delivery())).status).toBe(503);expect((await receive(delivery())).status).toBe(200);expect(await records()).toHaveLength(1);
 });
+it('returns a retryable failure before the platform limit when a write stalls and safely accepts its late commit on retry',async()=>{
+ const run=store.run.bind(store),read=vi.spyOn(store,'first'),log=vi.spyOn(console,'warn').mockImplementation(()=>{});let finish!:()=>void,response:Response|undefined;
+ vi.spyOn(store,'run').mockImplementationOnce(async(sql,...args)=>{await new Promise<void>(resolve=>{finish=resolve;});return run(sql,...args);});
+ const pending=receive(delivery()).then(result=>{response=result;});
+ try{
+  await vi.advanceTimersByTimeAsync(25000);
+  expect(response?.status).toBe(503);expect(await response!.json()).toEqual({error:'Recharge webhook persistence unavailable'});expect(await records()).toEqual([]);
+  expect(log).toHaveBeenCalledWith('Recharge webhook persistence timed out',{operation:'recharge-webhook.persist',phase:'insert',ms:20000});
+ }finally{finish();await pending;await vi.advanceTimersByTimeAsync(0);}
+ expect(read).not.toHaveBeenCalled();expect(await records()).toHaveLength(1);
+ expect((await receive(delivery())).status).toBe(200);expect(await records()).toHaveLength(1);
+});
+it('uses one persistence budget across the write and winner confirmation',async()=>{
+ const run=store.run.bind(store),first=store.first.bind(store),log=vi.spyOn(console,'warn').mockImplementation(()=>{});let finish!:()=>void,response:Response|undefined;
+ vi.spyOn(store,'run').mockImplementationOnce(async(sql,...args)=>{await new Promise(resolve=>setTimeout(resolve,15000));return run(sql,...args);});
+ vi.spyOn(store,'first').mockImplementationOnce(async(sql,...args)=>{const saved=await first(sql,...args);await new Promise<void>(resolve=>{finish=resolve;});return saved;});
+ const pending=receive(delivery()).then(result=>{response=result;});
+ try{
+  await vi.advanceTimersByTimeAsync(25000);
+  expect(response?.status).toBe(503);expect(await records()).toHaveLength(1);
+  expect(log).toHaveBeenCalledWith('Recharge webhook persistence timed out',{operation:'recharge-webhook.persist',phase:'confirmation',ms:20000});
+ }finally{finish();await pending;}
+ expect((await receive(delivery())).status).toBe(200);expect(await records()).toHaveLength(1);
+});
+it('clears the persistence deadline when the request finishes without a timeout',async()=>{
+ expect((await receive(delivery())).status).toBe(200);expect(vi.getTimerCount()).toBe(0);
+ vi.spyOn(store,'run').mockRejectedValue(new Error('private persistence failure'));
+ expect((await receive(delivery())).status).toBe(503);expect(vi.getTimerCount()).toBe(0);
+});
 it('does not log payloads, signatures or secrets on invalid delivery',async()=>{
  const info=vi.spyOn(console,'info'),warn=vi.spyOn(console,'warn'),error=vi.spyOn(console,'error');await receive(delivery({payload:payload('invalid')}));expect(info).not.toHaveBeenCalled();expect(warn).not.toHaveBeenCalled();expect(error).not.toHaveBeenCalled();
 });

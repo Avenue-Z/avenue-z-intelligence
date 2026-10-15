@@ -5,8 +5,8 @@ import {Store} from '../../lib/server/store';
 import initial from '../../data/initial-clients.json';
 import type {AccessScope,SourceBatch} from '../../lib/analytics/contracts';
 
-const state=vi.hoisted(()=>({store:null as Store|null,sqlite:null as DatabaseSync|null,archives:[] as string[],archivePayloads:new Map<string,string>(),denseTraffic:false,active:new Set<string>(),peak:0,captures:[] as {provider:string;date:string}[],failure:'',partial:false,parallel:false,release:null as (()=>void)|null,waiting:null as Promise<void>|null,maintenance:[] as {maxSnapshots:number;maxRows:number;deadline:number}[],throttled:false,enqueueCurrentDuringCapture:false}));
-vi.mock('@avenue/runtime',()=>({env:{BUCKET:{put:async(key:string,text:string)=>{if(state.failure==='archive')throw Error('Archive unavailable');state.archives.push(key);state.archivePayloads.set(key,text);}}},runtimePlatform:'sites'}));
+const state=vi.hoisted(()=>({store:null as Store|null,sqlite:null as DatabaseSync|null,archives:[] as string[],archivePayloads:new Map<string,string>(),denseTraffic:false,active:new Set<string>(),peak:0,captures:[] as {provider:string;date:string}[],failure:'',partial:false,parallel:false,release:null as (()=>void)|null,waiting:null as Promise<void>|null,maintenance:[] as {maxSnapshots:number;maxRows:number;deadline:number}[],throttled:false,enqueueCurrentDuringCapture:false,platform:'sites'}));
+vi.mock('@avenue/runtime',()=>({env:{BUCKET:{put:async(key:string,text:string)=>{if(state.failure==='archive')throw Error('Archive unavailable');state.archives.push(key);state.archivePayloads.set(key,text);}}},get runtimePlatform(){return state.platform;}}));
 vi.mock('@vercel/blob',()=>({head:async(key:string)=>{const text=state.archivePayloads.get(key);if(!text)throw Error('Missing archive');return {pathname:key,size:new TextEncoder().encode(text).byteLength,etag:'immutable'};},get:async(key:string)=>{const text=state.archivePayloads.get(key);if(!text)throw Error('Missing archive');return {statusCode:200,blob:{pathname:key,etag:'immutable'},stream:new Response(text).body};}}));
 vi.mock('../../lib/server/access',()=>({getStore:()=>state.store}));
 vi.mock('../../lib/server/secrets',()=>({serverSecret:(name:string)=>name==='APP_ORGANIZATION_ID'?'o':'private-test-value'}));
@@ -25,7 +25,7 @@ import {runHourlyHistoryBatch,hourlyHistoryTick} from '../../lib/jobs/run-hourly
 
 const scope:AccessScope={organizationId:'o',actorId:'scheduler',role:'service',permittedClientIds:['kind-patches']},client={...initial[0],version:1};
 beforeEach(async()=>{
- vi.useFakeTimers();vi.setSystemTime('2026-10-13T18:00:00Z');state.archives=[];state.archivePayloads=new Map();state.denseTraffic=false;state.active=new Set();state.peak=0;state.captures=[];state.failure='';state.partial=false;state.parallel=false;state.maintenance=[];state.throttled=false;state.enqueueCurrentDuringCapture=false;state.waiting=new Promise(resolve=>{state.release=resolve;});
+ vi.useFakeTimers();vi.setSystemTime('2026-10-13T18:00:00Z');state.archives=[];state.archivePayloads=new Map();state.denseTraffic=false;state.active=new Set();state.peak=0;state.captures=[];state.failure='';state.partial=false;state.parallel=false;state.maintenance=[];state.throttled=false;state.enqueueCurrentDuringCapture=false;state.platform='sites';state.waiting=new Promise(resolve=>{state.release=resolve;});
  const sqlite=state.sqlite=new DatabaseSync(':memory:');for(const file of readdirSync('drizzle').filter(file=>file.endsWith('.sql')))sqlite.exec(readFileSync(`drizzle/${file}`,'utf8'));
  const prepare=(sql:string)=>{let values:unknown[]=[];const statement={sql,bind(...input:unknown[]){values=input;return statement;},async all(){return {results:sqlite.prepare(sql).all(...values as any[])};},async first(){return sqlite.prepare(sql).get(...values as any[])??null;},async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...values as any[]).changes)}};}};return statement;};
  const store=state.store=new Store({prepare,batch:async statements=>Promise.all(statements.map(statement=>statement.run()))});
@@ -71,6 +71,10 @@ it('captures two different historical providers concurrently and publishes archi
 it.each(['kind-shopify-traffic','kind-meta-performance','kind-shopify-sales'])('selects the dense transaction bound only for a historical %s publication',async provider=>{
  await source('history',provider);const store=state.store!,persist=vi.spyOn(store,'persistBatch'),result=await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+700000});
  expect(result.failed).toEqual([]);expect(result.completed).toHaveLength(1);expect(persist).toHaveBeenCalledOnce();const options=persist.mock.calls[0][6];if(provider==='kind-shopify-sales')expect(options).not.toHaveProperty('factPageSize');else expect(options).toHaveProperty('factPageSize',500);
+});
+it.each(['kind-shopify-traffic','kind-meta-performance','kind-shopify-sales'])('bounds every hosted historical %s publication to 100 facts per write',async provider=>{
+ state.platform='vercel';await source('history',provider);const store=state.store!,persist=vi.spyOn(store,'persistBatch'),result=await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+700000});
+ expect(result.failed).toEqual([]);expect(result.completed).toHaveLength(1);expect(persist.mock.calls[0][6]).toHaveProperty('factPageSize',100);
 });
 it('stops before claiming a new historical job at the 22 GB safety threshold',async()=>{
  await source('sales');const store=state.store!,original=store.first.bind(store);vi.spyOn(store,'first').mockImplementation(async(sql,...args)=>sql==='PRAGMA page_count'?{page_count:Math.ceil(22000000000/4096)}:sql==='PRAGMA freelist_count'?{freelist_count:0}:original(sql,...args));

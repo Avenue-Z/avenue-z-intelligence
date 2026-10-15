@@ -1,4 +1,4 @@
-import {env} from '@avenue/runtime';
+import {env,runtimePlatform} from '@avenue/runtime';
 import type {AccessScope,Client,Connection} from '../analytics/contracts';
 import {dayWindow,shiftDate,todayIn} from '../analytics/windows';
 import {fingerprint} from '../reviews/build';
@@ -107,7 +107,7 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
       throw Error('Historical day left the retained store window');
      }
      if(storage>=STORAGE_SAFETY_BYTES&&!(smallRecharge&&recentRechargeHistoryDate(date,today)&&rechargeHistoryFits(storage)))throw new HistoryCapacityDeferral('Historical storage capacity reserved for current ingestion');
-     return store.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,window,{publicationDeadline:budget.deadline,...(['kind-shopify-traffic','kind-meta-performance'].includes(source.provider)?{factPageSize:500 as const,beforeFactPage:async()=>{if(await currentSourcesDue(store,scope))throw new CurrentSourceWorkDeferral('Current source work has priority');}}:{})});
+     return store.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,window,{publicationDeadline:budget.deadline,...(runtimePlatform==='vercel'?{factPageSize:100 as const}:['kind-shopify-traffic','kind-meta-performance'].includes(source.provider)?{factPageSize:500 as const}:{}),...(['kind-shopify-traffic','kind-meta-performance'].includes(source.provider)?{beforeFactPage:async()=>{if(await currentSourcesDue(store,scope))throw new CurrentSourceWorkDeferral('Current source work has priority');}}:{})});
     });
     completing=true;await retryPublication('history.complete',budget.deadline,()=>store.finish(job.id));out.completed.push(job.id);
    }catch(error){

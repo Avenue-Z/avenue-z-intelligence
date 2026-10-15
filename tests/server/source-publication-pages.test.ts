@@ -18,13 +18,13 @@ const batch=():SourceBatch=>({clientId:'kind-patches',timezone:'UTC',currency:'U
 const timeout=()=>new DOMException('Database request timed out','TimeoutError');
 afterEach(()=>vi.restoreAllMocks());
 
-it('writes dense pages in primary-key order while retaining exact facts and duplicate first-wins values',async()=>{
+it.each([100,500] as const)('writes %s-row dense pages in primary-key order while retaining exact facts and duplicate first-wins values',async factPageSize=>{
  const dense=database(),legacy=database(),input=batch(),first=input.rows[0];
  input.rows=[...input.rows].reverse();input.rows.splice(100,0,{...first,value:999});input.rows.push({...first,value:888});
  input.rows.push(...input.rows.slice(0,20).map(row=>({...row,date:'2026-10-12'})));
  const original=dense.db.batch,keys:string[]=[];
  dense.db.batch=async statements=>{if(statements[0]?.sql.startsWith('INSERT INTO observations'))for(const value of JSON.parse(String(statements[0].values[1])))keys.push(JSON.stringify([value.date,value.rowKey]));return original(statements);};
- const stamp='2026-10-13T17:05:00Z',id=await dense.store.persistBatch('o','source',input,'same',stamp,undefined,{factPageSize:500,publicationDeadline:Date.now()+120000});
+ const stamp='2026-10-13T17:05:00Z',id=await dense.store.persistBatch('o','source',input,'same',stamp,undefined,{factPageSize,publicationDeadline:Date.now()+120000});
  await legacy.store.persistBatch('o','source',input,'same',stamp);
  expect(keys).toEqual([...keys].sort());
  expect(dense.sqlite.prepare('SELECT * FROM observations ORDER BY snapshotId,date,rowKey').all()).toEqual(legacy.sqlite.prepare('SELECT * FROM observations ORDER BY snapshotId,date,rowKey').all());
@@ -35,6 +35,25 @@ it('writes dense pages in primary-key order while retaining exact facts and dupl
   const payload=(db:DatabaseSync)=>db.prepare('SELECT payload FROM snapshot_day_projection_chunks WHERE snapshotId=? AND date=? ORDER BY chunkIndex').all(id,date).map(row=>row.payload).join('');
   expect(observationCodec.decode(payload(dense.sqlite))).toEqual(observationCodec.decode(payload(legacy.sqlite)));
  }
+});
+
+it('lets hosted captures release the database writer after at most 100 facts and exposes no partial pointer',async()=>{
+ const {store,db,sqlite}=database(),original=db.batch,pages:number[]=[];
+ db.batch=async statements=>{
+  if(statements[0]?.sql.startsWith('INSERT INTO observations')){
+   const count=statements.reduce((n,statement)=>n+JSON.parse(String(statement.values[1])).length,0);pages.push(count);
+   expect(count).toBeLessThanOrEqual(100);expect(statements).toHaveLength(1);
+   const result=await original(statements);
+   expect(sqlite.prepare('SELECT count(*) n FROM current_snapshots').get()?.n).toBe(0);
+   expect(sqlite.prepare('SELECT status FROM snapshots').get()?.status).toBe('writing');return result;
+  }
+  return original(statements);
+ };
+ const id=await store.persistBatch('o','hosted-source',batch(),'capture','2026-10-13T17:05:00Z',undefined,{factPageSize:100,publicationDeadline:Date.now()+120000});
+ expect(pages).toEqual([...Array(40).fill(100),1]);
+ expect(sqlite.prepare('SELECT count(*) n FROM observations WHERE snapshotId=?').get(id)?.n).toBe(4001);
+ expect(sqlite.prepare('SELECT snapshotId FROM current_snapshots').get()?.snapshotId).toBe(id);
+ expect(sqlite.prepare('SELECT status FROM snapshots WHERE id=?').get(id)?.status).toBe('ready');
 });
 
 it('bounds explicitly dense fact transactions to 500 rows while publishing every fact before its pointer',async()=>{

@@ -53,10 +53,10 @@ it.each(['committed-headers','one-service-error'] as const)('recovers exact comm
  expect(failure).toBeUndefined();expect(token).toBeTruthy();expect(sqlite.prepare('SELECT token FROM runner_leases WHERE id=?').get(id)?.token).toBe(token);expect(h.calls.filter(call=>call.operation==='INSERT')).toHaveLength(1);expect(h.calls).toHaveLength(mode==='one-service-error'?3:2);h.finish();
 });
 it('stops at a replacement owner after an empty SDK read without replaying the original INSERT',async()=>{
- const h=harness('replacement-owner');let failure:unknown,rejectedAt:number|undefined;
- const request=new DailyScheduler(h.store).acquire(id,started,900000).catch(error=>{failure=error;rejectedAt=Date.now();});
+ const h=harness('replacement-owner');let failure:unknown,token:string|null|undefined,settledAt:number|undefined;
+ const request=new DailyScheduler(h.store).acquire(id,started,900000).then(value=>{token=value;settledAt=Date.now();},error=>{failure=error;});
  await vi.waitFor(()=>expect(h.calls).toHaveLength(1));await vi.advanceTimersByTimeAsync(35001);await request;
- expect(failure).toMatchObject({name:'TimeoutError'});expect(h.calls.map(call=>call.operation)).toEqual(['INSERT','SELECT','SELECT']);expect(rejectedAt!-h.calls[1].at).toBe(250);expect(sqlite.prepare('SELECT token,leaseUntil FROM runner_leases WHERE id=?').get(id)).toEqual({token:'replacement-offline-owner',leaseUntil:'2026-10-14T19:51:00.000Z'});h.finish();
+ expect(failure).toBeUndefined();expect(token).toBeNull();expect(h.calls.map(call=>call.operation)).toEqual(['INSERT','SELECT','SELECT']);expect(settledAt!-h.calls[1].at).toBe(250);expect(sqlite.prepare('SELECT token,leaseUntil FROM runner_leases WHERE id=?').get(id)).toEqual({token:'replacement-offline-owner',leaseUntil:'2026-10-14T19:51:00.000Z'});h.finish();
 });
 it('bounds persistent service failures across fresh SDK reads by one shared reconciliation window',async()=>{
  const h=harness('persistent-service-error');let failure:unknown,rejectedAt:number|undefined;

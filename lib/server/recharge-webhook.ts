@@ -56,8 +56,21 @@ export async function receiveRechargeWebhook(request:Request,options:Options){
   const retained={subscriptionId,createdAt,receivedAt,source:'recharge-webhook',topic};
   // First-wins makes an uncertain committed acknowledgement safe to retry.
   // Re-read the winning record so concurrent conflicting births fail closed.
-  await store.run('INSERT INTO audit(id,organizationId,clientId,actorId,action,payload,createdAt) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',auditId,organizationId,clientId,'recharge-webhook',action,JSON.stringify(retained),receivedAt);
-  const saved=await store.first<{organizationId:string;clientId:string;actorId:string;action:string;payload:string}>('SELECT organizationId,clientId,actorId,action,payload FROM audit WHERE id=?',auditId);
+  // The shared SDK may queue before its 30s RPC deadline even starts. Bound
+  // both steps together so the 30s route can still return a retryable failure.
+  const started=performance.now(),timeout=new DOMException('Webhook persistence timed out','TimeoutError');
+  let expired=false,phase:'insert'|'confirmation'='insert',timer:ReturnType<typeof setTimeout>|undefined;
+  const persist=async()=>{
+   await store.run('INSERT INTO audit(id,organizationId,clientId,actorId,action,payload,createdAt) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',auditId,organizationId,clientId,'recharge-webhook',action,JSON.stringify(retained),receivedAt);
+   // A late write may have committed. Leave it for the authenticated retry;
+   // do not enqueue another RPC after this request has already failed.
+   if(expired)throw timeout;
+   phase='confirmation';
+   return store.first<{organizationId:string;clientId:string;actorId:string;action:string;payload:string}>('SELECT organizationId,clientId,actorId,action,payload FROM audit WHERE id=?',auditId);
+  };
+  let saved:Awaited<ReturnType<typeof persist>>;
+  try{saved=await Promise.race([persist(),new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>{expired=true;console.warn('Recharge webhook persistence timed out',{operation:'recharge-webhook.persist',phase,ms:Math.round(performance.now()-started)});reject(timeout);},20000);})]);}
+  finally{if(timer!==undefined)clearTimeout(timer);}
   let previous:Record<string,unknown>|null=null;try{previous=saved?JSON.parse(saved.payload):null;}catch{/* A malformed collision must never be overwritten. */}
   if(!saved||saved.organizationId!==organizationId||saved.clientId!==clientId||saved.actorId!=='recharge-webhook'||saved.action!==action||!previous||previous.subscriptionId!==subscriptionId||previous.createdAt!==createdAt||previous.source!=='recharge-webhook'||typeof previous.topic!=='string'||!topics.has(previous.topic)||typeof previous.receivedAt!=='string'||!Number.isFinite(Date.parse(previous.receivedAt)))return respond(409,{error:'Conflicting retained subscription creation'});
   return respond(200,{accepted:true});
