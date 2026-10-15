@@ -223,7 +223,7 @@ export class Store {
       freshOperationalPointers.length?readPage<{payload:string}>(`SELECT json_extract(o.payload,'$') AS payload FROM json_each(?) p JOIN observations o ON o.snapshotId=json_extract(p.value,'$.snapshotId') AND o.date=json_extract(p.value,'$.date') WHERE json_extract(o.payload,'$.metric') IN ('active_customers','active_ads','active_creatives') ORDER BY o.date,o.rowKey`,JSON.stringify(freshOperationalPointers)).then(async rows=>{const operations=rows.map(row=>JSON.parse(row.payload) as Observation),current=operations.filter(row=>row.metric==='active_customers'&&row.quality==='complete').sort((a,b)=>b.date.localeCompare(a.date)||b.retrievedAt.localeCompare(a.retrievedAt))[0];if(current){const comparison=await readActiveCustomerComparison(this,org,client,current,options?.deadline);if(comparison)current.activeCustomerComparison=comparison;}return operations;}):Promise.resolve([])]);
     return operations.length?[...cached,...operations]:cached;
   }
-  async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string},options?:{restoreMaterialization?:boolean;publicationDeadline?:number;factPageSize?:500}) {
+  async persistBatch(org:string,source:string,batch:SourceBatch,key:string,now:string,window?:{from:string;to:string},options?:{restoreMaterialization?:boolean;publicationDeadline?:number;factPageSize?:500;beforeFactPage?:()=>Promise<void>}) {
     // A fact page is replay-safe even when the database committed before its
     // response timed out. Retry that exact page, not the entire large capture.
     const publish=<T>(operation:string,work:()=>Promise<T>):Promise<T>=>{
@@ -231,6 +231,11 @@ export class Store {
       if(Date.now()>=options.publicationDeadline)throw Error('Source publication budget elapsed');
       return retryPublication(operation,options.publicationDeadline,work);
     };
+    const publishFacts=<T>(operation:string,work:()=>Promise<T>)=>publish(operation,async()=>{
+      if(options?.beforeFactPage)await options.beforeFactPage();
+      if(options?.publicationDeadline!==undefined&&Date.now()>=options.publicationDeadline)throw Error('Source publication budget elapsed');
+      return work();
+    });
     const id=`${org}:${batch.clientId}:${source}:${key}`;
     // A partial publication owns the same immutable provenance as a ready one.
     // Retried missing facts must not mix their retry timestamp with old rows.
@@ -314,7 +319,7 @@ export class Store {
     // snapshot indexes. Stable primary-key order keeps consecutive pages local
     // while retaining the original first value of duplicate source keys.
     if(options?.factPageSize===500)factRows.sort((a,b)=>a.row.date<b.row.date?-1:a.row.date>b.row.date?1:a.key<b.key?-1:a.key>b.key?1:0);
-    for(let n=0;n<factRows.length;n+=factPageSize){const inserts:ReturnType<Db['prepare']>[]=[];for(let start=n;start<Math.min(n+factPageSize,factRows.length);start+=500){const values=factRows.slice(start,start+500).map(({row,key})=>({date:row.date,rowKey:key,payload:JSON.stringify(row)}));inserts.push(this.db.prepare("INSERT INTO observations(snapshotId,date,rowKey,payload) SELECT ?,json_extract(value,'$.date'),json_extract(value,'$.rowKey'),json_extract(value,'$.payload') FROM json_each(?) WHERE 1 ON CONFLICT DO NOTHING").bind(id,JSON.stringify(values)));}await publish('source.facts.page',()=>this.db.batch(inserts));}
+    for(let n=0;n<factRows.length;n+=factPageSize){const inserts:ReturnType<Db['prepare']>[]=[];for(let start=n;start<Math.min(n+factPageSize,factRows.length);start+=500){const values=factRows.slice(start,start+500).map(({row,key})=>({date:row.date,rowKey:key,payload:JSON.stringify(row)}));inserts.push(this.db.prepare("INSERT INTO observations(snapshotId,date,rowKey,payload) SELECT ?,json_extract(value,'$.date'),json_extract(value,'$.rowKey'),json_extract(value,'$.payload') FROM json_each(?) WHERE 1 ON CONFLICT DO NOTHING").bind(id,JSON.stringify(values)));}await publishFacts('source.facts.page',()=>this.db.batch(inserts));}
     const pointers=[];
     for(const date of dates){const {dataHash,coveredThrough}=dayHashes.get(date)!;
       // Pin the retained immutable id, even if a concurrent older publication
@@ -329,12 +334,13 @@ export class Store {
       pointers.push(this.db.prepare("INSERT INTO current_snapshots(organizationId,clientId,sourceId,date,snapshotId,publishedAt,dataHash) VALUES(?,?,?,?,?,?,?) ON CONFLICT(organizationId,clientId,sourceId,date) DO UPDATE SET snapshotId=CASE WHEN excluded.dataHash IS NOT NULL AND current_snapshots.dataHash=excluded.dataHash AND EXISTS (SELECT 1 FROM snapshots old WHERE old.id=current_snapshots.snapshotId AND old.status='ready' AND julianday(old.coverageThrough)>=julianday(?)) THEN current_snapshots.snapshotId ELSE excluded.snapshotId END,publishedAt=excluded.publishedAt,dataHash=excluded.dataHash WHERE excluded.publishedAt>=current_snapshots.publishedAt").bind(org,batch.clientId,source,date,retained.get(date)??id,now,dataHash,coveredThrough));
     }
     const publication=[...pointers,this.db.prepare('UPDATE snapshots SET status=? WHERE id=?').bind('ready',id)];
-    await publish('source.snapshot.publish',()=>this.db.batch(publication));
+    await publishFacts('source.snapshot.publish',()=>this.db.batch(publication));
     // Derived materialization happens after authoritative publication. A replay
     // must retain the raw snapshot's original retrieval/coverage metadata. A
     // new capture or hash-verified writing retry can use this batch. Closed
     // unchanged dates may still point at an older snapshot and need no duplicate.
     if(created.meta.changes||canonicalWriting)try{
+      if(options?.beforeFactPage)await options.beforeFactPage();
       const published=await publish('source.projection.days',()=>this.all<{date:string}>('SELECT date FROM current_snapshots WHERE organizationId=? AND clientId=? AND sourceId=? AND snapshotId=?',org,batch.clientId,source,id));
       for(const {date} of published){const day={snapshotId:id,date,sourceId:source};await writeSnapshotDayProjection(this.db,org,batch.clientId,day,snapshotDayPayload(grouped.get(date)??[],day),options?.publicationDeadline);}
     }catch{/* Optional projections must never fail a completed source job. */}

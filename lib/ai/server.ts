@@ -16,9 +16,8 @@ import {refineReview,rankedReviewPages} from '../reviews/refine';
 import {boundedAIContextForModel} from './model-input';
 import {buildChatModelContext} from './chat-input';
 import {withAnalyticsMemory} from '../server/analytics-memory';
-import {chatDatasets} from './chat-scope';
+import {chatDatasets,chatNeedsMonthHistory,chatNeedsReviewBody,chatObservationSelection} from './chat-scope';
 import {monthToDateSummary} from '../analytics/month-to-date';
-import {workspaceObservationSelection} from '../analytics/workspace-datasets';
 const reviewHistoryDatasets=['overview','subscriptions','subscriptionEvents','revenue','markets','media','orderStreams','renewalDiagnostics','orderHygiene'];
 const reviewDetailDatasets=['funnels','traffic','products','discounts','creatives','experiments'];
 export async function aiContext(clientId:string|undefined,filters:QueryFilters,reviewId?:string,existingScope?:AccessScope,sourceOnly=false,fastChat=false,question=''){
@@ -42,28 +41,31 @@ async function aiContextWithinBudget(clientId:string|undefined,filters:QueryFilt
   }
  }
  const records=await Promise.all(clients.map(async client=>{
-  const preparedDatasets=fastChat?chatDatasets(filters.view,question):undefined;
+  const selection=fastChat?chatObservationSelection(filters.view,question):undefined,preparedDatasets=selection?.datasets;
+  const monthHistory=!fastChat||chatNeedsMonthHistory(question),reviewIndexOnly=fastChat&&!reviewId&&!chatNeedsReviewBody(question);
   const [rows,closedRows,connections,note,findings,allReviews]=await Promise.all([
-   s.observations(scope.organizationId,client.id,filters,false,undefined,fastChat?{...workspaceObservationSelection(preparedDatasets!),dimensions:true}:sourceOnly?{datasets:[...reviewHistoryDatasets,...reviewDetailDatasets],includePriorWeek:false}:undefined),
+   s.observations(scope.organizationId,client.id,filters,false,undefined,selection??(sourceOnly?{datasets:[...reviewHistoryDatasets,...reviewDetailDatasets],includePriorWeek:false}:undefined)),
    fastChat?Promise.resolve([]):sourceOnly?Promise.all([
     s.observations(scope.organizationId,client.id,{...filters,from:[filters.to.slice(0,8)+'01',shiftDate(filters.to,-7)].sort()[0],mode:'closed',compare:'weekday'},false,undefined,{datasets:reviewHistoryDatasets,includePriorWeek:false}),
     s.observations(scope.organizationId,client.id,{...filters,from:filters.mode==='partial'?shiftDate(filters.to,-1):filters.to,to:filters.mode==='partial'?shiftDate(filters.to,-1):filters.to,mode:'closed',compare:'previous',compareFrom:undefined,compareTo:undefined},false,undefined,{datasets:reviewDetailDatasets,includePriorWeek:false})
    ]).then(parts=>parts.flat()):s.observations(scope.organizationId,client.id,{...filters,from:[filters.to.slice(0,8)+'01',shiftDate(filters.to,-7)].sort()[0],mode:'closed',compare:'weekday'}),
-   s.connections(scope.organizationId,client.id),s.note(scope.organizationId,client.id),s.findings(scope.organizationId,client.id),s.reviews(scope.organizationId,client.id)
+   s.connections(scope.organizationId,client.id),s.note(scope.organizationId,client.id),s.findings(scope.organizationId,client.id),s.reviews(scope.organizationId,client.id,reviewIndexOnly)
   ]);
   if(reviewId&&!allReviews.some(r=>r.id===reviewId)){const r=await s.first('SELECT * FROM reviews WHERE organizationId=? AND clientId=? AND id=?',scope.organizationId,client.id,reviewId);if(!r)throw new Error('Review access denied');allReviews.unshift({...r,payload:JSON.parse(r.payload),current:!!r.current});}
   const priorMonthStart=Temporal.PlainDate.from(filters.to).subtract({months:1}).toString().slice(0,8)+'01';
-  const headlineRows=await s.observations(scope.organizationId,client.id,{...filters,from:priorMonthStart,view:'overview'},true),monthRows=headlineRows.filter(r=>r.dataset==='overview');
+  const headlineRows=monthHistory?await s.observations(scope.organizationId,client.id,{...filters,from:priorMonthStart,view:'overview'},true):[],monthRows=headlineRows.filter(r=>r.dataset==='overview');
   const referenceRows=rows.filter(row=>row.dataset==='overview');
   const weekday=queryClient(client,referenceRows,connections,{...filters,view:'overview',compare:'weekday'},{preparedDatasets:['overview']}),previousDay=queryClient(client,referenceRows,connections,{...filters,view:'overview',compare:'previous'},{preparedDatasets:['overview']});
   const mtFrom=filters.to.slice(0,8)+'01',priorDate=Temporal.PlainDate.from(filters.to).subtract({months:1}).toString(),priorFrom=priorDate.slice(0,8)+'01';
   const selected=queryClient(client,rows,connections,filters,fastChat?{preparedDatasets}:undefined);
-  const mt=monthToDateSummary(client,monthRows,{...filters,from:mtFrom},selected.cutoff),priorMt=monthToDateSummary(client,monthRows,{...filters,from:priorFrom,to:priorDate},selected.cutoff);
+  const mt=monthHistory?monthToDateSummary(client,monthRows,{...filters,from:mtFrom},selected.cutoff):null,priorMt=monthHistory?monthToDateSummary(client,monthRows,{...filters,from:priorFrom,to:priorDate},selected.cutoff):null;
   if(fastChat)selected.warnings.push(`This chat checked numeric detail for ${chatDatasets(filters.view,question).join(', ')}. Other datasets were not loaded for this question.`);
+  if(fastChat&&!selection?.trendDatasets.length)selected.warnings.push('Historical chart detail was not requested for this question; unexamined dates must not be treated as source gaps.');
+  if(reviewIndexOnly)selected.warnings.push('Saved reviews are supplied as indexed summaries; full report bodies were not loaded for this live question.');
   return {...selected,note,findings,reviews:allReviews,
    weekday:{metrics:weekday.prior,period:weekday.comparison,warnings:weekday.warnings},previousDay:{metrics:previousDay.prior,period:previousDay.comparison,warnings:previousDay.warnings},
    supplemental:supplementalReviewEvidence(client,fastChat?rows:closedRows,connections,filters),
-   monthToDate:{current:mt,previous:priorMt,instruction:'Use fullElapsedDayCoverage and per-metric coverage, not merely observed dates, before claiming complete MTD. Earlier store days are closed; only the final date uses the shared local partial-day clock. Without a confirmed cutoff or complete revenue/order coverage, label observed totals and report missing or unconfirmed dates.'}
+   monthToDate:{current:mt,previous:priorMt,instruction:monthHistory?'Use fullElapsedDayCoverage and per-metric coverage, not merely observed dates, before claiming complete MTD. Earlier store days are closed; only the final date uses the shared local partial-day clock. Without a confirmed cutoff or complete revenue/order coverage, label observed totals and report missing or unconfirmed dates.':'MTD history was not loaded for this selected-period question. Its values are unknown, never zero.'}
   };
  }));
  if(sourceOnly)for(const record of records){record.findings=record.findings.map(f=>{const copy={...f} as typeof f&{latestCheck?:unknown};delete copy.latestCheck;return copy;});record.reviews=record.reviews.filter(r=>r.payload.type==='historical').map(r=>({...r,current:!record.reviews.some(x=>x.payload.type==='historical'&&x.storeDate===r.storeDate&&x.revision>r.revision)}));}

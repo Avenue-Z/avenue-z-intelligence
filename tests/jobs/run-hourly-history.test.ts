@@ -5,8 +5,9 @@ import {Store} from '../../lib/server/store';
 import initial from '../../data/initial-clients.json';
 import type {AccessScope,SourceBatch} from '../../lib/analytics/contracts';
 
-const state=vi.hoisted(()=>({store:null as Store|null,sqlite:null as DatabaseSync|null,archives:[] as string[],active:new Set<string>(),peak:0,captures:[] as {provider:string;date:string}[],failure:'',partial:false,parallel:false,release:null as (()=>void)|null,waiting:null as Promise<void>|null,maintenance:[] as {maxSnapshots:number;maxRows:number;deadline:number}[],throttled:false,enqueueCurrentDuringCapture:false}));
-vi.mock('@avenue/runtime',()=>({env:{BUCKET:{put:async(key:string)=>{if(state.failure==='archive')throw Error('Archive unavailable');state.archives.push(key);}}},runtimePlatform:'sites'}));
+const state=vi.hoisted(()=>({store:null as Store|null,sqlite:null as DatabaseSync|null,archives:[] as string[],archivePayloads:new Map<string,string>(),denseTraffic:false,active:new Set<string>(),peak:0,captures:[] as {provider:string;date:string}[],failure:'',partial:false,parallel:false,release:null as (()=>void)|null,waiting:null as Promise<void>|null,maintenance:[] as {maxSnapshots:number;maxRows:number;deadline:number}[],throttled:false,enqueueCurrentDuringCapture:false}));
+vi.mock('@avenue/runtime',()=>({env:{BUCKET:{put:async(key:string,text:string)=>{if(state.failure==='archive')throw Error('Archive unavailable');state.archives.push(key);state.archivePayloads.set(key,text);}}},runtimePlatform:'sites'}));
+vi.mock('@vercel/blob',()=>({head:async(key:string)=>{const text=state.archivePayloads.get(key);if(!text)throw Error('Missing archive');return {pathname:key,size:new TextEncoder().encode(text).byteLength,etag:'immutable'};},get:async(key:string)=>{const text=state.archivePayloads.get(key);if(!text)throw Error('Missing archive');return {statusCode:200,blob:{pathname:key,etag:'immutable'},stream:new Response(text).body};}}));
 vi.mock('../../lib/server/access',()=>({getStore:()=>state.store}));
 vi.mock('../../lib/server/secrets',()=>({serverSecret:(name:string)=>name==='APP_ORGANIZATION_ID'?'o':'private-test-value'}));
 vi.mock('../../lib/jobs/archive-materialization-retention',async importOriginal=>({...await importOriginal<typeof import('../../lib/jobs/archive-materialization-retention')>(),pruneArchivedMaterializations:async(_store:unknown,_scope:unknown,options:{maxSnapshots:number;maxRows:number;deadline:number})=>{state.maintenance.push(options);return {verifiedSnapshots:1,prunedSnapshots:1,rowsDeleted:12,charactersDeleted:6000,projectionChunksDeleted:1,skipped:0};}}));
@@ -17,13 +18,14 @@ vi.mock('../../lib/sources/kind-fetch',()=>({fetchKindSource:async(source:{id:st
  if(state.parallel){if(state.active.size===2)state.release?.();else await state.waiting;}
  state.active.delete(source.provider);
  const base={date:window.to,value:42.25,definition:'qualified',population:'population',start:`${window.to}T20:00:00Z`,end:`${window.to}T21:00:00Z`,sourceId:source.provider,retrievedAt:new Date().toISOString(),coverageThrough:`${window.to}T22:00:00Z`,quality:'complete' as const};
+ if(state.denseTraffic&&source.provider==='kind-shopify-traffic')return {clientId:client.id,timezone:client.timezone,currency:client.currency,channels:[],dimensions:['page'],grain:'hourly',complete:true,coverageThrough:base.coverageThrough,rows:Array.from({length:1001},(_,index)=>({...base,dataset:'traffic',metric:'sessions',value:index+1,currency:null,dimensions:{page:`/page-${index}`}}))} satisfies SourceBatch;
  return {clientId:client.id,timezone:client.timezone,currency:client.currency,channels:[],dimensions:source.provider==='kind-triple-whale'?['market']:[],grain:'hourly',complete:!state.partial,coverageThrough:`${window.to}T22:00:00Z`,rows:source.provider==='kind-recharge-cancellations'?['subscription_cancellations','new_subscriptions','same_day_subscription_cancellations'].map(metric=>({...base,dataset:'subscriptionEvents',metric,value:metric==='new_subscriptions'?100:5,currency:null,dimensions:{}})):source.provider==='kind-triple-whale'?['revenue','orders','new_orders'].map(metric=>({...base,dataset:'markets',metric,value:metric==='revenue'?42.25:2,currency:metric==='revenue'?'USD':null,dimensions:{market:'US'}})):[{...base,dataset:'revenue',metric:'revenue',currency:'USD',dimensions:{}}]} satisfies SourceBatch;
 }}));
 import {runHourlyHistoryBatch,hourlyHistoryTick} from '../../lib/jobs/run-hourly-history';
 
 const scope:AccessScope={organizationId:'o',actorId:'scheduler',role:'service',permittedClientIds:['kind-patches']},client={...initial[0],version:1};
 beforeEach(async()=>{
- vi.useFakeTimers();vi.setSystemTime('2026-10-13T18:00:00Z');state.archives=[];state.active=new Set();state.peak=0;state.captures=[];state.failure='';state.partial=false;state.parallel=false;state.maintenance=[];state.throttled=false;state.enqueueCurrentDuringCapture=false;state.waiting=new Promise(resolve=>{state.release=resolve;});
+ vi.useFakeTimers();vi.setSystemTime('2026-10-13T18:00:00Z');state.archives=[];state.archivePayloads=new Map();state.denseTraffic=false;state.active=new Set();state.peak=0;state.captures=[];state.failure='';state.partial=false;state.parallel=false;state.maintenance=[];state.throttled=false;state.enqueueCurrentDuringCapture=false;state.waiting=new Promise(resolve=>{state.release=resolve;});
  const sqlite=state.sqlite=new DatabaseSync(':memory:');for(const file of readdirSync('drizzle').filter(file=>file.endsWith('.sql')))sqlite.exec(readFileSync(`drizzle/${file}`,'utf8'));
  const prepare=(sql:string)=>{let values:unknown[]=[];const statement={sql,bind(...input:unknown[]){values=input;return statement;},async all(){return {results:sqlite.prepare(sql).all(...values as any[])};},async first(){return sqlite.prepare(sql).get(...values as any[])??null;},async run(){return {meta:{changes:Number(sqlite.prepare(sql).run(...values as any[]).changes)}};}};return statement;};
  const store=state.store=new Store({prepare,batch:async statements=>Promise.all(statements.map(statement=>statement.run()))});
@@ -35,6 +37,30 @@ async function source(id:string,provider='kind-shopify-sales',date='2026-10-12')
  const profile={dataset:'revenue',metric:'revenue',definition:'qualified',population:'population',currency:'USD',dimensions:[],hourly:true};await store.saveQualification('o',client.id,id,1,1,{clientId:client.id,queryId:`${provider}:hourly-v2`,timezone:client.timezone,currency:client.currency,hourlyGrain:true,requiresHourly:true,channels:[],requiredChannels:[],dimensions:[],requiredDimensions:[],paginationComplete:true,reconciled:true,reconciliationEvidence:'Independent same-window reconciliation',profiles:provider==='kind-recharge-cancellations'?['subscription_cancellations','new_subscriptions','same_day_subscription_cancellations'].map(metric=>({...profile,dataset:'subscriptionEvents',metric,currency:null})):provider==='kind-triple-whale'?['revenue','orders','new_orders'].map(metric=>({...profile,dataset:'markets',metric,currency:metric==='revenue'?'USD':null,dimensions:['market']})):[profile]},'scheduler');
  await store.enqueue('o',client.id,id,`hourly-history:${date}`,new Date().toISOString());
 }
+
+async function denseTrafficHistory(){
+ await source('history','kind-shopify-traffic');const store=state.store!,qualification=await store.qualification('o','history');state.denseTraffic=true;
+ await store.saveQualification('o',client.id,'history',1,1,{...qualification!.payload,dimensions:['page'],requiredDimensions:['page'],profiles:[{...qualification!.payload.profiles[0],dataset:'traffic',metric:'sessions',currency:null,dimensions:['page']}]},'scheduler');
+ return store;
+}
+it.each([1,3])('yields after dense history page %s when current work becomes due, then resumes the frozen capture on its normal retry',async boundaryPage=>{
+ const store=await denseTrafficHistory();
+ const health=await store.all('SELECT * FROM connections'),original=store.db.batch;let factPages=0;
+ store.db.batch=async statements=>{const result=await original(statements);if(statements[0]?.sql.startsWith('INSERT INTO observations')&&++factPages===boundaryPage)await store.enqueue('o',client.id,'history','current-during-page',new Date().toISOString());return result;};
+ expect(await runHourlyHistoryBatch(store,scope,{maxJobs:2,deadline:Date.now()+700000})).toMatchObject({completed:[],failed:[],skipped:'current-source-work'});
+ expect(factPages).toBe(boundaryPage);expect(await store.first('SELECT COUNT(*) n FROM observations')).toEqual({n:Math.min(boundaryPage*500,1001)});expect(await store.all('SELECT * FROM current_snapshots')).toEqual([]);expect(await store.all('SELECT * FROM connections')).toEqual(health);
+ const snapshot=await store.first<{id:string;retrievedAt:string}>('SELECT id,retrievedAt FROM snapshots');expect(snapshot).not.toBeNull();expect(await store.first('SELECT status FROM snapshots')).toEqual({status:'writing'});
+ expect(await store.first("SELECT status,attempts,error,leaseUntil FROM jobs WHERE id='o:history:hourly-history:2026-10-12'")).toEqual({status:'pending',attempts:0,error:null,leaseUntil:null});expect(state.archives).toHaveLength(1);expect(state.captures).toHaveLength(1);
+ await store.run("UPDATE jobs SET status='complete' WHERE id='o:history:current-during-page'");store.db.batch=original;vi.setSystemTime(Date.now()+300000);
+ expect(await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+700000})).toMatchObject({completed:['o:history:hourly-history:2026-10-12'],failed:[]});
+ expect(state.captures).toHaveLength(1);expect(state.archives).toHaveLength(1);expect(await store.first('SELECT COUNT(*) n FROM observations')).toEqual({n:1001});expect(await store.first('SELECT snapshotId FROM current_snapshots')).toEqual({snapshotId:snapshot!.id});expect(await store.all('SELECT * FROM connections')).toEqual(health);
+ expect(await store.first("SELECT COUNT(*) n FROM observations WHERE json_extract(payload,'$.retrievedAt')<>?",snapshot!.retrievedAt)).toEqual({n:0});
+});
+it.each(['attempts','leaseUntil','complete','pending','failed'] as const)('does not change a replacement %s history owner when yielding to new current work',async changed=>{
+ const store=await denseTrafficHistory(),health=await store.all('SELECT * FROM connections'),original=store.db.batch;let expected:unknown,factPages=0;
+ store.db.batch=async statements=>{const result=await original(statements);if(statements[0]?.sql.startsWith('INSERT INTO observations')&&++factPages===1){await store.enqueue('o',client.id,'history','current-during-page',new Date().toISOString());const key='o:history:hourly-history:2026-10-12';if(changed==='attempts')await store.run('UPDATE jobs SET attempts=4 WHERE id=?',key);else if(changed==='leaseUntil')await store.run("UPDATE jobs SET leaseUntil='2026-10-13T19:00:00Z' WHERE id=?",key);else await store.run('UPDATE jobs SET status=? WHERE id=?',changed,key);expected=await store.all('SELECT * FROM jobs ORDER BY id');}return result;};
+ expect(await runHourlyHistoryBatch(store,scope,{maxJobs:1,deadline:Date.now()+700000})).toMatchObject({completed:[],failed:[],skipped:'current-source-work'});expect(factPages).toBe(1);expect(await store.all('SELECT * FROM jobs ORDER BY id')).toEqual(expected);expect(await store.all('SELECT * FROM current_snapshots')).toEqual([]);expect(await store.all('SELECT * FROM connections')).toEqual(health);
+});
 
 it('captures two different historical providers concurrently and publishes archived facts without changing current source health',async()=>{
  await source('sales');await source('meta','kind-meta-performance');const store=state.store!,before=await store.all('SELECT * FROM connections');

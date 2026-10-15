@@ -1,3 +1,15 @@
+import {workspaceObservationSelection} from '../analytics/workspace-datasets';
+
+export function chatNeedsMonthHistory(question:string){
+ return /\b(?:mtd|months?|monthly)\b/i.test(question);
+}
+export function chatNeedsReviewBody(question:string){
+ return /\b(?:reports?|reviews?|recommendations?)\b|\bwatch\s+list\b/i.test(question);
+}
+export function chatObservationSelection(view:string,question:string){
+ const selection=workspaceObservationSelection(chatDatasets(view,question)),history=/\b(?:charts?|trends?|history|historical|hourly|daily|weekly|monthly)\b|\bover\s+time\b|\bday\s+by\s+day\b|\b(?:last|past|previous)\s+(?:(?:\d+|seven|thirty)\s+)?(?:days?|weeks?|months?)\b/i.test(question);
+ return {...selection,dimensions:true,includePriorWeek:false,trendDatasets:history?selection.trendDatasets:[]};
+}
 export function needsCreativeDetail(question:string){
  const q=question.toLowerCase();
  return /creative|campaign|\bcpc\b|\bcpm\b|\bctr\b|click|impression/.test(q)||/\b(?:which|best|top|worst)\s+(?:performing\s+)?ads?\b|\bad[\s-]+level\b|\bads?\s+(?:performance|performed|performing)\b/.test(q);

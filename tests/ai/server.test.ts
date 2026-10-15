@@ -12,6 +12,7 @@ vi.mock('../../lib/ai/provider',()=>({askOpenAI:state.model}));
 import {aiContext,aiHistory,answerAI,generateAIReview} from '../../lib/ai/server';
 import {REVIEW_SECTIONS,compactAIContextForModel} from '../../lib/ai/context';
 import {fingerprint} from '../../lib/reviews/build';
+import type {Observation,Connection} from '../../lib/analytics/contracts';
 const filters={from:'2026-10-07',to:'2026-10-07',mode:'closed',compare:'previous',view:'overview',market:'',source:'',page:'',device:'',stream:''} as const;
 function database(){const db=new DatabaseSync(':memory:');for(const f of readdirSync('drizzle').filter(f=>f.endsWith('.sql')))db.exec(readFileSync(`drizzle/${f}`,'utf8'));return {prepare(sql:string){let values:any[]=[];const p={bind(...v:any[]){values=v;return p;},async first(){return db.prepare(sql).get(...values)??null;},async all(){return {results:db.prepare(sql).all(...values)};},async run(){return {meta:{changes:Number(db.prepare(sql).run(...values).changes)}};}};return p;},async batch(statements:any[]){db.exec('BEGIN');try{const r=[];for(const s of statements)r.push(await s.run());db.exec('COMMIT');return r;}catch(e){db.exec('ROLLBACK');throw e;}}};}
 beforeEach(async()=>{state.store=new Store(database());state.model.mockReset();for(const c of clients)await state.store.run('INSERT INTO clients(id,organizationId,name,slug,timezone,currency,color,config,version) VALUES(?,?,?,?,?,?,?,?,?)',c.id,'o',c.name,c.slug,c.timezone,c.currency,c.color,JSON.stringify(c.config),1);});
@@ -38,10 +39,36 @@ it('uses current evidence without feeding old report measurements back as curren
  await generateAIReview(state.scope as any,'beam',filters);expect(state.model.mock.calls[0][2]).not.toContain('38.23');const p=(await state.store.reviews('o','beam'))[0].payload as any;expect(p.headlines[0]).toContain('coverage is unconfirmed');expect(p.sections.find((s:any)=>s.title==='Spend vs revenue').paragraphs[0]).toContain('does not establish');
 });
 
-it('answers chat from one shared detail read rather than a second overlapping month export',async()=>{
+it('answers an ordinary live question from one selected/comparison read without a month export',async()=>{
  state.model.mockResolvedValue({answer:'No evidence in this window',sourceIds:['selection:beam'],followUps:[],caveats:[]});
  const spy=vi.spyOn(state.store,'observations');await answerAI({clientId:'beam',filters,question:'What is shown?'});
- expect(spy.mock.calls.filter(call=>call[3]!==true)).toHaveLength(1);expect(spy.mock.calls.filter(call=>call[3]===true)).toHaveLength(1);
+ expect(spy.mock.calls.filter(call=>call[3]!==true)).toHaveLength(1);expect(spy.mock.calls.filter(call=>call[3]===true)).toHaveLength(0);
+});
+it('loads exact landing-page market comparisons without dense historical trend cohorts',async()=>{
+ const scoped={...filters,mode:'partial' as const,view:'traffic',page:'/pages/glplpv4'},source='qualified';
+ const rows:Observation[]=['2026-10-01','2026-10-06','2026-10-07'].flatMap(date=>['US','CA'].flatMap(market=>['sessions','converting_sessions','atc_sessions','checkouts','completed_checkouts'].map(metric=>({date,dataset:'traffic',metric,value:metric==='sessions'?100:metric==='checkouts'?date===filters.to?10:20:metric==='completed_checkouts'||metric==='converting_sessions'?date===filters.to?3:10:30,definition:'human_public_landing_traffic',population:'human_public_landing_sessions',currency:null,dimensions:{page:scoped.page,market,source:'social',utm_source:'facebook'},start:`${date}T12:00:00Z`,end:`${date}T13:00:00Z`,sourceId:source,retrievedAt:'2026-10-07T13:10:00Z',coverageThrough:'2026-10-07T13:00:00Z',quality:'complete'}))));
+ await state.store.persistBatch('o',source,{clientId:'beam',timezone:'America/New_York',currency:'USD',channels:[],dimensions:['page','market','source','utm_source'],grain:'hourly',complete:true,coverageThrough:'2026-10-07T13:00:00Z',rows},'chat-selected-period','2026-10-07T13:10:00Z');
+ vi.spyOn(state.store,'connections').mockResolvedValue([{id:source,provider:'kind-shopify-traffic',enabled:true,coverageThrough:'2026-10-07T13:00:00Z'}] as Connection[]);
+ const reads=vi.spyOn(state.store,'observations'),result=await aiContext('beam',scoped,undefined,undefined,false,true,'Which market has the weakest checkout completion for this landing page today, compared with the same time yesterday?');
+ expect(reads.mock.calls).toHaveLength(1);expect(reads.mock.calls[0][5]).toMatchObject({dimensions:true,includePriorWeek:false,trendDatasets:[]});
+ const loaded=await reads.mock.results[0].value as Observation[];expect([...new Set(loaded.filter(row=>row.dataset==='traffic').map(row=>row.date))].sort()).toEqual(['2026-10-06','2026-10-07']);
+ const traffic=result.context.clients[0].visualBreakdowns.traffic,current=traffic.current!.cuts.market.rows.find(row=>row.dimensions.market==='CA')!,previous=traffic.comparison!.cuts.market.rows.find(row=>row.dimensions.market==='CA')!;
+ expect(current.metrics).toMatchObject({checkouts:10,completed_checkouts:3});expect(current.summary.checkoutCompletion).toBe(.3);expect(previous.metrics).toMatchObject({checkouts:20,completed_checkouts:10});expect(previous.summary.checkoutCompletion).toBe(.5);
+ expect(traffic.current!.scope.cutoff).toBe('2026-10-07T13:00:00Z');expect(traffic.comparison!.scope.cutoff).toBe('2026-10-06T13:00:00Z');
+ expect(result.context.clients[0].monthToDate).toMatchObject({current:null,previous:null});
+});
+it('loads month headline history only when the live question asks for it',async()=>{
+ const rows:Observation[]=[['2026-09-07',20],['2026-10-01',30],['2026-10-07',100]].map(([date,value])=>({date:String(date),dataset:'overview',metric:'revenue',value:Number(value),definition:'net_sales',population:'sales',currency:'USD',dimensions:{},sourceId:'qualified',retrievedAt:'2026-10-08T10:00:00Z',coverageThrough:'2026-10-08T04:00:00Z',quality:'complete'}));
+ await state.store.persistBatch('o','qualified',{clientId:'beam',timezone:'America/New_York',currency:'USD',complete:true,coverageThrough:'2026-10-08T04:00:00Z',rows},'chat-month-evidence','2026-10-08T10:00:00Z');
+ const reads=vi.spyOn(state.store,'observations'),result=await aiContext('beam',filters,undefined,undefined,false,true,'Compare month-to-date revenue with last month.');
+ expect(reads.mock.calls.filter(call=>call[3]===true)).toHaveLength(1);
+ expect(result.context.clients[0].monthToDate).toMatchObject({current:{metrics:{revenue:130},fullElapsedDayCoverage:false},previous:{metrics:{revenue:20},fullElapsedDayCoverage:false}});
+});
+it('uses saved review summaries for an ordinary live question and full bodies only when requested',async()=>{
+ const text='Original full dated review body '.repeat(1000),id=await state.store.saveReview('o','beam',filters.to,'dated',{type:'historical',text,kpis:[{label:'Revenue',value:'$100',note:'Dated source claim'}]},'2026-10-08T10:00:00Z'),reads=vi.spyOn(state.store,'reviews');
+ const live=await aiContext('beam',filters,undefined,undefined,false,true,'What needs our attention?');expect(reads.mock.calls[0][2]).toBe(true);expect(live.context.clients[0].sourceReviews[0].payload.text).toBeUndefined();expect(live.context.clients[0].sourceReviews[0].payload.kpis).toHaveLength(1);
+ const requested=await aiContext('beam',filters,undefined,undefined,false,true,'Explain this daily review.');expect(reads.mock.calls[1][2]).toBe(false);expect(requested.context.clients[0].sourceReviews[0].payload.text).toBe(text);
+ expect((await state.store.reviews('o','beam')).find((review:{id:string})=>review.id===id).payload.text).toBe(text);
 });
 it('answers the default seven-day chart from loaded daily history and the latest selected values',async()=>{
  const dates=['2026-09-30','2026-10-01','2026-10-02','2026-10-03','2026-10-04','2026-10-05','2026-10-06','2026-10-07'];
@@ -55,6 +82,7 @@ it('answers the default seven-day chart from loaded daily history and the latest
  expect(view.dailyChart.comparison.filter((day:{date:string})=>day.date>='2026-09-30').map((day:{metrics:Record<string,number|null>})=>day.metrics.revenue)).toEqual([100,110,120,130,140,150,160]);
  expect(view.dailyChart.scope.sourceId).toBe('selection:beam');expect(Buffer.byteLength(state.model.mock.calls[0][2])).toBeLessThanOrEqual(80000);
  expect(reads.mock.calls.find(call=>call[3]!==true)?.[5]).toMatchObject({trendDatasets:expect.arrayContaining(['products'])});
+ expect(reads.mock.calls.filter(call=>call[3]===true)).toHaveLength(0);
 });
 it('builds weekday and previous-day headline references without preparing dense Traffic tables',async()=>{
  const query=await import('../../lib/analytics/query'),spy=vi.spyOn(query,'queryClient');

@@ -29,6 +29,13 @@ function addPointer(sqlite:DatabaseSync,sourceId:string,date:string,key:string){
  sqlite.prepare('INSERT INTO current_snapshots(organizationId,clientId,sourceId,date,snapshotId) VALUES(?,?,?,?,?) ON CONFLICT(organizationId,clientId,sourceId,date) DO UPDATE SET snapshotId=excluded.snapshotId').run('o','a',sourceId,date,key);
 }
 function canonicalLoad(input:PreparedWorkspaceInput){return vi.fn(async(connections:Connection[])=>workspacePresentation(queryClient(input.client,await input.store.observations(input.organizationId,input.client.id,input.filters,false,undefined,input.selection),connections,input.filters,{preparedDatasets:input.preparedDatasets}),input.filters));}
+it('returns foreground canonical analytics without waiting for an optional shared-cache writer',async()=>{
+ const {input,load}=fixture();let release:(()=>void)|undefined,settled=false;
+ const publish=vi.spyOn(input.store.db,'batch').mockImplementation(async()=>{await new Promise<void>(resolve=>{release=resolve;});return [];});
+ const work=preparedWorkspaceFrame(input,load).then(frame=>{settled=true;return frame;});
+ try{await vi.waitFor(()=>expect(settled).toBe(true),{timeout:1000});expect(publish).not.toHaveBeenCalled();expect((await work).client.id).toBe(input.client.id);expect(load).toHaveBeenCalledTimes(1);}
+ finally{release?.();await work;publish.mockRestore();}
+});
 it('reuses the last validated exact frame promptly when pointer metadata stalls after fresh source qualification',async()=>{
  const {store,input,load}=fixture();const first=await preparedWorkspaceFrame(input,load),all=store.all.bind(store);
  store.all=async(sql,...args)=>sql.startsWith('SELECT c.sourceId,c.snapshotId,c.date')?new Promise(()=>{}):all(sql,...args);
@@ -207,26 +214,26 @@ it('retains large compressible frames within the compressed budget with an exact
  const first=await preparedWorkspaceFrame(input,large),second=await preparedWorkspaceFrame(input,large);expect(first.warnings[0]).toBe(text);expect(second).toEqual(first);expect(second.client).not.toBe(first.client);expect(large).toHaveBeenCalledTimes(1);
 });
 it('reuses a shared frame from a separate Store/adapter, survives local expiry, and keeps source headers fresh',async()=>{
- const {sqlite,input,load}=fixture();const first=await preparedWorkspaceFrame(input,load);sqlite.exec("UPDATE connections SET lastSuccess='recent'");
+ const {sqlite,input,load}=fixture();const first=await preparedWorkspaceFrame({...input,deadline:Date.now()+60000},load);sqlite.exec("UPDATE connections SET lastSuccess='recent'");
  const fresh={...input,store:new Store({...input.store.db})},second=await preparedWorkspaceFrame(fresh,load);expect(load).toHaveBeenCalledTimes(1);expect(second.connections[0].lastSuccess).toBe('recent');expect({...second,connections:first.connections}).toEqual(first);
  const entry=sqlite.prepare('SELECT cacheKey,codecVersion,payload,createdAt,expiresAt FROM prepared_workspace_cache').get()!;expect(entry.cacheKey).toMatch(/^[a-f0-9]{64}$/);expect(Number(entry.expiresAt)-Number(entry.createdAt)).toBe(86400000);expect(String(entry.payload).length*2).toBeLessThanOrEqual(1024*1024);
 });
 it('expires shared frames after twenty-four hours and retains at most thirty-two entries per client',async()=>{
- const {sqlite,input,load}=fixture();await preparedWorkspaceFrame(input,load);sqlite.exec('UPDATE prepared_workspace_cache SET expiresAt=0');await preparedWorkspaceFrame({...input,store:new Store({...input.store.db})},load);expect(load).toHaveBeenCalledTimes(2);
- for(let i=0;i<34;i++)await preparedWorkspaceFrame({...input,filters:{...input.filters,page:`/persistent-${i}`}},load);expect(sqlite.prepare('SELECT COUNT(*) AS count FROM prepared_workspace_cache').get()?.count).toBe(32);
+ const {sqlite,input,load}=fixture();await preparedWorkspaceFrame({...input,deadline:Date.now()+60000},load);sqlite.exec('UPDATE prepared_workspace_cache SET expiresAt=0');await preparedWorkspaceFrame({...input,store:new Store({...input.store.db})},load);expect(load).toHaveBeenCalledTimes(2);
+ for(let i=0;i<34;i++)await preparedWorkspaceFrame({...input,deadline:Date.now()+60000,filters:{...input.filters,page:`/persistent-${i}`}},load);expect(sqlite.prepare('SELECT COUNT(*) AS count FROM prepared_workspace_cache').get()?.count).toBe(32);
 });
 it('repairs shared hash corruption and fails open when the migration is absent',async()=>{
- const {sqlite,input,load}=fixture();await preparedWorkspaceFrame(input,load);sqlite.exec("UPDATE prepared_workspace_cache SET payload='broken'");await preparedWorkspaceFrame({...input,store:new Store({...input.store.db})},load);expect(load).toHaveBeenCalledTimes(2);
+ const {sqlite,input,load}=fixture();await preparedWorkspaceFrame({...input,deadline:Date.now()+60000},load);sqlite.exec("UPDATE prepared_workspace_cache SET payload='broken'");await preparedWorkspaceFrame({...input,deadline:Date.now()+60000,store:new Store({...input.store.db})},load);expect(load).toHaveBeenCalledTimes(2);expect(sqlite.prepare('SELECT payload FROM prepared_workspace_cache').get()?.payload).not.toBe('broken');
  sqlite.exec('DROP TABLE prepared_workspace_cache');await preparedWorkspaceFrame({...input,store:new Store({...input.store.db})},load);expect(load).toHaveBeenCalledTimes(3);
 });
 it('rejects a correctly hashed cross-client frame and a compressed payload that expands beyond four MiB',async()=>{
- const {sqlite,input,load}=fixture();await preparedWorkspaceFrame(input,load);
+ const {sqlite,input,load}=fixture();await preparedWorkspaceFrame({...input,deadline:Date.now()+60000},load);
  const replace=async(frame:unknown)=>{const bytes=Buffer.from(await new Response(new Response(JSON.stringify(frame)).body!.pipeThrough(new CompressionStream('gzip'))).arrayBuffer()),payload=bytes.toString('base64');sqlite.prepare('UPDATE prepared_workspace_cache SET payload=?,payloadHash=?').run(payload,createHash('sha256').update(payload).digest('hex'));};
  const valid=await load(await input.store.connections('o','a'));load.mockClear();await replace({...valid,connections:undefined,client:{...input.client,id:'outside'}});await preparedWorkspaceFrame({...input,store:new Store({...input.store.db})},load);expect(load).toHaveBeenCalledTimes(1);
  await replace({...valid,connections:undefined,warnings:['x'.repeat(5*1024*1024)]});await preparedWorkspaceFrame({...input,store:new Store({...input.store.db})},load);expect(load).toHaveBeenCalledTimes(2);
 });
 it('does not persist frames when pointers change during a canonical computation or a warm deadline has elapsed',async()=>{
- const {sqlite,input,load}=fixture();await preparedWorkspaceFrame(input,async(connections)=>{sqlite.exec('DELETE FROM current_snapshots');return load(connections);});expect(sqlite.prepare('SELECT COUNT(*) AS count FROM prepared_workspace_cache').get()?.count).toBe(0);
+ const {sqlite,input,load}=fixture();await preparedWorkspaceFrame({...input,deadline:Date.now()+60000},async(connections)=>{sqlite.exec('DELETE FROM current_snapshots');return load(connections);});expect(sqlite.prepare('SELECT COUNT(*) AS count FROM prepared_workspace_cache').get()?.count).toBe(0);
  await expect(preparedWorkspaceFrame({...input,deadline:Date.now()-1},load)).rejects.toThrow('budget elapsed');expect(load).toHaveBeenCalledTimes(1);
 });
 it('keeps an expiring warmer separate from the foreground canonical promise for the same source token',async()=>{

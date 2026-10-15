@@ -123,7 +123,7 @@ async function durableFrame(input:PreparedWorkspaceInput,cacheKey:string):Promis
  catch(error){checkBudget(input);if(transientDatabaseFailure(error))throw error;return null;}
  if(!saved)return null;
  try{if(typeof saved.payload!=='string'||saved.payload.length>maximumCompressedCharacters||await digest(saved.payload)!==saved.payloadHash)throw Error('Invalid prepared cache integrity');return {payload:saved.payload,frame:await decodeFrame(saved.payload,input)};}
- catch{try{await input.store.run('DELETE FROM prepared_workspace_cache WHERE organizationId=? AND clientId=? AND cacheKey=? AND payloadHash=?',input.organizationId,input.client.id,cacheKey,saved.payloadHash);}catch{/* Optional derived-cache repair. */}return null;}
+ catch{if(input.deadline!==undefined)try{await input.store.run('DELETE FROM prepared_workspace_cache WHERE organizationId=? AND clientId=? AND cacheKey=? AND payloadHash=?',input.organizationId,input.client.id,cacheKey,saved.payloadHash);}catch{/* Optional derived-cache repair. */}return null;}
 }
 async function publishFrame(input:PreparedWorkspaceInput,cacheKey:string,payload:string){
  if(payload.length>maximumCompressedCharacters)return;
@@ -185,7 +185,9 @@ export async function preparedWorkspaceFrame(input:PreparedWorkspaceInput,load:(
    catch{throw new UncachedFrame(payload);}
    // Contract validation happens before either shared or local publication.
    if(!validFrame(frame,input))throw new UncachedValue(frame);
-   await publishFrame(input,cacheKey,payload);
+   // Hosted warming persists common frames independently. Foreground misses
+   // fill bounded local memory without waiting behind an optional DB writer.
+   if(input.deadline!==undefined)await publishFrame(input,cacheKey,payload);
    return payload;
   });
   const frame={...decoded??await decodeFrame(payload,input),connections};

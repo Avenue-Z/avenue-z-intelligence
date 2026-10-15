@@ -19,6 +19,7 @@ type HistoryBudget={maxJobs:number;deadline:number};
 type HistoryResult={completed:string[];failed:{id:string;error:string}[];skipped?:string;storageBytes?:number;maintenance?:Awaited<ReturnType<typeof pruneArchivedMaterializations>>};
 type EligibleSource={source:Connection;client:Client;contract:RegisteredContract};
 type HistoryJob={id:string;sourceId:string;clientId:string;attempts:number;leaseUntil:string|null};
+class CurrentSourceWorkDeferral extends Error{}
 function requiredBudget(provider:string){return provider==='kind-recharge-cancellations'?180000:provider==='kind-triple-whale'?200000:['kind-meta-performance','kind-shopify-traffic'].includes(provider)?300000:provider==='kind-shopify-products'?90000:30000;}
 function budgetFailure(error:unknown){
  // Only known transport/deadline failures qualify. Data and authorization
@@ -105,11 +106,16 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
       throw Error('Historical day left the retained store window');
      }
      if(storage>=STORAGE_SAFETY_BYTES&&!(smallRecharge&&recentRechargeHistoryDate(date,today)&&rechargeHistoryFits(storage)))throw new HistoryCapacityDeferral('Historical storage capacity reserved for current ingestion');
-     return store.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,window,{publicationDeadline:budget.deadline,...(['kind-shopify-traffic','kind-meta-performance'].includes(source.provider)?{factPageSize:500 as const}:{})});
+     return store.persistBatch(scope.organizationId,source.id,batch,hash,capturedAt,window,{publicationDeadline:budget.deadline,...(['kind-shopify-traffic','kind-meta-performance'].includes(source.provider)?{factPageSize:500 as const,beforeFactPage:async()=>{if(await currentSourcesDue(store,scope))throw new CurrentSourceWorkDeferral('Current source work has priority');}}:{})});
     });
     completing=true;await retryPublication('history.complete',budget.deadline,()=>store.finish(job.id));out.completed.push(job.id);
    }catch(error){
     const message=error instanceof Error?error.message:'Historical capture failed';
+    if(error instanceof CurrentSourceWorkDeferral){
+     out.skipped='current-source-work';
+     await store.run("UPDATE jobs SET status='pending',attempts=MAX(0,attempts-1),dueAt=?,error=NULL,leaseUntil=NULL WHERE id=? AND organizationId=? AND status='running' AND attempts=? AND leaseUntil=?",new Date(Date.now()+5*60000).toISOString(),job.id,scope.organizationId,job.attempts,job.leaseUntil);
+     continue;
+    }
     if(message==='Historical day left the retained store window'){out.skipped='retention-window';continue;}
     if(completing&&budgetFailure(error)){
      // A successful acknowledgment can commit before its response times out.
