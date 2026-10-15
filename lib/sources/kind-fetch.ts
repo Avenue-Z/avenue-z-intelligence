@@ -1,6 +1,6 @@
 import {Temporal} from '@js-temporal/polyfill';
 import {fetchRechargeCancellations} from './recharge-cancellations';
-import {fetchRechargeSubscriptionCohort} from './recharge-subscription-cohort';
+import {fetchRechargeSubscriptionCohort,type RetainedRechargeCreation} from './recharge-subscription-cohort';
 import {rechargeProviderJson} from './recharge-provider-json';
 import {fetchShopifyHourlyCommerce} from './shopify-hourly-commerce';
 import {hourlyTrafficQueries,normalizeHourlyTraffic} from './shopify-hourly-traffic';
@@ -15,7 +15,7 @@ import {sourceDefinition,kindConfiguration,sourceBatch,observation,numeric,bound
 async function triple(c:KindConfig,query:string,w:KindWindow,fetcher:typeof fetch,deadline:number){return boundedRows(await providerJson(fetcher,'https://api.triplewhale.com/api/v2/orcabase/api/sql',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':c.TRIPLE_WHALE_SQL_KEY},body:JSON.stringify({shopId:c.SHOP_DOMAIN,query,currency:'USD',period:{startDate:w.from,endDate:w.to}})},deadline));}
 async function shop(c:KindConfig,query:string,fetcher:typeof fetch,deadline:number,responseLimit:6000000|16000000=6000000){return fetchShopifyGraphQL(c,query,fetcher,deadline,responseLimit);}
 async function shopifyql(c:KindConfig,query:string,fetcher:typeof fetch,deadline:number,responseLimit:6000000|16000000=6000000){const data=await shop(c,`query { shopifyqlQuery(query: ${JSON.stringify(query)}) { tableData { columns { name dataType } rows } parseErrors } }`,fetcher,deadline,responseLimit);if(data?.shopifyqlQuery?.parseErrors?.length)throw new Error('ShopifyQL query rejected; source schema needs review');const table=data?.shopifyqlQuery?.tableData;if(!table||!Array.isArray(table.columns))throw new Error('ShopifyQL table missing');return boundedRows(table.rows);}
-export async function fetchKindSource(connection:Connection,client:Client,w:KindWindow,secret:string,fetcher:typeof fetch=fetch,deadline=Date.now()+180000,asOf=new Date()):Promise<SourceBatch>{
+export async function fetchKindSource(connection:Connection,client:Client,w:KindWindow,secret:string,fetcher:typeof fetch=fetch,deadline=Date.now()+180000,asOf=new Date(),retainedCreations:readonly RetainedRechargeCreation[]=[]):Promise<SourceBatch>{
  const def=sourceDefinition(connection.provider,client.id);if(new URL(connection.endpoint).toString()!==new URL(def.endpoint).toString())throw new Error('Kind Patches provider endpoint is fixed');let c:KindConfig;try{c=kindConfiguration.parse(JSON.parse(secret));}catch{throw new Error('Kind Patches server configuration is invalid');}if(client.currency!=='USD'||client.timezone!==c.META_TIME_ZONE)throw new Error('Kind Patches reporting identity changed');const now=asOf,today=todayIn(client.timezone,now);
  if(connection.provider==='kind-triple-whale-diagnostics'){
   const window=effectiveKindWindow(connection,client,w,now),responses=[];for(const query of twDiagnosticsQueries(client,window,now))responses.push(await triple(c,query,window,fetcher,deadline));
@@ -73,7 +73,7 @@ export async function fetchKindSource(connection:Connection,client:Client,w:Kind
   if(connection.provider==='kind-meta-performance')return fetchMetaHourlyPerformance(client,c,w,fetcher,deadline,now);
   const ids=new Set<string>(),creatives=new Set<string>();let after='';for(let page=0;page<50;page++){const params=new URLSearchParams({fields:'id,creative{id},effective_status',limit:'1000',effective_status:'["ACTIVE"]',...after?{after}:{}}),j=await providerJson(fetcher,`${def.endpoint}/${c.META_API_VERSION}/act_${c.META_AD_ACCOUNT_ID}/ads?${params}`,{headers:{Authorization:`Bearer ${c.META_ACCESS_TOKEN}`}},deadline);if(!Array.isArray(j.data))throw new Error('Meta inventory missing');for(const r of j.data){if(ids.has(r.id))throw new Error('Duplicate Meta inventory page');if(r.effective_status==='ACTIVE'){ids.add(r.id);if(r.creative?.id)creatives.add(r.creative.id);}}if(!j.paging?.next)return sourceBatch(client,[observation(today,'media','active_ads',ids.size,'current_meta_active_inventory_not_historical','meta_current_inventory',null,{channel:'meta'}),observation(today,'media','active_creatives',creatives.size,'current_meta_active_inventory_not_historical','meta_current_inventory',null,{channel:'meta'})],now.toISOString(),['meta']);const next=j.paging?.cursors?.after;if(!next||next===after)throw new Error('Meta pagination did not advance');after=next;}throw new Error('Meta pagination did not complete');
  }
- const headers={'X-Recharge-Access-Token':c.RECHARGE_ADMIN_TOKEN,'X-Recharge-Version':'2021-11'},store=await rechargeProviderJson(fetcher,`${def.endpoint}/store`,{headers},deadline,'store-identity');if(store?.store?.platform_domain!==c.SHOP_DOMAIN||store?.store?.storefront_domain!=='kindpatches.com'||store?.store?.test_mode!==false)throw new Error('Recharge store identity mismatch');if(connection.provider==='kind-recharge-cancellations'){const window=effectiveKindWindow(connection,client,w,now),cancellations=await fetchRechargeCancellations(client,c,window,fetcher,deadline,now),cohort=await fetchRechargeSubscriptionCohort(client,c,window,fetcher,deadline,now);if(cancellations.coverageThrough!==cohort.coverageThrough)throw new Error('Recharge creation and cancellation cutoffs differ');return validateBatch({...cancellations,rows:[...cancellations.rows,...cohort.rows]},client.id);}const count=await providerJson(fetcher,`${def.endpoint}/customers/count?status=ACTIVE`,{headers:{...headers,'X-Recharge-Version':'2021-01'}},deadline),value=numeric(count.count);if(!Number.isInteger(value)||value<0)throw new Error('Invalid Recharge active-customer count');return sourceBatch(client,[observation(today,'subscriptions','active_customers',value,'recharge_raw_active_customers_not_subscription_count_or_baseline_adjusted','recharge_active_customers',null,{source:'recharge'})],now.toISOString());
+ const headers={'X-Recharge-Access-Token':c.RECHARGE_ADMIN_TOKEN,'X-Recharge-Version':'2021-11'},store=await rechargeProviderJson(fetcher,`${def.endpoint}/store`,{headers},deadline,'store-identity');if(store?.store?.platform_domain!==c.SHOP_DOMAIN||store?.store?.storefront_domain!=='kindpatches.com'||store?.store?.test_mode!==false)throw new Error('Recharge store identity mismatch');if(connection.provider==='kind-recharge-cancellations'){const window=effectiveKindWindow(connection,client,w,now),cancellations=await fetchRechargeCancellations(client,c,window,fetcher,deadline,now),cohort=await fetchRechargeSubscriptionCohort(client,c,window,fetcher,deadline,now,retainedCreations);if(cancellations.coverageThrough!==cohort.coverageThrough)throw new Error('Recharge creation and cancellation cutoffs differ');return validateBatch({...cancellations,rows:[...cancellations.rows,...cohort.rows]},client.id);}const count=await providerJson(fetcher,`${def.endpoint}/customers/count?status=ACTIVE`,{headers:{...headers,'X-Recharge-Version':'2021-01'}},deadline),value=numeric(count.count);if(!Number.isInteger(value)||value<0)throw new Error('Invalid Recharge active-customer count');return sourceBatch(client,[observation(today,'subscriptions','active_customers',value,'recharge_raw_active_customers_not_subscription_count_or_baseline_adjusted','recharge_active_customers',null,{source:'recharge'})],now.toISOString());
 }
 
 const hourlyProviders=new Set(['kind-triple-whale','kind-triple-whale-diagnostics','kind-shopify-hourly','kind-shopify-funnels','kind-shopify-traffic','kind-shopify-sales','kind-shopify-products','kind-meta-performance','kind-applovin']);
@@ -86,7 +86,7 @@ export function kindSourceDates(connection:Connection,client:Client,w:KindWindow
  const earliest=connection.provider==='kind-applovin'?shiftDate(todayIn('UTC',asOf),-29):null;
  return [...new Set(dates)].filter(date=>!earliest||dayWindow(date,client.timezone).start.slice(0,10)>=earliest).sort((a,b)=>b.localeCompare(a));
 }
-export async function* fetchKindBatches(connection:Connection,client:Client,w:KindWindow,secret:string,fetcher:typeof fetch=fetch,deadline=Date.now()+180000,skipClosedDates?:ReadonlySet<string>,closedRepairs?:{deadline:number|null}){
+export async function* fetchKindBatches(connection:Connection,client:Client,w:KindWindow,secret:string,fetcher:typeof fetch=fetch,deadline=Date.now()+180000,skipClosedDates?:ReadonlySet<string>,closedRepairs?:{deadline:number|null},retainedCreations:readonly RetainedRechargeCreation[]=[]){
  const asOf=new Date(),actualWindow=effectiveKindWindow(connection,client,w,asOf);
  if(hourlyProviders.has(connection.provider)){
   const dates=kindSourceDates(connection,client,w,asOf);
@@ -100,7 +100,7 @@ export async function* fetchKindBatches(connection:Connection,client:Client,w:Ki
    // current anchor and its freshness have reached durable storage.
    const optionalDeadline=index>0?closedRepairs?.deadline:null,fetchDeadline=optionalDeadline==null?deadline:Math.min(deadline,optionalDeadline);
    if(index>0&&fetchDeadline-Date.now()<historicalHeadroom)break;
-   for(let attempt=0;attempt<3;attempt++)try{yield {batch:await fetchKindSource(connection,client,{from:day,to:day},secret,fetcher,fetchDeadline,asOf),window:{from:day,to:day}};break;}catch(error){
+   for(let attempt=0;attempt<3;attempt++)try{yield {batch:await fetchKindSource(connection,client,{from:day,to:day},secret,fetcher,fetchDeadline,asOf,retainedCreations),window:{from:day,to:day}};break;}catch(error){
     if(optionalDeadline!=null&&error instanceof Error&&['Provider request timed out or could not be reached','Source synchronization deadline reached'].includes(error.message)){console.info('Optional closed source repair deferred',{provider:connection.provider,date:day,reason:error.message});return;}
     if(attempt===2||!(error as Error).message.includes('reconcile')||Date.now()+5000>=fetchDeadline)throw error;
    }
@@ -109,10 +109,10 @@ export async function* fetchKindBatches(connection:Connection,client:Client,w:Ki
   // today, then refresh one retained benchmark only when a full report fits.
   if(connection.provider==='kind-meta-performance'&&w.from!==w.to&&actualWindow.to===todayIn(client.timezone,asOf)&&deadline-Date.now()>=120000){
    const hour=Temporal.Instant.from(asOf.toISOString()).toZonedDateTimeISO(client.timezone).hour,day=shiftDate(actualWindow.to,-[1,7,28,30][hour%4]);
-   yield {batch:await fetchKindSource(connection,client,{from:day,to:day},secret,fetcher,deadline,asOf),window:{from:day,to:day}};
+   yield {batch:await fetchKindSource(connection,client,{from:day,to:day},secret,fetcher,deadline,asOf,retainedCreations),window:{from:day,to:day}};
   }
  }else{
-  for(let attempt=0;attempt<3;attempt++)try{yield {batch:await fetchKindSource(connection,client,w,secret,fetcher,deadline,asOf),window:actualWindow};return;}catch(error){if(attempt===2||!(error as Error).message.includes('reconcile')||Date.now()+5000>=deadline)throw error;}
+  for(let attempt=0;attempt<3;attempt++)try{yield {batch:await fetchKindSource(connection,client,w,secret,fetcher,deadline,asOf,retainedCreations),window:actualWindow};return;}catch(error){if(attempt===2||!(error as Error).message.includes('reconcile')||Date.now()+5000>=deadline)throw error;}
  }
 }
 

@@ -70,6 +70,16 @@ it.each([
 ])('aligns calendar yesterday in the store timezone for %s',async(now,yesterday)=>{
  await store.run('DELETE FROM current_snapshots');const baseline=await capture(yesterday,100);await capture(now,110);const result=await read();expect(result.activeCustomerComparison).toMatchObject({baseline:{value:100,asOf:yesterday,snapshotId:baseline},delta:10,relativeChange:.1});
 });
+it('withholds same-hour stock comparison when yesterday skipped that wall-clock hour',async()=>{
+ await store.run('DELETE FROM current_snapshots');
+ // Today is 02:20 in Stockholm; yesterday's 02:20 never existed. Its 03:20
+ // snapshot must not silently become an allegedly same-hour baseline.
+ await capture('2026-03-29T01:20:00Z',100);
+ await capture('2026-03-30T00:20:00Z',110);
+ const result=await read();
+ expect(result.liveOperations[0]).toMatchObject({value:110,coverageThrough:'2026-03-30T00:20:00Z'});
+ expect(result.activeCustomerComparison).toBeUndefined();
+});
 it.each(['delta','scope','hour'])('rejects a correctly hashed cache with an invalid comparison %s',async condition=>{
  const input={store,organizationId:org,client,filters,preparedDatasets:selection.datasets,selection},load=vi.fn(async(connections:Connection[])=>workspacePresentation(queryClient(client,await store.observations(org,client.id,filters,false,undefined,selection),connections,filters,{preparedDatasets:selection.datasets}),filters)),frame=await preparedWorkspaceFrame(input,load),comparison=structuredClone(frame.activeCustomerComparison!);
  if(condition==='delta')comparison.delta=1;if(condition==='scope')comparison.baseline.snapshotId=baselineId.replace(/^o:/,'foreign:');if(condition==='hour')comparison.baseline.asOf='2026-10-13T20:20:30.259Z';

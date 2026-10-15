@@ -11,6 +11,7 @@ export const rechargeSameDayCancellationDefinition='recharge_current_cancelled_c
 export const rechargeSameDayCancellationEventDefinition='recharge_subscription_cancelled_events_first_same_creation_store_day_at_utc_includes_reactivated';
 export const rechargeCancellationEventDefinition='recharge_subscription_cancelled_events_first_per_subscription_store_day_at_utc_includes_reactivated';
 export const rechargeCancellationEventPopulation='recharge_subscription_cancellation_events';
+export type RetainedRechargeCreation={subscriptionId:string;createdAt:string};
 async function fetchCancellationEventCounts(client:Client,config:KindConfig,dates:string[],created:Map<string,Temporal.Instant>,cutoff:Temporal.Instant,fetcher:typeof fetch,deadline:number){
  const cohortCounts=new Map<string,number>(),calendarCounts=new Map<string,number>();if(!dates.length)return {cohortCounts,calendarCounts};
  const start=Temporal.Instant.from(dayWindow(dates[0],client.timezone).start),minimum=start.subtract({seconds:2}),maximum=cutoff.add({seconds:2}),allowedDates=new Set(dates),headers={'X-Recharge-Access-Token':config.RECHARGE_ADMIN_TOKEN,'X-Recharge-Version':'2021-11'};
@@ -40,11 +41,20 @@ async function fetchCancellationEventCounts(client:Client,config:KindConfig,date
  for(const [events,counts] of [[first,cohortCounts],[firstCalendar,calendarCounts]] as const)for(const cancelled of events.values()){const local=cancelled.toZonedDateTimeISO(client.timezone),key=`${local.toPlainDate()}:${local.hour}`;counts.set(key,(counts.get(key)??0)+1);}
  return {cohortCounts,calendarCounts};
 }
-export async function fetchRechargeSubscriptionCohort(client:Client,config:KindConfig,window:KindWindow,fetcher:typeof fetch,deadline:number,asOf=new Date()):Promise<SourceBatch>{
+export async function fetchRechargeSubscriptionCohort(client:Client,config:KindConfig,window:KindWindow,fetcher:typeof fetch,deadline:number,asOf=new Date(),retainedCreations:readonly RetainedRechargeCreation[]=[]):Promise<SourceBatch>{
  const dates=sourceDates(window),today=todayIn(client.timezone,asOf);if(!dates.length||window.to>today)throw Error('Recharge creation cohort window is invalid');
  const start=Temporal.Instant.from(dayWindow(window.from,client.timezone).start),through=window.to<today?dayWindow(window.to,client.timezone).end:hourlySessionCutoff(client.timezone,asOf).through,cutoff=Temporal.Instant.from(through),minimum=start.subtract({seconds:2}),maximum=cutoff.add({seconds:2}),headers={'X-Recharge-Access-Token':config.RECHARGE_ADMIN_TOKEN,'X-Recharge-Version':'2021-11'};
  const retentionStart=Temporal.Instant.from(asOf.toISOString()).subtract({hours:168}),eventDates=dates.filter(date=>Temporal.Instant.compare(Temporal.Instant.from(dayWindow(date,client.timezone).start),retentionStart)>=0),eventDateSet=new Set(eventDates);
  const historical=window.to<today,recordLimit=historical?250000:50000,createdCounts=new Map<string,number>(),cancelledCounts=new Map<string,number>(),createdSubscriptions=new Map<string,Temporal.Instant>(),seen=new Map<string,string>(),cursors=new Set<string>();let cursor='',complete=false,seenRows=0,createdTotal=0,cancelledTotal=0;
+ const retainedBirths=new Map<string,Temporal.Instant>();
+ const addCreation=(id:string,created:Temporal.Instant)=>{if(createdSubscriptions.has(id))return;const local=created.toZonedDateTimeISO(client.timezone),key=`${local.toPlainDate()}:${local.hour}`;createdCounts.set(key,(createdCounts.get(key)??0)+1);createdSubscriptions.set(id,created);createdTotal++;};
+ // Retained entries contain the original resource creation instant, never an
+ // event's timestamp. Deleted resources still belong in their creation cohort.
+ for(const entry of retainedCreations){
+  let created:Temporal.Instant;try{if(typeof entry?.subscriptionId!=='string'||!/^[1-9]\d*$/.test(entry.subscriptionId)||typeof entry.createdAt!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(entry.createdAt))throw Error();created=utcInstant(entry.createdAt);}catch{throw Error('Recharge retained creation identity or UTC timestamp is invalid');}
+  const id=subscriptionIdentity(entry.subscriptionId),previous=retainedBirths.get(id);if(previous&&Temporal.Instant.compare(previous,created)!==0)throw Error('Recharge retained creation conflict');retainedBirths.set(id,created);
+  if(Temporal.Instant.compare(created,start)>=0&&Temporal.Instant.compare(created,cutoff)<0)addCreation(id,created);
+ }
  for(let page=0;page<recordLimit/250;page++){
   const params=new URLSearchParams(cursor?{limit:'250',cursor}:{limit:'250',created_at_min:minimum.toString().replace(/Z$/,''),created_at_max:maximum.toString().replace(/Z$/,'')});
   const response=await rechargeProviderJson(fetcher,`https://api.rechargeapps.com/subscriptions?${params}`,{headers},deadline,'creation-cohort',!!cursor,historical?(cursor?60000:180000):25000);
@@ -54,12 +64,13 @@ export async function fetchRechargeSubscriptionCohort(client:Client,config:KindC
    if(++seenRows>recordLimit)throw Error('Recharge creation cohort export exceeds its row limit');
    if(!record||typeof record!=='object'||!['active','cancelled','expired'].includes(String(record.status).toLowerCase()))throw Error('Recharge creation cohort status missing or invalid');
    const id=subscriptionIdentity(record.id);let created;try{created=utcInstant(record.created_at);}catch{throw Error('Recharge creation timestamp missing or invalid');}
+   const retained=retainedBirths.get(id);if(retained&&Temporal.Instant.compare(retained,created)!==0)throw Error('Recharge retained creation conflict with current subscription');
    if(Temporal.Instant.compare(created,minimum)<0||Temporal.Instant.compare(created,maximum)>0)throw Error('Recharge creation timestamp filter was not honored');
    const cancelled=String(record.status).toLowerCase()==='cancelled'?utcInstant(record.cancelled_at):null;
    if(cancelled&&Temporal.Instant.compare(cancelled,created)<0)throw Error('Recharge cancellation precedes subscription creation');
    const fingerprint=JSON.stringify([created.toString(),cancelled?.toString()??null,String(record.status).toLowerCase()]),previous=seen.get(id);if(previous){if(previous!==fingerprint)throw Error('Recharge creation cohort changed during pagination');continue;}seen.set(id,fingerprint);
    if(Temporal.Instant.compare(created,start)<0||Temporal.Instant.compare(created,cutoff)>=0)continue;
-   const localCreated=created.toZonedDateTimeISO(client.timezone),date=localCreated.toPlainDate().toString(),createdKey=`${date}:${localCreated.hour}`;createdCounts.set(createdKey,(createdCounts.get(createdKey)??0)+1);createdSubscriptions.set(id,created);createdTotal++;
+   const date=created.toZonedDateTimeISO(client.timezone).toPlainDate().toString();addCreation(id,created);
    if(!cancelled||Temporal.Instant.compare(cancelled,cutoff)>=0)continue;
    const localCancelled=cancelled.toZonedDateTimeISO(client.timezone);if(localCancelled.toPlainDate().toString()!==date)continue;
    // Cancellation-hour buckets make an earlier matched cutoff exclude later

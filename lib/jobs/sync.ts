@@ -5,6 +5,7 @@ import {todayIn,shiftDate,dayWindow} from '../analytics/windows';
 import {assertSourceActivation,validateRegisteredBatch} from '../sources/registered-contract';
 import {fetchGateway} from '../sources/gateway';
 import {fetchKindBatches,fetchKindSource,kindSourceDates} from '../sources/kind-fetch';
+import {retainedRechargeCreations} from '../server/recharge-creation-retention';
 import {hourlySessionCutoff} from '../sources/kind-patches';
 import {closedSessionDatesToSkip} from './closed-session-dates';
 import {planHistoricalHourlyJobs} from './hourly-history';
@@ -61,8 +62,9 @@ export async function runSyncBatch(scope:AccessScope,budget={maxJobs:7,deadline:
       const closedRepairs=runtimePlatform==='vercel'&&!historyDate&&!j.id.includes(':manual:')&&source.lastSuccess?{deadline:null as number|null}:undefined;
       const skipClosedDates=runtimePlatform==='vercel'&&!historyDate&&!j.id.includes(':manual:')&&source.lastSuccess&&['kind-shopify-hourly','kind-shopify-funnels'].includes(source.provider)?await closedSessionDatesToSkip(s,scope.organizationId,client,source,qualified,kindSourceDates(source,client,window),new Date()):undefined;
       if(skipClosedDates?.size)console.info('Reusing settled session captures',{provider:source.provider,closedDays:skipClosedDates.size});
+      const retainedCreations=source.provider==='kind-recharge-cancellations'?await retainedRechargeCreations(s,scope,client,window,budget.deadline):[];
       const resumed=runtimePlatform==='vercel'?await readRecentWritingCapture(s,scope,source,client,window,{deadline:budget.deadline}):null;
-      const batches=resumed?(async function*(){yield {batch:resumed.batch,window};})():historyDate?(async function*(){yield {batch:await fetchKindSource(source,client,window,secret,fetch,budget.deadline),window};})():source.provider==='gateway'?(async function*(){yield {batch:await fetchGateway(source,client,window,secret,fetch,budget.deadline),window};})():fetchKindBatches(source,client,window,secret,fetch,budget.deadline,skipClosedDates,closedRepairs);
+      const batches=resumed?(async function*(){yield {batch:resumed.batch,window};})():historyDate?(async function*(){yield {batch:await fetchKindSource(source,client,window,secret,fetch,budget.deadline,undefined,retainedCreations),window};})():source.provider==='gateway'?(async function*(){yield {batch:await fetchGateway(source,client,window,secret,fetch,budget.deadline),window};})():fetchKindBatches(source,client,window,secret,fetch,budget.deadline,skipClosedDates,closedRepairs,retainedCreations);
       for await(const {batch,window:actualWindow} of batches){
         // The generator selects the mandatory anchor after optional reuse reads;
         // use its actual date if those reads crossed a completed-hour boundary.

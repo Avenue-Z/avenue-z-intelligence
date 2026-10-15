@@ -6,6 +6,7 @@ import {getStore} from '../server/access';
 import {serverSecret} from '../server/secrets';
 import type {Store} from '../server/store';
 import {fetchKindSource} from '../sources/kind-fetch';
+import {retainedRechargeCreations} from '../server/recharge-creation-retention';
 import {assertSourceActivation,validateRegisteredBatch,type RegisteredContract} from '../sources/registered-contract';
 import {historicalHourlyProviders,hourlyHistoryWindow,planHistoricalHourlyJobs,supportsHourlyHistory} from './hourly-history';
 import {DailyScheduler} from './scheduler';
@@ -88,7 +89,7 @@ export async function runHourlyHistoryBatch(store:Store,scope:AccessScope,budget
     const prefix=`${scope.organizationId}:${source.id}:hourly-history:`,date=job.id.startsWith(prefix)?job.id.slice(prefix.length):'',today=todayIn(client.timezone);
     if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||date>=today||date<shiftDate(today,source.provider==='kind-applovin'?-28:-30))throw Error('Historical source window is invalid');
     const secret=serverSecret(source.secretRef);if(!secret)throw Error(`Server secret ${source.secretRef} is not configured`);if(!env.BUCKET)throw Error('Snapshot archive unavailable');
-    const window={from:date,to:date},resumed=await readRecentWritingCapture(store,scope,source,client,window,{deadline:budget.deadline}),batch=resumed?.batch??await fetchKindSource(source,client,window,secret,fetch,budget.deadline);
+    const window={from:date,to:date},retainedCreations=source.provider==='kind-recharge-cancellations'?await retainedRechargeCreations(store,scope,client,window,budget.deadline):[],resumed=await readRecentWritingCapture(store,scope,source,client,window,{deadline:budget.deadline}),batch=resumed?.batch??await fetchKindSource(source,client,window,secret,fetch,budget.deadline,undefined,retainedCreations);
     const smallRecharge=source.provider==='kind-recharge-cancellations'&&boundedRechargeContract(contract);
     if(smallRecharge)validateBoundedRechargeHistory(batch,contract,client,date);
     validateRegisteredBatch(batch,contract);
