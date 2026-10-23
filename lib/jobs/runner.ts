@@ -30,7 +30,7 @@ async function freshCore(s:Store,scope:AccessScope,c:Client,now:Date,due:DueRevi
  });
 }
 export async function syncTick(){
- const s=getStore(),scope=await serviceScope(s),scheduler=new DailyScheduler(s),id=`${scope.organizationId}:sync`,token=await scheduler.acquire(id,new Date().toISOString(),900000);
+ const s=getStore(),allScope=await serviceScope(s),scope={...allScope,permittedClientIds:allScope.permittedClientIds.filter(id=>id!=='beam'&&id!=='autobrush')},scheduler=new DailyScheduler(s),id=`${scope.organizationId}:sync`,token=await scheduler.acquire(id,new Date().toISOString(),900000);
  if(!token)return {skipped:'already-running',completed:[],failed:[]};
  try{
   const started=Date.now();await enqueueDue(scope);const result=await runSyncBatch(scope,{maxJobs:7,deadline:started+700000});

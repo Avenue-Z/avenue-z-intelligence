@@ -9,6 +9,7 @@ import {Temporal} from '@js-temporal/polyfill';
 import {preferredObservations} from './source-precedence';
 import {sanitizePage,sourceMarket} from '../sources/kind-patches';
 import {compatibleZeroDenominatorRates} from './rate-qualification';
+import {beamPlatformReport} from './beam-platform-reports';
 import {confirmedIntradayCutoff} from './intraday-coverage';
 import {trendContextRange,trendCutoffEnd} from './trend-context';
 import type {FunnelRollupObservation} from './funnel-rollup';
@@ -60,11 +61,12 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
   const capable=all.filter(r=>!blocked.has(`${r.dataset}:${r.metric}`));
   let current=filtered(capable,f),previous=filtered(capable,comparison),peers=filtered(capable,{...f,market:''});
   let currentEnd=Date.parse(dayWindow(f.to,client.timezone).end),previousEnd=Date.parse(dayWindow(comparison.to,client.timezone).end);
-  const withinMatchedPeriod=(row:Observation,finalDate:string,matchedEnd:number)=>row.date<finalDate?(!row.end||Date.parse(row.end)<=Date.parse(dayWindow(row.date,client.timezone).end)):!!row.end&&Date.parse(row.end)<=matchedEnd;
+  const providerReport=(row:Observation)=>(client.id==='beam'||client.id==='autobrush')&&beamPlatformReport(row);
+  const withinMatchedPeriod=(row:Observation,finalDate:string,matchedEnd:number)=>providerReport(row)|| (row.date<finalDate?(!row.end||Date.parse(row.end)<=Date.parse(dayWindow(row.date,client.timezone).end)):!!row.end&&Date.parse(row.end)<=matchedEnd);
   if(f.mode==='partial') {
     if(connections.some(c=>c.enabled&&c.provider?.startsWith('kind-')&&c.provider!=='kind-triple-whale'))warnings.push('Selected and comparison periods use the same confirmed store-hour cutoff. Platform-attributed reports and current operational snapshots retain their separate reporting populations and timestamps.');
     cutoff=confirmedIntradayCutoff(connections,f.view,client.timezone,f.to);
-    if(!cutoff) {current=[];previous=[];peers=[];warnings.push('An intraday comparison needs confirmed, current hourly coverage from every contributing source.');}
+    if(!cutoff) {current=current.filter(providerReport);previous=previous.filter(providerReport);peers=peers.filter(providerReport);warnings.push('An intraday comparison needs confirmed, current hourly coverage from every contributing source.');}
     else {const clock=Temporal.Instant.from(cutoff).toZonedDateTimeISO(client.timezone).toPlainTime();
       const selectedEnd=Temporal.Instant.from(cutoff).toZonedDateTimeISO(client.timezone);
       // A cutoff at next-day midnight completes the selected day. Its matched
@@ -106,7 +108,7 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
   const inDimensionPeriod=(row:Observation,from:string,to:string,end:number)=>row.date>=from&&row.date<=to&&(f.mode==='partial'?cutoff!==null&&withinMatchedPeriod(row,to,end):row.date<today);
   const dimensionRows=all.filter(row=>!operationalIds.includes(row.metric)&&(inDimensionPeriod(row,f.from,f.to,currentEnd)||inDimensionPeriod(row,comparison.from,comparison.to,previousEnd)));
   const availableDimensions=Object.fromEntries(['market','stream','source','device','page'].map(k=>[k,[...new Set(dimensionRows.flatMap(r=>r.dimensions[k]?[r.dimensions[k]]:[]))].sort()]));
-  const dailyDatasetNames=['overview','funnels','traffic','revenue','markets','products','subscriptions','subscriptionEvents','media'],dailyDatasets=options.preparedDatasets?dailyDatasetNames.filter(name=>options.preparedDatasets!.includes(name)):dailyDatasetNames;
+  const dailyDatasetNames=['overview','funnels','traffic','revenue','markets','products','subscriptions','subscriptionEvents','media','creatives','experiments'],dailyDatasets=options.preparedDatasets?dailyDatasetNames.filter(name=>options.preparedDatasets!.includes(name)):dailyDatasetNames;
   const prepareSeries=options.prepareAllViews||options.preparedDatasets!==undefined;
   const trendEnds=new Map<string,number|null>(),matchedTrendEnd=(date:string)=>{if(!trendEnds.has(date))trendEnds.set(date,trendCutoffEnd(date,{timezone:client.timezone,cutoff,anchorDate:f.to}));return trendEnds.get(date)??null;};
   function qualifiedDailySeries(rows:Observation[],from:string,to:string,lastEnd:number,normalizedContext=false){
@@ -125,7 +127,7 @@ export function queryClient(client:Client,all:Observation[],connections:Connecti
   const contextDates=new Set(fullDayContext.map(row=>`${row.dataset}:${row.date}`));
   const contextualEvidence:Observation[]=[...capable.filter(row=>!contextDates.has(`${row.dataset}:${row.date}`)),...preferredObservations(fullDayContext,{timezone:client.timezone}).map(row=>({...row,dimensions:{...row.dimensions,...row.dimensions.market?{market:sourceMarket(row.dimensions.market)}:{},...row.dimensions.page?{page:sanitizePage(row.dimensions.page)}:{}}}))];
   const unsupportedContext=new Set(contextualEvidence.filter(row=>activeFilters.some(dimension=>row.dimensions[dimension]===undefined)).map(row=>`${row.date}:${row.dataset}:${row.metric}`));
-  const withinTrendHour=(row:Observation)=>{const end=matchedTrendEnd(row.date);return end!==null&&!!row.end&&Date.parse(row.end)<=end;};
+  const withinTrendHour=(row:Observation)=>{if(providerReport(row))return true;const end=matchedTrendEnd(row.date);return end!==null&&!!row.end&&Date.parse(row.end)<=end;};
   const contextualRows=(from:string,to:string)=>filtered(contextualEvidence,{...f,from,to}).filter(row=>{
     if(unsupportedContext.has(`${row.date}:${row.dataset}:${row.metric}`))return false;
     if(f.mode==='closed')return row.date<today;

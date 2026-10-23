@@ -483,3 +483,37 @@ it('shares the existing verification cap and deadline with monthly pointer retir
  for(const date of ['2026-09-08','2026-09-09','2026-09-10','2026-09-11','2026-09-12'])await monthlySnapshot(date);const read=vi.fn(reader),result=await pruneArchivedMaterializations(store,scope,{...monthlyOptions(),readArchive:read});expect(result.pointersRetired).toBe(4);expect(result.verifiedSnapshots).toBeLessThanOrEqual(8);expect(read.mock.calls.length).toBeLessThanOrEqual(8);expect(await store.first('SELECT count(*) n FROM current_snapshots WHERE date<?','2026-09-13')).toEqual({n:1});
  const expired=await store.first<{snapshotId:string}>('SELECT snapshotId FROM current_snapshots WHERE date<?','2026-09-13');const pointer=await store.first('SELECT * FROM current_snapshots WHERE snapshotId=?',expired!.snapshotId);await pruneArchivedMaterializations(store,scope,{...monthlyOptions(),readArchive:async(key,deadline)=>{vi.advanceTimersByTime(60000);return reader(key,deadline);}});expect(await store.first('SELECT * FROM current_snapshots WHERE snapshotId=?',expired!.snapshotId)).toEqual(pointer);
 });
+
+async function beamCapturePair(){
+ const beam=initial.find(value=>value.id==='beam')!;
+ await store.run('INSERT INTO clients VALUES(?,?,?,?,?,?,?,?,?)',beam.id,'o',beam.name,beam.id,beam.timezone,beam.currency,beam.color,JSON.stringify(beam.config),1);
+ await store.run("INSERT INTO connections VALUES('beam-source','o','beam','Beam source','beam-shopify-sales','https://example.com','PRIVATE',60,1,'2026-10-13T17:00:00Z','2026-10-13T17:00:00Z',NULL,1)");
+ const batch={...oldBatch,clientId:'beam',timezone:beam.timezone},hash=await fingerprint(batch),id=await store.persistBatch('o','beam-source',batch,hash,'2026-10-13T10:00:00Z');archives.set(`snapshots/${id}.json`,JSON.stringify(batch));
+ const newer={...batch,rows:batch.rows.map(row=>({...row,value:row.value!+100}))},newHash=await fingerprint(newer),latest=await store.persistBatch('o','beam-source',newer,newHash,'2026-10-13T11:00:00Z');archives.set(`snapshots/${latest}.json`,JSON.stringify(newer));
+ return {id,latest,batch,beamScope:{...scope,permittedClientIds:['beam']} as AccessScope};
+}
+it('keeps Beam maintenance isolated from Kind Patches facts, pointers, metadata and current jobs',async()=>{
+ const {id,latest,beamScope}=await beamCapturePair(),kpFacts=await store.all('SELECT o.* FROM observations o JOIN snapshots s ON s.id=o.snapshotId WHERE s.clientId=? ORDER BY o.snapshotId,o.date,o.rowKey','kind-patches'),kpPointers=await store.all("SELECT * FROM current_snapshots WHERE clientId='kind-patches'"),metadata=await store.all('SELECT * FROM snapshots ORDER BY id'),latestFacts=await store.all('SELECT * FROM observations WHERE snapshotId=?',latest);
+ await store.enqueue('o','kind-patches','source','hourly-current','2026-10-13T17:59:00Z');
+ const result=await pruneArchivedMaterializations(store,beamScope,{...options(),clientId:'beam'});expect(result.rowsDeleted).toBe(3);expect(await store.all('SELECT * FROM observations WHERE snapshotId=?',id)).toEqual([]);expect(await store.all('SELECT * FROM observations WHERE snapshotId=?',latest)).toEqual(latestFacts);
+ expect(await store.all('SELECT o.* FROM observations o JOIN snapshots s ON s.id=o.snapshotId WHERE s.clientId=? ORDER BY o.snapshotId,o.date,o.rowKey','kind-patches')).toEqual(kpFacts);expect(await store.all("SELECT * FROM current_snapshots WHERE clientId='kind-patches'")).toEqual(kpPointers);expect(await store.all('SELECT * FROM snapshots ORDER BY id')).toEqual(metadata);expect(await store.all('SELECT DISTINCT clientId FROM audit')).toEqual([{clientId:'beam'}]);
+});
+it('restores archived Beam facts exactly without moving a newer Beam pointer or touching Kind Patches',async()=>{
+ const {id,beamScope}=await beamCapturePair(),before=await store.all('SELECT * FROM observations WHERE snapshotId=? ORDER BY date,rowKey',id),pointers=await store.all('SELECT * FROM current_snapshots ORDER BY clientId,date'),metadata=await store.all('SELECT * FROM snapshots ORDER BY id'),health=await store.all('SELECT * FROM connections ORDER BY id');
+ expect((await pruneArchivedMaterializations(store,beamScope,{...options(),clientId:'beam'})).rowsDeleted).toBe(3);
+ await restoreArchivedMaterialization(store,beamScope,id,{deadline:Date.now()+60000,readArchive:reader,clientId:'beam'});
+ expect(await store.all('SELECT * FROM observations WHERE snapshotId=? ORDER BY date,rowKey',id)).toEqual(before);expect(await store.all('SELECT * FROM current_snapshots ORDER BY clientId,date')).toEqual(pointers);expect(await store.all('SELECT * FROM snapshots ORDER BY id')).toEqual(metadata);expect(await store.all('SELECT * FROM connections ORDER BY id')).toEqual(health);
+});
+it('rejects cross-client Beam archive recovery and missing Beam scope before archive disclosure',async()=>{
+ const {id,beamScope}=await beamCapturePair(),read=vi.fn(reader);
+ await expect(restoreArchivedMaterialization(store,scope,id,{deadline:Date.now()+60000,readArchive:read,clientId:'beam'})).rejects.toThrow(/access denied/);
+ await expect(restoreArchivedMaterialization(store,beamScope,oldId,{deadline:Date.now()+60000,readArchive:read,clientId:'beam'})).rejects.toThrow(/unavailable/);
+ expect(read).not.toHaveBeenCalled();
+ expect((await pruneArchivedMaterializations(store,scope,{...options(),clientId:'beam',readArchive:read})).rowsDeleted).toBe(0);expect(read).not.toHaveBeenCalled();
+});
+it('retains exactly 30 Beam report dates including today while leaving the Kind Patches boundary unchanged',async()=>{
+ const {batch,beamScope}=await beamCapturePair();
+ async function dated(date:string){const value={...batch,coverageThrough:dayWindow(date,batch.timezone).end,rows:batch.rows.map(row=>({...row,date,start:row.start!.replace('2026-10-13',date),end:row.end!.replace('2026-10-13',date)}))},hash=await fingerprint(value),id=await store.persistBatch('o','beam-source',value,hash,'2026-10-13T12:00:00Z');archives.set(`snapshots/${id}.json`,JSON.stringify(value));return id;}
+ const expired=await dated('2026-09-13'),boundary=await dated('2026-09-14'),kpPointers=await store.all("SELECT * FROM current_snapshots WHERE clientId='kind-patches'");
+ const result=await pruneArchivedMaterializations(store,beamScope,{...options(),clientId:'beam',monthlyRetention:true});expect(result.pointersRetired).toBe(1);expect(await store.first("SELECT snapshotId FROM current_snapshots WHERE clientId='beam' AND date='2026-09-13'")).toBeNull();expect(await store.first("SELECT snapshotId FROM current_snapshots WHERE clientId='beam' AND date='2026-09-14'")).toEqual({snapshotId:boundary});expect(await store.all('SELECT * FROM observations WHERE snapshotId=?',expired)).toEqual([]);expect(await store.all("SELECT * FROM current_snapshots WHERE clientId='kind-patches'")).toEqual(kpPointers);
+});

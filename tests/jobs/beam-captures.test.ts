@@ -1,0 +1,20 @@
+import {beforeEach,expect,it,vi} from 'vitest';
+import type {AccessScope,Client,Connection,SourceBatch} from '../../lib/analytics/contracts';
+import type {Store} from '../../lib/server/store';
+import {beamSourceDates,fetchBeamSource} from '../../lib/sources/beam-fetch';
+import {readRecentWritingCapture} from '../../lib/jobs/archive-materialization-retention';
+import {fetchBeamCaptures} from '../../lib/jobs/beam-captures';
+vi.mock('../../lib/sources/beam-fetch',()=>({beamSourceDates:vi.fn(),fetchBeamSource:vi.fn()}));
+vi.mock('../../lib/jobs/archive-materialization-retention',()=>({readRecentWritingCapture:vi.fn()}));
+const source={id:'beam-shopify-traffic',clientId:'beam'} as Connection,client={id:'beam'} as Client,store={} as Store;
+const scope:AccessScope={organizationId:'o',actorId:'service',role:'service',permittedClientIds:['beam']},secret=()=>null,now=new Date('2026-10-16T19:10:00Z');
+const frozenBatch={clientId:'beam',coverageThrough:'2026-10-16T18:00:00Z'} as SourceBatch,freshBatch={clientId:'beam',coverageThrough:'2026-10-16T04:00:00Z'} as SourceBatch;
+beforeEach(()=>{vi.clearAllMocks();vi.mocked(beamSourceDates).mockReturnValue(['2026-10-16','2026-10-15']);});
+it('resumes immutable traffic by exact date and keeps a subsequent fresh batch free of frozen provenance',async()=>{
+ vi.mocked(readRecentWritingCapture).mockResolvedValueOnce({batch:frozenBatch,hash:'original-hash',retrievedAt:'2026-10-16T18:05:00Z'}).mockResolvedValueOnce(null);
+ vi.mocked(fetchBeamSource).mockResolvedValue(freshBatch);
+ const batches=[];for await(const capture of fetchBeamCaptures(source,client,{from:'2026-10-15',to:'2026-10-16'},store,scope,secret,fetch,Date.now()+60000,now))batches.push(capture);
+ expect(batches).toEqual([{batch:frozenBatch,window:{from:'2026-10-16',to:'2026-10-16'},resumedCapture:{hash:'original-hash',retrievedAt:'2026-10-16T18:05:00Z'}},{batch:freshBatch,window:{from:'2026-10-15',to:'2026-10-15'}}]);
+ expect(fetchBeamSource).toHaveBeenCalledOnce();expect(fetchBeamSource).toHaveBeenCalledWith(source,client,{from:'2026-10-15',to:'2026-10-15'},store,'o',secret,fetch,expect.any(Number),now);
+ expect(vi.mocked(readRecentWritingCapture).mock.calls.map(call=>call[4])).toEqual([{from:'2026-10-16',to:'2026-10-16'},{from:'2026-10-15',to:'2026-10-15'}]);
+});

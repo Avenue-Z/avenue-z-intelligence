@@ -44,9 +44,9 @@ export class FunnelRollupAccumulator {
  }
  add(row:Observation){
   const dimensions=Object.keys(row.dimensions??{});
-  const publicFunnels=row.dataset==='funnels'&&row.definition==='shopify_human_public_landing_pages'&&dimensions.length===2&&typeof row.dimensions.page==='string'&&typeof row.dimensions.market==='string';
-  const publicTraffic=row.dataset==='traffic'&&row.definition==='shopify_human_public_landing_page_traffic'&&dimensions.length===trafficDimensions.length&&trafficDimensions.every(d=>typeof row.dimensions[d]==='string');
-  const known=this.enabled&&row.quality==='complete'&&(publicFunnels||publicTraffic)&&row.population==='human_public_landing_page_sessions'&&metrics.has(row.metric)&&!!row.sourceId&&!!row.start&&!!row.end&&!!row.coverageThrough&&(row.value===null||(Number.isSafeInteger(row.value)&&row.value>=0))&&row.numerator===undefined&&row.denominator===undefined&&!(row as FunnelRollupObservation).aggregation;
+  const publicFunnels=row.dataset==='funnels'&&['shopify_human_public_landing_pages','shopify_human_us_public_landing_pages'].includes(row.definition)&&dimensions.length===2&&typeof row.dimensions.page==='string'&&typeof row.dimensions.market==='string';
+  const publicTraffic=row.dataset==='traffic'&&['shopify_human_public_landing_page_traffic','shopify_human_us_public_landing_page_traffic'].includes(row.definition)&&dimensions.length===trafficDimensions.length&&trafficDimensions.every(d=>typeof row.dimensions[d]==='string');
+  const known=this.enabled&&row.quality==='complete'&&(publicFunnels||publicTraffic)&&['human_public_landing_page_sessions','human_us_public_landing_page_sessions'].includes(row.population??'')&&metrics.has(row.metric)&&!!row.sourceId&&!!row.start&&!!row.end&&!!row.coverageThrough&&(row.value===null||(Number.isSafeInteger(row.value)&&row.value>=0))&&row.numerator===undefined&&row.denominator===undefined&&!(row as FunnelRollupObservation).aggregation;
   if(!known){this.rows.push(row);return;}
   const interval=this.interval(row);
   if(!interval||!Number.isFinite(Date.parse(row.coverageThrough!))||Date.parse(row.coverageThrough!)<interval.end){this.rows.push(row);return;}

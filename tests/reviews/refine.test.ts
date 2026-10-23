@@ -50,3 +50,36 @@ it('keeps unsupported historical and availability-only rechecks on the watch lis
  const watch=result.sections.find((s:any)=>s.title==='Watch list');expect(watch.bullets.join(' ')).toContain(legacy.detail);expect(watch.bullets.join(' ')).toContain(legacy.nextStep);expect(result.sections.find((s:any)=>s.title==='Action items').bullets.join(' ')).not.toContain('matching current page data');
  const once=JSON.stringify(result);refineReview(result,c,filters);expect(JSON.stringify(result)).toBe(once);
 });
+
+it('keeps the measured dopamine action separate from an unrelated legacy MB Trio finding',()=>{
+ const c=client();c.datasetDetails.funnels.rows=[row('/pages/dopamine',filters.to,3155,.03)];c.findings=[{id:'mb-trio',title:'US MB Trio: review scaling and offer alignment',detail:'Historical US MB Trio conversion versus the UK page; review pricing and subscription defaults.'}];
+ const action={existingFindingId:'mb-trio',title:'Review US /pages/dopamine landing-page weakness',detail:'On 2026-10-07, /pages/dopamine had 3,155 sessions and CVR 3% versus 4% in its own previous period.',nextStep:'Compare the same page offer with the prior period.',severity:'act',impact:31.55,sourceIds:[c.sourceId]},result={headlines:['Spend vs revenue','B','C','D'],actions:[action],sections:REVIEW_SECTIONS.map(title=>({title,paragraphs:[],bullets:[],tables:[]}))} as any;
+ refineReview(result,c,filters);
+ expect(result.actions).toEqual([{...action,existingFindingId:null}]);expect(result.watchActions).toBeUndefined();expect(result.sections.find((section:any)=>section.title==='Action items').bullets.join(' ')).toContain('/pages/dopamine');
+ const once=JSON.stringify(result);refineReview(result,c,filters);expect(JSON.stringify(result)).toBe(once);
+});
+
+it.each([
+ {finding:'Review /products/other conversion',page:'/products/biotic',want:null},
+ {finding:'Review https://brand.example/products/biotic/?utm_source=meta conversion',page:'/products/biotic',want:'existing'},
+ {finding:'Biotic: review the cold audience and landing offer',page:'/products/biotic',want:'existing'},
+ {finding:'Review Prebiotic conversion',page:'/products/biotic',want:null},
+ {finding:'Review Glow by Jenn Todryk conversion',page:'/products/glow-by-jenn-todryk',want:'existing'},
+ {finding:'Review all products conversion',page:'/pages/products',want:null},
+ {finding:'Review home conversion',page:'/pages/home',want:null}
+])('links a supplied page only to its exact path or complete non-generic slug: %j',({finding,page,want})=>{
+ const c=client();c.datasetDetails.funnels.rows=[row(page,filters.to,2000,.02)];c.findings=[{id:'existing',title:finding,detail:'Review the dated conversion evidence.'}];
+ const action={existingFindingId:'existing',title:`Review ${page}`,detail:`On ${filters.to}, ${page} had 2,000 sessions at CVR 2% versus 4%.`,nextStep:'Inspect the same page offer.',severity:'investigate',impact:40,sourceIds:[c.sourceId]},result={headlines:['Spend vs revenue','B','C','D'],actions:[action],sections:REVIEW_SECTIONS.map(title=>({title,paragraphs:[],bullets:[],tables:[]}))} as any;
+ refineReview(result,c,filters);expect(result.actions).toEqual([{...action,existingFindingId:want}]);
+});
+
+it.each([
+ {title:'Review the recurring cohort',detail:'Renewals had 2,000 orders versus 2,200.'},
+ {title:'Review landing page conversion',detail:'The supplied page had 2,000 sessions at CVR 2% versus 4%.'},
+ {title:'Review /pages/not-in-source',detail:'/pages/not-in-source had 2,000 sessions at CVR 2% versus 4%.'},
+ {title:'Review homepage conversion',detail:'The homepage had 2,000 sessions at CVR 2% versus 4%.'}
+])('preserves follow-ups without an explicit supplied specific page: $title',({title,detail})=>{
+ const c=client();c.findings=[{id:'existing',title:'Existing workflow issue',detail:'Historical context.'}];
+ const action={existingFindingId:'existing',title,detail,nextStep:'Check the dated evidence.',severity:'investigate',impact:null,sourceIds:[c.sourceId]},result={headlines:['Spend vs revenue','B','C','D'],actions:[action],sections:REVIEW_SECTIONS.map(title=>({title,paragraphs:[],bullets:[],tables:[]}))} as any;
+ refineReview(result,c,filters);expect(result.actions).toEqual([action]);
+});

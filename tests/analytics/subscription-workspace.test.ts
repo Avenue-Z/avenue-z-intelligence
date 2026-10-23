@@ -9,7 +9,7 @@ import type {ClientRecord} from '../../components/analytics/records';
 import {queryClient} from '../../lib/analytics/query';
 import {workspacePresentation} from '../../lib/analytics/presentation';
 import {subscriptionMetricValue} from '../../lib/analytics/subscription-explorer';
-import type {Client,QueryFilters} from '../../lib/analytics/contracts';
+import type {Client,Observation,QueryFilters} from '../../lib/analytics/contracts';
 
 const client:Client={id:'kind',name:'Kind',slug:'kind',timezone:'Europe/Stockholm',currency:'USD',color:'#4368c4',version:1,config:{markets:['US'],benchmarkMarket:'US',revenueDefinition:'net_sales',spendChannels:[],recurringLabel:'Recurring orders',minSessions:100,minOpportunity:5,maxActions:6,reviewTime:'09:00',reviewTimezone:'America/New_York',reviewMode:'closed',incidents:[]}};
 const filters:QueryFilters={from:'2026-10-11',to:'2026-10-11',compare:'previous',market:'',stream:'',source:'',device:'',page:'',mode:'closed',view:'subscriptions'};
@@ -125,4 +125,58 @@ it('removes the lower order-type disclosure only on subscriptions and retains it
  expect(html).not.toContain('About these numbers');expect(html).toContain('title="Acquisition uses positive-value web orders.');expect(JSON.stringify(record)).toBe(before);
  const revenue=renderToStaticMarkup(createElement(OrderStreamDiagnostics,{record,filters:{...filters,view:'revenue'}}));
  expect(revenue).toContain('About these numbers');expect(revenue).toContain('Merchandise revenue excludes shipping and tax');
+});
+
+const loopClient:Client={...client,id:'beam',slug:'beam',name:'Beam',timezone:'America/New_York',config:{...client.config,recurringLabel:'Loop Subscriptions'}};
+function loopRecord(operations=false){
+ const rows:Observation[]=['2026-10-10','2026-10-11'].flatMap(date=>{
+  const current=date===filters.to;
+  const values:[string,string,number][]=[['subscriptions','recurring_revenue',current?240:180],['subscriptions','recurring_orders',current?12:10],...operations?[
+   ['subscriptionEvents','new_subscriptions',current?120:100],['subscriptionEvents','same_day_subscription_cancellation_events',current?6:10],['subscriptionEvents','subscription_cancellation_events',current?15:12],
+  ] as [string,string,number][]:[]];
+  return values.map(([dataset,metric,value])=>({date,dataset,metric,value,definition:metric,population:dataset==='subscriptions'?'loop_renewals':'loop_subscription_events',dimensions:{},sourceId:'loop',currency:metric==='recurring_revenue'?'USD':null,retrievedAt:'2026-10-12T04:00:00Z',coverageThrough:'2026-10-12T04:00:00Z',quality:operations?'complete':'historical'}));
+ });
+ if(operations)rows.push({date:'2026-10-12',dataset:'subscriptions',metric:'active_customers',value:345,definition:'loop_unique_active_customers',population:'loop_active_customers',dimensions:{source:'loop'},sourceId:'loop',currency:null,retrievedAt:'2026-10-12T15:00:00Z',coverageThrough:'2026-10-12T15:00:00Z',quality:'complete'});
+ return {...workspacePresentation(queryClient(loopClient,rows,[],filters,{preparedDatasets:['subscriptions','subscriptionEvents']}),filters),reviews:[],findings:[],note:{body:'',version:0}};
+}
+
+it('leads Loop with captured renewals and one connection state instead of missing operational cards',()=>{
+ const record=loopRecord(),html=renderToStaticMarkup(createElement(SubscriptionWorkspace,{record,filters,update:()=>{}}));
+ expect(html).toMatch(/RENEWAL REVENUE<\/span><strong>\$240<\/strong>/);
+ expect(html).toMatch(/RENEWAL ORDERS<\/span><strong>12<\/strong>/);
+ expect(html).toMatch(/RENEWAL AOV<\/span><strong>\$20<\/strong>/);
+ expect(html).toContain('Shopify net sales in the Loop Subscriptions sales channel');
+ expect(html).not.toContain('before refunds');
+ expect(html).not.toContain('ACTIVE CUSTOMERS</span>');
+ expect(html).not.toContain('SAME-DAY CANCELLATION RATE</span>');
+ expect(html).not.toContain('SUBSCRIPTIONS CANCELLED</span>');
+ expect(html).not.toContain('REFUNDED-ORDER RATE</span>');
+ expect(html.match(/Awaiting Loop feed/g)).toHaveLength(1);
+ expect(html).toContain('active subscribers (unique customers)');
+ expect(html).toContain('Churn and payment failures');
+ expect(html).not.toContain('Recharge');
+ expect(html).not.toContain('No captured values for this metric');
+ expect(html).toContain('aria-label="Subscription comparison"');
+ expect(html).toContain('value="thirtyDays"');expect(html).toContain('value="custom"');
+ expect(html).toContain('7 days');expect(html).toContain('30 days');expect(html).toContain('Selected period');
+ const chart=subscriptionChartExplorer(record,filters,'7d');
+ expect(chart.points.at(-1)?.selected.new_subscriptions).toBeNull();
+ expect(subscriptionMetricValue(chart.current.metrics,'same_day_cancellation_rate')).toBeNull();
+});
+
+it('uses sourced Loop customer stock and exact event counts with matched prior-period rates',()=>{
+ const record=loopRecord(true),html=renderToStaticMarkup(createElement(SubscriptionWorkspace,{record,filters,update:()=>{}}));
+ expect(html).toMatch(/ACTIVE CUSTOMERS<\/span><strong>345<\/strong>/);
+ expect(html).toContain('Latest Loop snapshot');
+ expect(html).toMatch(/NEW SUBSCRIPTIONS<\/span><strong>120<\/strong>/);
+ expect(html).toMatch(/SAME-DAY CANCELLATION RATE<\/span><strong>5.00%<\/strong>/);
+ expect(html).toContain('6 cancellations · 120 new subscriptions');
+ expect(html).toContain('Same-day cancellation rate: Decreased -5.00 pp; favorable');
+ expect(html).toMatch(/SUBSCRIPTIONS CANCELLED<\/span><strong>15<\/strong>/);
+ expect(html).toContain('Subscriptions cancelled: Increased +25.00%; unfavorable');
+ expect(html).toContain('yesterday: 12');
+ expect(html).not.toContain('Recharge');
+ expect(html).not.toContain('Awaiting Loop feed');
+ expect(html).not.toContain('ACTIVE SUBSCRIPTIONS</span>');
+ expect(html).toContain('Churn and payment failures');
 });

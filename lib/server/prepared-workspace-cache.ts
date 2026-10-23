@@ -12,7 +12,7 @@ import type {Observation} from '../analytics/contracts';
 
 type Presentation=ReturnType<typeof workspacePresentation>;
 type Frame=Omit<Presentation,'connections'>;
-const codecVersion='gzip-frame-v11',maximumExpandedBytes=4*1024*1024,maximumCompressedCharacters=512*1024;
+const codecVersion='gzip-frame-v12',maximumExpandedBytes=4*1024*1024,maximumCompressedCharacters=512*1024;
 export type PreparedWorkspaceInput={
  store:Store;organizationId:string;client:Client;filters:QueryFilters;preparedDatasets:string[];
  freshConnections?:Connection[];
@@ -31,7 +31,7 @@ const lastGoodFrames=new Map<string,string>();
 function transientDatabaseFailure(error:unknown):boolean{return error instanceof Error&&(error.name==='TimeoutError'||error.message.includes('Database request timed out')||transientDatabaseFailure(error.cause));}
 // Deliberately enumerate the analytics contract. A caller's workspace fields,
 // browser scope, member records and private notes cannot enter the cache.
-const frameFields=['client','metrics','prior','comparison','verdict','series','datasetSeries','comparisonDatasetSeries','trendDatasetSeries','trendComparisonDatasetSeries','datasetHourlySeries','comparisonDatasetHourlySeries','datasetHistorySeries','details','actions','opportunities','views','preparedDatasets','datasetMetrics','activeIncidents','warnings','cutoff','availableDimensions','evidence','comparisonEvidence','selectedCount','liveOperations','activeCustomerComparison','subscriptions','viewMetrics','viewPriorMetrics','experimentDetails','comparisonViews','qualifiedPageAlerts','trafficExplorer','sourceQuality','efficiencyEvidence'] as const satisfies readonly (keyof Frame)[];
+const frameFields=['client','metrics','prior','comparison','verdict','series','datasetSeries','comparisonDatasetSeries','trendDatasetSeries','trendComparisonDatasetSeries','datasetHourlySeries','comparisonDatasetHourlySeries','datasetHistorySeries','details','actions','opportunities','views','preparedDatasets','datasetMetrics','activeIncidents','warnings','cutoff','availableDimensions','evidence','comparisonEvidence','selectedCount','liveOperations','activeCustomerComparison','subscriptions','viewMetrics','viewPriorMetrics','experimentDetails','experimentDailyDetails','comparisonViews','qualifiedPageAlerts','trafficExplorer','sourceQuality','efficiencyEvidence'] as const satisfies readonly (keyof Frame)[];
 function analyticsFrame(value:Presentation):Frame{
  // New presentation fields require an explicit decision about cache contents.
  const completeFields:Exclude<keyof Frame,typeof frameFields[number]> extends never?typeof frameFields:never=frameFields;

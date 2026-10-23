@@ -22,3 +22,24 @@ it('loads campaign reports when the question asks for their actual cost metrics'
  expect(chatDatasets('media','Which ads performed best?')).toContain('creatives');
  expect(chatDatasets('media','Show ad-level performance')).toContain('creatives');
 });
+it('loads actual Beam overview commerce, platform reports and experiments without unrelated subscription providers',()=>{
+ const selection=chatObservationSelection('overview','What is shown?','beam');expect(selection.datasets).toEqual(expect.arrayContaining(['overview','revenue','media','experiments','funnels']));expect(selection.datasets.some(dataset=>['subscriptions','subscriptionEvents','orderStreams','renewalDiagnostics','orderHygiene'].includes(dataset))).toBe(false);expect(selection.includeOperations).toBe(false);
+});
+it('retains Motion provider-date chart context and recognizes Intelligems test questions for Beam',()=>{
+ const selection=chatObservationSelection('media','Explain the seven-day spend chart','beam');expect(selection.trendDatasets).toContain('media');
+ for(const question of ['How are our tests doing?','Show Intelligems results','Which variation has the strongest confidence?'])expect(chatDatasets('overview',question,'beam')).toContain('experiments');
+});
+
+it('does not load historical report bodies when report is a request to state selected figures',()=>{
+ for(const question of ["Verification: state the selected brand, date and comparison cutoff, then report the same-day cancellation rate and yesterday's value shown in this view. Keep it brief and cite the saved evidence.",'Please report current revenue and yesterday’s value.','Report the selected totals.'])expect(chatNeedsReviewBody(question)).toBe(false);
+ for(const question of ['What did the report recommend?','Summarize the saved report.','Compare yesterday’s report with today’s report.','Report the recommendations in the daily review.'])expect(chatNeedsReviewBody(question)).toBe(true);
+});
+it.each([
+ ['Show the report today.',true],
+ ['Summarize the report the team saved yesterday.',true],
+ ['Report for yesterday.',true],
+ ['Report from yesterday.',true],
+ ['Please report revenue and orders for today.',false]
+])('distinguishes a report reference from an imperative: %s',(question,expected)=>{
+ expect(chatNeedsReviewBody(question)).toBe(expected);
+});

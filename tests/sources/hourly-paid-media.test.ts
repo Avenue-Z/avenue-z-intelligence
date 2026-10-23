@@ -76,6 +76,20 @@ it('captures AppLovin spend in one bounded response so unstable offset pages can
  expect(batch.rows).toHaveLength(1001);expect(batch.rows.reduce((sum,row)=>sum+row.value!,0)).toBe(1001);
  expect(new Set(batch.rows.map(row=>row.dimensions.campaign_id)).size).toBe(1001);
 });
+it('recovers AppLovin cost from the supported web report with independent UTC hour totals',async()=>{
+ const detail=[{day:'2026-10-12',hour:'22:00',campaign:'Dream',campaign_id_external:'2',country:'US',cost:'10'},{day:date,hour:'14:00',campaign:'Dream',campaign_id_external:'2',country:'US',cost:'20'}];
+ const fetcher:typeof fetch=async url=>{
+  const u=new URL(String(url));
+  if(u.origin!=='https://r.applovin.com'||u.pathname!=='/webReport'||u.searchParams.get('attribution_mode')!=='click')throw new Error('Legacy or unsupported AppLovin report');
+  expect(u.searchParams.get('api_key')).toBe('private');expect(u.searchParams.get('start')).toBe('2026-10-12');expect(u.searchParams.get('end')).toBe(date);
+  expect(u.searchParams.get('report_type')).toBe('advertiser');expect(u.searchParams.get('limit')).toBe('40000');expect(u.searchParams.get('offset')).toBe('0');
+  const columns=u.searchParams.get('columns');if(columns==='day,hour,cost')return Response.json({code:200,results:[{day:'2026-10-12',hour:'22:00',cost:'10'},{day:date,hour:'14:00',cost:'20'}]});
+  expect(columns).toBe('day,hour,campaign,campaign_id_external,country,cost');return Response.json({code:200,results:detail});
+ };
+ const batch=await fetchAppLovinHourlySpend(client,config,w,fetcher,Date.now()+10000,now);
+ expect(batch).toMatchObject({currency:'USD',coverageThrough:'2026-10-13T15:00:00Z',complete:true,grain:'hourly'});
+ expect(batch.rows.map(row=>({value:row.value,start:row.start,metric:row.metric,definition:row.definition}))).toEqual([{value:10,start:'2026-10-12T22:00:00Z',metric:'platform_spend',definition:appLovinHourlyDefinition},{value:20,start:'2026-10-13T14:00:00Z',metric:'platform_spend',definition:appLovinHourlyDefinition}]);
+});
 it('rejects an AppLovin response at the row cap instead of accepting a potentially truncated report',async()=>{
  const fetcher:typeof fetch=async url=>Response.json({code:200,results:new URL(String(url)).searchParams.get('columns')==='day,hour,cost'?[]:Array(40000).fill({})});
  await expect(fetchAppLovinHourlySpend(client,config,w,fetcher,Date.now()+10000,now)).rejects.toThrow(/row limit/i);

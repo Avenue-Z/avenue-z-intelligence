@@ -1,6 +1,6 @@
 import type {buildAIContext} from './context';
 import {boundedAIContextForModel} from './model-input';
-import {needsCreativeDetail} from './chat-scope';
+import {chatNeedsReviewBody,needsCreativeDetail} from './chat-scope';
 
 type AIContext=ReturnType<typeof buildAIContext>;
 type NumericRow=AIContext['clients'][number]['details'][number];
@@ -10,7 +10,7 @@ type ChatFieldOmission={path:string;reason:string};
 const MAX_CHAT_BYTES=80000;
 const normalized=(value:string)=>value.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 const countries=new Intl.DisplayNames(['en'],{type:'region',fallback:'code'});
-const ignoredWords=new Set(['pages','page','https','http','www','com','landing','source','campaign']);
+const ignoredWords=new Set(['pages','page','https','http','www','com','landing','source','campaign','the','and','are']);
 const isNumericRow=(value:unknown):value is NumericRow=>!!value&&typeof value==='object'&&'key' in value&&'dimensions' in value&&'metrics' in value&&'summary' in value&&'provenance' in value;
 function matchingScore(value:unknown,question:string):number{
  const query=normalized(question),queryWords=new Set(query.split(' '));
@@ -21,7 +21,7 @@ function matchingScore(value:unknown,question:string):number{
  let score=0;
  for(const item of values){const text=normalized(item);if(!text)continue;const words=text.split(' ').filter(word=>!ignoredWords.has(word)&&word.length>=2);
   if(text.length>=4&&(` ${query} `).includes(` ${text} `)){score=Math.max(score,50+words.length);continue;}
-  const matches=words.filter(word=>queryWords.has(word));
+  const matches=[...new Set(words.filter(word=>queryWords.has(word)))];
   if(matches.length>=2||(words.length===1&&matches.some(word=>word.length>=5))||matches.some(word=>word.length>=5&&/^\d+$/.test(word)))score=Math.max(score,matches.length);
  }
  return score;
@@ -29,6 +29,7 @@ function matchingScore(value:unknown,question:string):number{
 function focusedDatasets(client:AIContext['clients'][number],filters:AIContext['filters'],question:string){
  const q=normalized(question),selected=filters.view==='overview'||filters.view==='reviews'?'overview':filters.view,focus=new Set<string>([selected]);
  const add=(datasets:string[])=>datasets.forEach(dataset=>focus.add(dataset));
+ if(client.client.id==='beam'&&selected==='overview')add(['media','experiments','revenue']);
  if(selected==='traffic'||selected==='funnels')add(['traffic','funnels']);
  if(selected==='subscriptions')add(['subscriptions','subscriptionEvents']);
  if(/\b(?:traffic|session|sessions|funnel|funnels|conversion|cvr|checkout|landing|page|pages|utm|tiktok|facebook|snapchat)\b/.test(q))add(['traffic','funnels']);
@@ -85,7 +86,7 @@ function chatPreview(input:AIContext,question:string,rowLimit:number,textLimit:n
  };
  const clients=input.clients.map((client,index)=>{
   const focus=focusedDatasets(client,input.filters,question),prefix=`clients[${index}]`,copy={...client} as unknown as Record<string,unknown>;
-  const q=normalized(question),removeReference=(field:string)=>{delete copy[field];omit(`${prefix}.${field}`,'Unrequested dated or workflow reference; selected totals, all chart dates, source qualification and comparison remain supplied');};
+  const q=normalized(question),reviewRequested=chatNeedsReviewBody(question),removeReference=(field:string)=>{delete copy[field];omit(`${prefix}.${field}`,'Unrequested dated or workflow reference; selected totals, requested chart dates, source qualification and comparison remain supplied');};
   const namedReference=Object.values(client.priorClosedDetail?.datasets??{}).some(cut=>cut.rows.some(row=>matchingScore(row,question)>0)||cut.comparison.rows.some(row=>matchingScore(row,question)>0));
   if(!client.selectedReview&&client.selectedView.dailyChart){
    if(!/\b(?:month|monthly|mtd)\b/.test(q))for(const field of ['monthToDate','channelMonthToDate'])removeReference(field);
@@ -93,7 +94,7 @@ function chatPreview(input:AIContext,question:string,rowLimit:number,textLimit:n
    if(!/\b(?:channels?|meta|google|snapchat|applovin)\b/.test(q))removeReference('spendChannelTrend');
    if(!focus.has('creatives')&&!/\b(?:campaigns?|creatives?|cpc|cpm|ctr|clicks?|impressions?|pages?|landing|mix|cancellations?|cancel|subscriptions?|refunds?|recurring)\b/.test(q))removeReference('strategyDiagnoses');
    if(!/\b(?:active|operational|customers?)\b/.test(q))for(const field of ['liveOperations','activeCustomerComparison'])removeReference(field);
-   if(!/\b(?:findings?|reports?|reviews?|recommendations?|action items|watch list)\b/.test(q))removeReference('findings');
+   if(!reviewRequested&&!/\b(?:findings?|action items|watch list)\b/.test(q))removeReference('findings');
   }
   const datasets=(values:typeof client.datasetDetails,path:string)=>Object.fromEntries(Object.entries(values).filter(([dataset])=>{if(focus.has(dataset))return true;omit(`${prefix}.${path}.${dataset}`,'Outside the selected view and question focus; not checked in this chat preview');return false;}));
   copy.datasetDetails=datasets(client.datasetDetails,'datasetDetails');copy.comparisonDatasetDetails=datasets(client.comparisonDatasetDetails,'comparisonDatasetDetails');
@@ -109,6 +110,25 @@ function chatPreview(input:AIContext,question:string,rowLimit:number,textLimit:n
    .../\b(?:sources?|channels?|utm|meta|facebook|snapchat|tiktok|google)\b/.test(q)?['traffic_channel','source','utm_source']:[],
    .../\b(?:devices?|mobile|desktop|tablet)\b/.test(q)?['device']:[]
   ];
+  const overviewTrafficDimensions=[...requestedTrafficDimensions,.../\b(?:pages?|landing|pdp)\b/.test(q)?['page']:[],.../\b(?:utm|campaigns?)\b/.test(q)?['utm_campaign','utm_medium']:[]];
+  // Overview totals already carry the exact selected and matched comparison
+  // populations. Unrequested page/UTM/device groups can otherwise exhaust the
+  // chat budget even after every group has been reduced to a single row.
+  const overviewTotals=input.filters.view==='overview'&&/\b(?:totals?|sales|sessions?|conversion|cvr)\b/.test(q)&&!/\b(?:which|where|rank|best|worst|top|breakdown|break down|pages?|landing|utm|sources?|channels?|campaigns?|creatives?|devices?|mobile|desktop|tablet|countries|country|markets?|regions?|mix)\b/.test(q);
+  const namedTrafficGroup=overviewTotals&&Object.values(client.visualBreakdowns?.traffic??{}).some(period=>period&&Object.entries(period.cuts).some(([dimension,cut])=>dimension!=='all'&&cut.rows.some(row=>matchingScore(row,question)>=50)));
+  const overviewTrafficCuts=overviewTotals&&!namedTrafficGroup?['all']:overviewTrafficDimensions.length?['all',...overviewTrafficDimensions]:null;
+  if(!client.selectedReview&&input.filters.view==='overview'&&overviewTrafficCuts&&client.visualBreakdowns?.traffic){
+   const keep=new Set(overviewTrafficCuts);
+   const period=(value:typeof client.visualBreakdowns.traffic.current,name:string)=>value?{...value,cuts:Object.fromEntries(Object.entries(value.cuts).filter(([dimension,cut])=>{
+    if(keep.has(dimension))return true;
+    collections.push({path:`${prefix}.visualBreakdowns.traffic.${name}.cuts.${dimension}.rows`,availableRows:cut.rows.length,includedRows:0,omittedRows:cut.rows.length,preexistingOmittedRows:cut.omitted});return false;
+   }))}:value;
+   (copy.visualBreakdowns as Record<string,unknown>).traffic={current:period(client.visualBreakdowns.traffic.current,'current'),comparison:period(client.visualBreakdowns.traffic.comparison,'comparison')};
+   if(input.filters.mode==='partial'&&!/\b(?:closed|full day|full yesterday|historical|reference|last week)\b/.test(q)&&client.traffic){
+    for(const [dimension,cut] of Object.entries(client.traffic))if(cut&&typeof cut==='object'&&'rows' in cut&&Array.isArray(cut.rows))collections.push({path:`${prefix}.traffic.${dimension}.rows`,availableRows:cut.rows.length,includedRows:0,omittedRows:cut.rows.length,preexistingOmittedRows:typeof cut.omitted==='number'?cut.omitted:0});
+    removeReference('traffic');
+   }
+  }
   if(!client.selectedReview&&input.filters.page&&['traffic','funnels'].includes(input.filters.view)&&requestedTrafficDimensions.length&&client.visualBreakdowns?.traffic){
    const traffic=client.visualBreakdowns.traffic,keep=new Set(['all',...requestedTrafficDimensions]);
    const period=(value:typeof traffic.current,name:string)=>{
@@ -136,8 +156,17 @@ function chatPreview(input:AIContext,question:string,rowLimit:number,textLimit:n
   // retain the relevant rows, original counts and every retained source scope.
   for(const field of ['details','detailsOmitted','detailCounts','comparisonDetails','comparisonDetailsOmitted','comparisonDetailCounts']){delete copy[field];omit(`${prefix}.${field}`,'Duplicate mixed-dataset detail omitted; use dated datasetDetails and their explicit counts');}
   if(client.selectedReview){copy.priorSourceReviews=[];if(client.priorSourceReviews.length)omit(`${prefix}.priorSourceReviews`,'A selected fixed report is authoritative; unrelated prior reports omitted');}
-  else if((client.selectedObservationCount>0||client.selectedView.dailyChart)&&!/\b(?:reports?|reviews?|recommendations?|action items|watch list)\b/.test(normalized(question))){
+  else if((client.selectedObservationCount>0||client.selectedView.dailyChart)&&!reviewRequested&&!/\b(?:action items|watch list)\b/.test(q)){
    for(const field of ['sourceReviews','priorSourceReviews'] as const){copy[field]=[];if(client[field].length)omit(`${prefix}.${field}`,'Dated report prose is outside this live dashboard question; current selected figures, full visible chart points and dated numeric evidence remain supplied');}
+  }
+  // Match the server's chatObservationSelection history intent before dropping
+  // unrequested history, including arbitrary requested day/week/month counts.
+  const chartRequested=/\b(?:charts?|trends?|history|historical|hourly|daily|weekly|monthly)\b|\bover\s+time\b|\bday\s+by\s+day\b|\b(?:last|past|previous)\s+(?:(?:\d+|seven|thirty)\s+)?(?:days?|weeks?|months?)\b/i.test(question)||/\b(?:weeks?|months?|seven|thirty|7|30)\b/.test(q),selectedView=copy.selectedView as typeof client.selectedView;
+  if((client.client.id==='beam'||input.filters.view==='subscriptions')&&!client.selectedReview&&!chartRequested&&selectedView.dailyChart){
+   const chart=selectedView.dailyChart;copy.selectedView={...selectedView};delete (copy.selectedView as typeof selectedView).dailyChart;
+   for(const period of ['current','comparison'] as const)collections.push({path:`${prefix}.selectedView.dailyChart.${period}`,availableRows:chart[period].length,includedRows:0,omittedRows:chart[period].length,preexistingOmittedRows:0});
+   if(chart.calendarCancellations)for(const period of ['current','comparison'] as const)collections.push({path:`${prefix}.selectedView.dailyChart.calendarCancellations.${period}`,availableRows:chart.calendarCancellations[period].length,includedRows:0,omittedRows:chart.calendarCancellations[period].length,preexistingOmittedRows:0});
+   omit(`${prefix}.selectedView.dailyChart`,'Unrequested multi-day chart; exact selected and matched comparison totals, populations, cutoffs and citations remain supplied. Chart dates were not checked by this answer.');
   }
   return copy;
  });

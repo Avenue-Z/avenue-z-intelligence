@@ -1,5 +1,11 @@
 /** Pure dataset scope shared by workspace reads and independent cache warming. */
-export function workspaceDatasets(view:string):string[]{
+export function workspaceDatasets(view:string,clientId?:string|number):string[]{
+ if(clientId==='beam'||clientId==='autobrush'){
+  if(view==='overview'||view==='subscriptions')return ['overview','funnels','revenue','media','experiments'];
+  if(view==='traffic'||view==='funnels')return ['overview','funnels','traffic'];
+  if(view==='media')return ['overview','media','creatives'];
+  return ['overview',view];
+ }
  const core=['overview','subscriptions','subscriptionEvents'];
  if(view==='overview')return ['overview','funnels','revenue','media','subscriptions','subscriptionEvents','orderStreams','renewalDiagnostics','orderHygiene'];
  if(view==='traffic'||view==='funnels')return [...core,'funnels','traffic'];
@@ -11,8 +17,8 @@ export function workspaceDatasets(view:string):string[]{
 /** Foreground and native warming share an exact load-affecting selection.
  * Supplemental prior-week detail remains available to AI/review Store callers.
  */
-export function workspaceObservationSelection(viewOrDatasets:string|string[]){
- const datasets=(Array.isArray(viewOrDatasets)?viewOrDatasets:workspaceDatasets(viewOrDatasets)).filter(dataset=>dataset!=='reviews'&&dataset!=='settings');
- const includeOperations=datasets.includes('renewalDiagnostics')||datasets.includes('media')&&datasets.includes('revenue');
- return {datasets,includePriorWeek:false,includeOperations,trendDatasets:datasets.filter(dataset=>['overview','revenue','traffic','markets','products','subscriptions','subscriptionEvents',...!datasets.includes('traffic')&&!datasets.includes('revenue')?['funnels']:[]].includes(dataset))};
+export function workspaceObservationSelection(viewOrDatasets:string|string[],clientId?:string){
+ const datasets=(Array.isArray(viewOrDatasets)?viewOrDatasets:workspaceDatasets(viewOrDatasets,clientId)).filter(dataset=>dataset!=='reviews'&&dataset!=='settings');
+ const includeOperations=clientId!=='beam'&&clientId!=='autobrush'&&(datasets.includes('renewalDiagnostics')||datasets.includes('media')&&datasets.includes('revenue'));
+ return {datasets,includePriorWeek:false,includeOperations,trendDatasets:datasets.filter(dataset=>['overview','revenue','traffic','markets','products','subscriptions','subscriptionEvents',...['beam','autobrush'].includes(String(clientId))?['media']:[],...!datasets.includes('traffic')&&!datasets.includes('revenue')?['funnels']:[]].includes(dataset))};
 }

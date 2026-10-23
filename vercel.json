@@ -1,12 +1,60 @@
 {
-  "$schema":"https://openapi.vercel.sh/vercel.json",
-  "framework":"nextjs",
-  "buildCommand":"npm run build:vercel",
-  "outputDirectory":".next-vercel",
-  "crons":[
-    {"path":"/api/cron/sync","schedule":"*/5 * * * *"},
-    {"path":"/api/cron/reviews","schedule":"2-59/5 * * * *"},
-    {"path":"/api/cron/history","schedule":"1-59/5 * * * *"},
-    {"path":"/api/cron/cache","schedule":"3-59/5 * * * *"}
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "buildCommand": "npm run build:vercel",
+  "outputDirectory": ".next-vercel",
+  "crons": [
+    {
+      "path": "/api/cron/sync",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/reviews",
+      "schedule": "2-59/5 * * * *"
+    },
+    {
+      "path": "/api/cron/history",
+      "schedule": "1-59/5 * * * *"
+    },
+    {
+      "path": "/api/cron/cache",
+      "schedule": "3-59/5 * * * *"
+    },
+    {
+      "path": "/api/cron/beam-ga4",
+      "schedule": "4-59/5 * * * *"
+    },
+    {
+      "path": "/api/cron/beam-sync",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/beam-history",
+      "schedule": "1-59/5 * * * *"
+    },
+    {
+      "path": "/api/cron/beam-cache",
+      "schedule": "3-59/5 * * * *"
+    },
+    {
+      "path": "/api/cron/autobrush-sync",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/autobrush-history",
+      "schedule": "1-59/5 * * * *"
+    },
+    {
+      "path": "/api/cron/autobrush-cache",
+      "schedule": "3-59/5 * * * *"
+    },
+    {
+      "path": "/api/cron/autobrush-ga4",
+      "schedule": "4-59/5 * * * *"
+    },
+    {
+      "path": "/api/cron/autobrush-northbeam",
+      "schedule": "4-59/5 * * * *"
+    }
   ]
 }

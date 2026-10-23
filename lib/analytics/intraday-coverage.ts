@@ -8,7 +8,9 @@ import {dayWindow,matchedCutoff} from './windows';
 export function intradayConnections(connections:Connection[],view:string):Connection[]{
  const enabled=connections.filter(source=>source.enabled),traffic=enabled.some(source=>source.provider==='kind-shopify-traffic');
  const providers=view==='overview'?['kind-triple-whale','kind-shopify-hourly','kind-shopify-sales','kind-triple-whale-diagnostics']:view==='revenue'?['kind-shopify-sales','kind-triple-whale-diagnostics']:view==='products'?['kind-shopify-products']:view==='markets'?['kind-triple-whale']:view==='subscriptions'?['kind-triple-whale','kind-recharge-cancellations','kind-triple-whale-diagnostics']:view==='traffic'?traffic?['kind-shopify-traffic']:['kind-triple-whale','kind-shopify-hourly']:view==='funnels'?['kind-shopify-hourly']:['kind-triple-whale','kind-shopify-hourly'];
- return enabled.filter(source=>!source.provider||source.provider==='gateway'||providers.includes(source.provider));
+ const beam=view==='overview'?['beam-shopify-sales','beam-shopify-sessions']:view==='products'?['beam-shopify-products']:view==='markets'?['beam-shopify-markets']:view==='traffic'?['beam-shopify-traffic']:view==='funnels'?['beam-shopify-sessions']:['beam-shopify-sales'];
+ const autobrush=beam.map(provider=>provider.replace('beam-','autobrush-'));
+ return enabled.filter(source=>!source.provider||source.provider==='gateway'||providers.includes(source.provider)||beam.includes(source.provider)||autobrush.includes(source.provider));
 }
 export function confirmedIntradayCutoff(connections:Connection[],view:string,timezone:string,date:string):string|null{
  const sources=intradayConnections(connections,view),coverage=sources.map(source=>source.coverageThrough),start=Date.parse(dayWindow(date,timezone).start);

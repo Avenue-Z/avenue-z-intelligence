@@ -20,7 +20,7 @@ it('cannot let the first random signed-in user claim the standalone workspace',a
 });
 it('initializes an explicit company admin and seeds clients once',async()=>{
  expect(await allowGoogleIdentity({email:'owner@example.com',email_verified:true,sub:'one'})).toBe(true);
- await initializePrivateOwner();await initializePrivateOwner();expect(await scopeForUser()).toMatchObject({organizationId:'company',role:'admin'});expect(await getStore().clients('company')).toHaveLength(2);
+ await initializePrivateOwner();await initializePrivateOwner();expect(await scopeForUser()).toMatchObject({organizationId:'company',role:'admin'});expect(await getStore().clients('company')).toHaveLength(3);
 });
 it('lets an initialized member read the workspace without requiring bootstrap writes',async()=>{
  const s=getStore();await s.run('INSERT INTO organizations VALUES(?,?,1)','company','Company');await s.run('INSERT INTO members VALUES(?,?,?,?,?)','company','owner@example.com','google:one','admin','["*"]');
@@ -75,6 +75,17 @@ it('onboards verified company Google Workspace employees as KP analysts only',as
  expect(await scopeForUser()).toEqual({organizationId:'company',actorId:'google:employee',role:'analyst',permittedClientIds:['kind-patches']});
  expect(await s.first('SELECT role,clients FROM members WHERE email=?',employee.email)).toEqual({role:'analyst',clients:'["kind-patches"]'});
  expect(await allowGoogleIdentity(employee)).toBe(true);expect(await s.all('SELECT * FROM members')).toHaveLength(1);
+});
+it('onboards verified company employees to the approved KP and Beam analyst scope',async()=>{
+ const s=await domainWorkspace();state.env.APP_GOOGLE_WORKSPACE_CLIENT_IDS='kind-patches,beam';
+ expect(await allowGoogleIdentity({...employee,email_verified:false})).toBe(false);
+ expect(await allowGoogleIdentity({...employee,email:'outsider@gmail.com'})).toBe(false);
+ expect(await allowGoogleIdentity(employee)).toBe(true);
+ state.identity.mockResolvedValue({userId:'google:employee',email:employee.email});
+ expect(await scopeForUser()).toEqual({organizationId:'company',actorId:'google:employee',role:'analyst',permittedClientIds:['kind-patches','beam']});
+ expect(await s.first('SELECT role,clients FROM members WHERE email=?',employee.email)).toEqual({role:'analyst',clients:'["kind-patches","beam"]'});
+ await s.run('UPDATE members SET clients=? WHERE email=?','[]',employee.email);
+ expect(await allowGoogleIdentity(employee)).toBe(false);
 });
 it('checks the signed hosted-domain claim as well as exact verified email domain',async()=>{
  const s=await domainWorkspace();

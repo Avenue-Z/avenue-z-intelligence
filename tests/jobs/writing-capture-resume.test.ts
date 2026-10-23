@@ -7,6 +7,7 @@ import initial from '../../data/initial-clients.json';
 import {fingerprint} from '../../lib/reviews/build';
 import {dayWindow} from '../../lib/analytics/windows';
 import {readRecentWritingCapture,type ArchiveReader} from '../../lib/jobs/archive-materialization-retention';
+import type {RegisteredContract} from '../../lib/sources/registered-contract';
 vi.mock('../../lib/server/secrets',()=>({serverSecret:()=>null}));
 
 const scope:AccessScope={organizationId:'o',actorId:'scheduler',role:'service',permittedClientIds:['kind-patches']},now=Date.parse('2026-10-15T13:35:00Z'),retrievedAt='2026-10-15T13:07:00Z',window={from:'2026-10-15',to:'2026-10-15'};
@@ -73,4 +74,22 @@ it('accepts a fully covered historical store day and rejects partial historical 
  const historical='2026-10-14',day=dayWindow(historical,client.timezone);batch={...batch,coverageThrough:day.end,rows:batch.rows.map(row=>({...row,date:historical,start:day.start,end:new Date(Date.parse(day.start)+3600000).toISOString()}))};
  const hash=await fingerprint(batch),key=`o:${client.id}:${source.id}:${hash}`;archive=JSON.stringify(batch);await store.run('INSERT INTO snapshots VALUES(?,?,?,?,?,?,?,?,?)',key,'o',client.id,source.id,retrievedAt,batch.coverageThrough,1,'writing',`snapshots/${key}.json`);
  expect(await readRecentWritingCapture(store,scope,source,client,{from:historical,to:historical},{deadline:now+700000,readArchive:reader})).toMatchObject({hash,retrievedAt});
+});
+it('recovers a registered Beam traffic capture under its own scope and preserves original provenance',async()=>{
+ const beamClient={...initial.find(value=>value.id==='beam')!,version:1} as Client,beamScope={...scope,permittedClientIds:['beam']};
+ await store.run('INSERT INTO clients VALUES(?,?,?,?,?,?,?,?,?)',beamClient.id,'o',beamClient.name,beamClient.id,beamClient.timezone,beamClient.currency,beamClient.color,JSON.stringify(beamClient.config),1);
+ await store.run("INSERT INTO connections VALUES('beam-traffic','o','beam','Traffic','beam-shopify-traffic','https://beamtlc.myshopify.com/admin/api/2026-07/graphql.json','SOURCE_BEAM_SHOPIFY',60,1,'2026-10-15T12:10:00Z','2026-10-15T12:00:00Z',NULL,1)");
+ const beamSource=(await store.connections('o','beam'))[0],definition='shopify_human_us_public_landing_page_traffic',population='human_us_public_landing_page_sessions';
+ const beamBatch={...batch,clientId:'beam',timezone:beamClient.timezone,rows:batch.rows.map(row=>({...row,definition,population}))};
+ const originalQualification=(await store.qualification('o',source.id))!.payload as RegisteredContract;
+ await store.saveQualification('o','beam',beamSource.id,1,1,{...originalQualification,clientId:'beam',timezone:beamClient.timezone,profiles:originalQualification.profiles.map(profile=>({...profile,definition,population}))},scope.actorId);
+ const hash=await fingerprint(beamBatch),snapshotId=`o:beam:${beamSource.id}:${hash}`,text=JSON.stringify(beamBatch);
+ await store.run('INSERT INTO snapshots VALUES(?,?,?,?,?,?,?,?,?)',snapshotId,'o','beam',beamSource.id,retrievedAt,beamBatch.coverageThrough,1,'writing',`snapshots/${snapshotId}.json`);
+ const beamReader:ArchiveReader=async key=>({pathname:key,text,bytes:new TextEncoder().encode(text).byteLength,etag:'immutable'});
+ const recovered=await readRecentWritingCapture(store,beamScope,beamSource,beamClient,window,{deadline:now+700000,readArchive:beamReader});
+ expect(recovered).toEqual({batch:beamBatch,hash,retrievedAt});
+ expect(await readRecentWritingCapture(store,scope,beamSource,beamClient,window,{deadline:now+700000,readArchive:beamReader})).toBeNull();
+ await store.persistBatch('o',beamSource.id,recovered!.batch,recovered!.hash,recovered!.retrievedAt,window,{publicationDeadline:now+700000,factPageSize:500});
+ expect(await store.first('SELECT status,retrievedAt FROM snapshots WHERE id=?',snapshotId)).toEqual({status:'ready',retrievedAt});
+ expect(await store.first('SELECT COUNT(*) n FROM observations WHERE snapshotId=?',snapshotId)).toEqual({n:1001});
 });

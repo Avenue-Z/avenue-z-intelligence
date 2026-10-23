@@ -7,8 +7,27 @@ import {reviewHref} from '../reviews/document';
 import {liveReportingDate} from './reporting-date';
 export type AlertFigure={label:string;current:number|null;previous:number|null;format:'number'|'money'|'percent'|'ratio'};
 export type BusinessAlert={key:string;clientId:string;clientName:string;title:string;detail:string;nextStep:string;category:string;severity:string;status:string;owner:string;evidence:string[];basis:string;impact:number|null;finding?:Finding;period?:QueryFilters;figures:AlertFigure[];currency:string;referenceLabels?:{label:string;url:string}[]};
+export function reviewMatchesScope(value:unknown,filters:QueryFilters){
+ if(!value||typeof value!=='object'||Array.isArray(value))return false;
+ const scope=value as Record<string,unknown>;
+ return (['from','to','mode','compare','compareFrom','compareTo','market','stream','source','device','page'] as const).every(key=>scope[key]===filters[key]);
+}
 const delta=(n:number|null)=>n===null?'unavailable':`${n>=0?'+':''}${(n*100).toFixed(1)}%`;
 const refs=(rows:Observation[])=>rows.map(r=>`${r.sourceId}:${r.date}:${r.dataset}:${r.metric}:${JSON.stringify(r.dimensions)}`);
+const pagePath=(value:string)=>{try{return new URL(value,'https://analytics.invalid').pathname.replace(/\/+$/,'')||'/';}catch{return '';}};
+function citedPages(text:string){return new Set((text.match(/https?:\/\/[^\s"'`<>()\[\]{},;]+|\/[^\s"'`<>()\[\]{},;]+/gu)??[]).map(value=>pagePath(value.replace(/[.!:]+$/,''))));}
+function conversionPage(alert:BusinessAlert,clientId:string,actions:ClientAnalytics['actions']){
+ if(alert.category!=='Conversion opportunity')return null;
+ const raw=actions.find(action=>alert.key.endsWith(`:${action.key}`));
+ if(raw?.dimensions.page&&raw.dimensions.market)return {page:pagePath(raw.dimensions.page),market:raw.dimensions.market,ownPrevious:raw.benchmarkReason==='Own previous period'};
+ // Prepared and already-cached frames retain this server-created drill link
+ // after stripping bulk observations and raw action dimensions.
+ for(const ref of alert.evidence){if(!ref.startsWith(`/clients/${encodeURIComponent(clientId)}?`))continue;
+  const params=new URL(ref,'https://analytics.invalid').searchParams,page=params.get('page'),market=params.get('market');
+  if(params.get('view')==='traffic'&&page&&market)return {page:pagePath(page),market,ownPrevious:alert.detail.includes('Own previous period.')};
+ }
+ return null;
+}
 function conversionCovered(rows:Observation[],from:string,to:string,timezone:string,cutoff:string|null){
  const sessions=rows.filter(r=>r.metric==='sessions'),conversions=rows.filter(r=>r.metric==='converting_sessions');
  const clock=cutoff?Temporal.Instant.from(cutoff).toZonedDateTimeISO(timezone).toPlainTime():null;
@@ -62,11 +81,25 @@ export function buildAlertQueue(records:Omit<Workspace['clients'][number],'sched
   const prepared=(r as typeof r&{qualifiedPageAlerts?:BusinessAlert[]}).qualifiedPageAlerts;
   generated.push(...(prepared?prepared.filter(alert=>alert.clientId===r.client.id&&alert.period&&['from','to','mode','compare','compareFrom','compareTo','market','stream','source','device','page'].every(key=>(alert.period as any)[key]===(filters as any)[key])):qualifiedConversionAlerts(r,filters)));
   const sameTitle=(a:string,b:string)=>a.toLowerCase().replace(/[^a-z0-9]/g,'')===b.toLowerCase().replace(/[^a-z0-9]/g,'');
-  const matchesScope=(p:unknown)=>!!p&&['from','to','mode','compare','market','stream','source','device','page'].every(k=>(p as any)[k]===(filters as any)[k]);
+  const matchesScope=(p:unknown)=>reviewMatchesScope(p,filters);
   const latest=(r.reviews??[]).filter(x=>x.current&&x.payload.type==='ai').sort((a,b)=>b.storeDate.localeCompare(a.storeDate)||b.createdAt.localeCompare(a.createdAt))[0];
   for(const review of (r.reviews??[]).filter(x=>x.current&&x.payload.type==='ai'&&(matchesScope(x.payload.filters)||options.includeLatestReview&&x.id===latest?.id))){
    const actions=review.payload.actions as {title:string;detail:string;nextStep:string;severity:string;impact:number|null;sourceIds:string[];existingFindingId?:string|null}[]|undefined;
-   for(const a of actions||[]){const key=`signal:ai:${r.client.id}:${review.storeDate}:${a.title}`,equivalents=generated.filter(s=>sameTitle(s.title,a.title));if(a.existingFindingId||equivalents.length||r.findings.some(f=>sameTitle(f.title,a.title)&&(f.status!=='closed'||f.evidence.includes(key)||equivalents.some(e=>f.evidence.includes(e.key)))))continue;const sourceLabels=(review.payload.sources as {id:string;label:string;url:string}[]|undefined)?.filter(s=>a.sourceIds.includes(s.id)).map(({label,url})=>({label,url}));generated.push({...base,...a,key,category:matchesScope(review.payload.filters)?'AI review recommendation':'Latest daily review',basis:`AI analysis · ${review.storeDate} · fixed source evidence`,period:review.payload.filters as QueryFilters,referenceLabels:sourceLabels,evidence:[key,reviewHref(r.client.id,review.id)]});}
+   for(const a of actions||[]){
+    if(a.existingFindingId)continue;
+    const pages=citedPages(`${a.title} ${a.detail}`),markets:string[]=a.title.match(/[\p{L}\p{N}]+/gu)??[];
+    const dates=(`${a.title} ${a.detail}`).match(/\b\d{4}-\d{2}-\d{2}\b/g)??[],selected=(date:string)=>date>=filters.from&&date<=filters.to;
+    const matchingDates=!dates.length||dates.some(selected)&&dates.every(date=>selected(date)||date>=r.comparison.from&&date<=r.comparison.to);
+    const pageMatches=matchingDates&&matchesScope(review.payload.filters)&&/\bown (?:previous|prior) period\b/i.test(a.detail)?generated.flatMap((alert,index)=>{const identity=conversionPage(alert,r.client.id,r.actions);return identity?.ownPrevious&&identity.page!=='/'&&pages.has(identity.page)&&markets.includes(identity.market)?[index]:[];}):[];
+    if(pageMatches.length===1){
+     const index=pageMatches[0],live=generated[index],url=reviewHref(r.client.id,review.id),referenceLabels=live.referenceLabels??[];
+     generated[index]={...live,evidence:[...new Set([...live.evidence,url])],referenceLabels:referenceLabels.some(ref=>ref.url===url)?referenceLabels:[...referenceLabels,{label:`Daily review · ${review.storeDate}`,url}]};
+     continue;
+    }
+    const key=`signal:ai:${r.client.id}:${review.storeDate}:${a.title}`,equivalents=generated.filter(s=>sameTitle(s.title,a.title));
+    if(equivalents.length||r.findings.some(f=>sameTitle(f.title,a.title)&&(f.status!=='closed'||f.evidence.includes(key)||equivalents.some(e=>f.evidence.includes(e.key)))))continue;
+    const sourceLabels=(review.payload.sources as {id:string;label:string;url:string}[]|undefined)?.filter(s=>a.sourceIds.includes(s.id)).map(({label,url})=>({label,url}));generated.push({...base,...a,key,category:matchesScope(review.payload.filters)?'AI review recommendation':'Latest daily review',basis:`AI analysis · ${review.storeDate} · fixed source evidence`,period:review.payload.filters as QueryFilters,referenceLabels:sourceLabels,evidence:[key,reviewHref(r.client.id,review.id)]});
+   }
   }
   for(const signal of generated){if(!r.findings.some(f=>f.evidence.includes(signal.key)))result.push(signal);}
   for(const f of r.findings){if(f.status==='closed')continue;const historical=f.evidence.some(e=>e.startsWith('https://claude.ai/artifact/')),nextStep=f.latestCheck?.nextStep?.trim()||f.detail.match(/\bNext step\s*:\s*([^\r\n]+)/i)?.[1]?.trim()||'';result.push({...base,key:f.id,title:f.title,detail:f.latestCheck?.detail??f.detail,nextStep,category:historical?'Daily review action':'Team follow-up',severity:f.severity,status:f.status,owner:f.owner,evidence:[...f.evidence,...f.latestCheck?[reviewHref(r.client.id,f.latestCheck.reviewId)]:[]],basis:f.latestCheck?`Rechecked · ${f.latestCheck.storeDate}`:historical?'Imported Claude review':'Tracked by the team',impact:null,finding:f});}

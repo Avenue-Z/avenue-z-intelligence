@@ -74,5 +74,5 @@ export function normalizeHourlyTraffic(input:{detail:Raw[];hourly:Raw[];daily:Ra
  const rows:Observation[]=[];
  for(const group of groups.values())for(const [field,metric] of Object.entries(sessionMetrics))rows.push(observation(date,'traffic',metric,group.counts[field],'shopify_human_public_landing_page_traffic','human_public_landing_page_sessions',null,group.dimensions,group.interval));
  rows.push(...rows.filter(r=>r.metric==='converting_sessions').map(r=>({...r,metric:'completed_checkouts'})));
- return {...sourceBatch(client,rows,coverageThrough,[],'hourly',{kindTrafficHourly:true}),dimensions:TRAFFIC_DIMENSIONS};
+ return {...sourceBatch(client,rows,coverageThrough,[],'hourly',client.id==='beam'?{beamTrafficHourly:true}:client.id==='autobrush'?{autobrushTrafficHourly:true}:{kindTrafficHourly:true}),dimensions:TRAFFIC_DIMENSIONS};
 }

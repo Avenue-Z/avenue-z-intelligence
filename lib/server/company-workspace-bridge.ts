@@ -6,7 +6,7 @@ import {serverSecret} from './secrets';
 import type {Workspace} from './workspace';
 const requestLimit=16384,responseLimit=4*1024*1024,lifetime=90000;
 const signatureHeader='x-workspace-signature';
-export const publicCompanyAIErrors=['Hourly AI request limit reached. Please try again later.','AI analysis timed out. Please retry with a narrower question.','OpenAI is not configured'];
+export const publicCompanyAIErrors=['Hourly AI request limit reached. Please try again later.','AI analysis timed out. Please retry with a narrower question.','OpenAI is not configured','AI analysis timed out. Please retry.','AI analysis is temporarily unavailable. Please retry.','AI analysis could not retrieve supporting data. Please retry.','AI analysis did not retrieve supporting data. Please retry.','AI analysis reached its retrieval limit. Please retry.','The AI returned invalid analysis. Please retry.','AI authentication or model access needs attention in workspace settings.','AI usage or billing limit reached. Check workspace settings, then retry.'];
 export const publicCompanyWorkspaceSizeError='This selection has too much detail. Choose a shorter period or a specific landing page.';
 class PublicCompanyError extends Error {}
 type Purpose='workspace'|'chat'|'review'|'evidence'|'export';

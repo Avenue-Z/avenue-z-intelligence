@@ -2,12 +2,50 @@ import {it,expect,vi} from 'vitest';
 import {buildAlertQueue} from '../../lib/analytics/alerts';
 import {queryClient} from '../../lib/analytics/query';
 import {workspacePresentation} from '../../lib/analytics/presentation';
+import {reviewHref} from '../../lib/reviews/document';
 const filters={from:'2026-10-07',to:'2026-10-07',mode:'closed',compare:'previous',view:'overview',market:'',stream:'',source:'',device:'',page:''} as const;
 const client={id:'a',name:'Client A',timezone:'UTC',currency:'USD',config:{spendChannels:['meta'],revenueDefinition:'web',incidents:[],benchmarkMarket:'US',minSessions:100,minOpportunity:5,maxActions:6}} as any;
 function record(quality='complete'){
  const rows=['2026-10-06','2026-10-07'].flatMap(date=>[['revenue',date.endsWith('07')?110:100],['spend',date.endsWith('07')?20:10],['new_orders',10]].map(([metric,value])=>({date,metric,value,dataset:'overview',definition:'web',population:'web_orders',currency:metric==='new_orders'?null:'USD',dimensions:{},sourceId:'s',retrievedAt:'2026-10-08T00:00:00Z',channels:['meta'],coverageThrough:'2026-10-08T00:00:00Z',quality})));
  return {...queryClient(client,rows as any,[],filters),findings:[]} as any;
 }
+function pageRecord(presented=false,scope:any={...filters,mode:'partial'}){
+ const rows=['2026-09-20','2026-09-21','2026-10-06','2026-10-07'].flatMap(date=>['sessions','converting_sessions'].map(metric=>({date,dataset:'funnels',metric,value:metric==='sessions'?(date===filters.to?3333:3000):date===filters.to?100:120,definition:'shopify_human_public_landing_pages',population:'human_public_landing_page_sessions',currency:null,dimensions:{page:'/pages/dopamine',market:'US'},sourceId:'s',retrievedAt:'2026-10-07T12:10:00Z',coverageThrough:'2026-10-07T12:00:00Z',quality:'complete',start:`${date}T00:00:00Z`,end:`${date}T12:00:00Z`})));
+ const analytics=queryClient(client,rows as any,[{id:'s',provider:'gateway',enabled:true,coverageThrough:'2026-10-07T12:00:00Z'}] as any,scope);
+ return {...(presented?workspacePresentation(analytics,scope):analytics),findings:[],reviews:[{id:'saved-page-review',storeDate:scope.to,createdAt:'2026-10-07T11:10:00Z',current:true,payload:{type:'ai',filters:scope,reportTiming:{cutoff:'2026-10-07T11:00:00Z'},actions:[{existingFindingId:null,title:'Review US /pages/dopamine landing-page weakness',detail:'The earlier snapshot had 3,155 sessions and an estimated38.54 converting-session gap versus its own previous period.',nextStep:'Compare the same page offer and traffic mix.',severity:'act',impact:38.54,sourceIds:['selection:a']}]}}]} as any;
+}
+it.each([false,true])('keeps one current page opportunity with a saved-review reference across different cutoffs (presented=%s)',presented=>{
+ const scope={...filters,mode:'partial' as const},r=pageRecord(presented,scope),before=JSON.stringify(r),queue=buildAlertQueue([r],scope);
+ expect(queue).toHaveLength(1);expect(queue[0]).toMatchObject({title:'Review /pages/dopamine conversion',category:'Conversion opportunity',severity:'investigate'});expect(queue[0].impact).toBeCloseTo(33.32);expect(queue[0].figures[0]).toMatchObject({label:'Sessions',current:3333});
+ expect(queue[0].evidence[0]).toBe(queue[0].key);expect(queue[0].evidence).toContain(reviewHref('a','saved-page-review'));expect(queue[0].referenceLabels).toContainEqual({label:'Daily review · 2026-10-07',url:reviewHref('a','saved-page-review')});
+ expect(JSON.stringify(r)).toBe(before);expect(buildAlertQueue([r],scope)).toEqual(queue);
+});
+it.each([
+ {title:'Review US /pages/dopamine-extra conversion'},
+ {title:'Review UK /pages/dopamine conversion'},
+ {title:'Investigate /pages/dopamine conversion'},
+ {title:'Review US paid media costs',detail:'Spend changed versus its own prior period.'},
+ {detail:'On 2026-10-05, /pages/dopamine had 3,155 sessions and an estimated38.54 converting-session gap versus its own previous period on 2026-10-04.'},
+ {reviewFilters:{...filters,mode:'partial',from:'2026-10-08',to:'2026-10-08'}},
+ {reviewFilters:{...filters,mode:'closed'}},
+ {reviewFilters:{...filters,mode:'partial',compare:'custom',compareFrom:'2026-09-20',compareTo:'2026-09-20'}},
+ {reviewFilters:{...filters,mode:'partial',source:'meta'}}
+])('preserves a distinct saved recommendation when its exact page/market/scope is unproven: %j',({title,detail,reviewFilters}:any)=>{
+ const scope={...filters,mode:'partial' as const},r=pageRecord(true,scope),action=r.reviews[0].payload.actions[0];if(title)action.title=title;if(detail)action.detail=detail;if(reviewFilters){r.reviews[0].payload.filters=reviewFilters;r.reviews[0].storeDate=reviewFilters.to;}
+ const queue=buildAlertQueue([r],scope,{includeLatestReview:true});expect(queue).toHaveLength(2);expect(queue.some(alert=>alert.title===action.title&&alert.key.startsWith('signal:ai:'))).toBe(true);expect(queue.find(alert=>alert.category==='Conversion opportunity')!.evidence).not.toContain(reviewHref('a','saved-page-review'));
+});
+it('keeps a saved page recommendation with a different exact custom baseline',()=>{
+ const scope={...filters,mode:'partial' as const,compare:'custom' as const,compareFrom:'2026-09-20',compareTo:'2026-09-20'},r=pageRecord(true,scope);r.reviews[0].payload.filters={...scope,compareFrom:'2026-09-21',compareTo:'2026-09-21'};
+ expect(buildAlertQueue([r],scope,{includeLatestReview:true})).toHaveLength(2);
+});
+it('does not merge an own-previous-period recommendation with a configured-market benchmark',()=>{
+ const scope={...filters,mode:'partial' as const},r=pageRecord(true,scope);r.qualifiedPageAlerts[0].detail=r.qualifiedPageAlerts[0].detail.replace('Own previous period.','Same page in benchmark market.');
+ const queue=buildAlertQueue([r],scope);expect(queue).toHaveLength(2);expect(queue.find(alert=>alert.category==='Conversion opportunity')!.evidence).not.toContain(reviewHref('a','saved-page-review'));
+});
+it('does not repurpose a tracked workflow action as a live-page duplicate',()=>{
+ const scope={...filters,mode:'partial' as const},r=pageRecord(true,scope);r.reviews[0].payload.actions[0].existingFindingId='tracked';r.findings=[{id:'tracked',title:'Tracked dopamine investigation',detail:'Original owned issue',status:'investigating',owner:'Lead',severity:'act',evidence:[]}];
+ const queue=buildAlertQueue([r],scope);expect(queue).toHaveLength(2);expect(queue.find(alert=>alert.key==='tracked')).toMatchObject({detail:'Original owned issue',owner:'Lead',status:'investigating'});expect(queue.find(alert=>alert.category==='Conversion opportunity')!.evidence).not.toContain(reviewHref('a','saved-page-review'));
+});
 it('raises a business action when qualified spend outpaces revenue',()=>{
  const queue=buildAlertQueue([record()],filters);
  expect(queue).toHaveLength(1);expect(queue[0].category).toBe('Spend efficiency');expect(queue[0].evidence.length).toBeGreaterThan(1);expect(queue[0].nextStep).toMatch(/campaign|channel/);expect(queue[0].evidence.some(x=>x.includes('2026-10-06:overview:revenue'))).toBe(true);
@@ -16,10 +54,17 @@ it('shows the latest daily review separately from a historical chart selection w
  const r=record('historical');r.reviews=[{id:'new',storeDate:'2026-10-12',createdAt:'2026-10-12T13:00:00Z',current:true,payload:{type:'ai',filters:{...filters,from:'2026-10-12',to:'2026-10-12',mode:'partial'},actions:[{title:'Inspect current source dilution',detail:'Today’s traffic mix shifted',nextStep:'Compare source cohorts',severity:'investigate',impact:null,sourceIds:['selection:a'],existingFindingId:null}]}}];
  const queue=buildAlertQueue([r],filters,{includeLatestReview:true});expect(queue).toHaveLength(1);expect(queue[0].period).toMatchObject({from:'2026-10-12',to:'2026-10-12',mode:'partial'});expect(queue[0].basis).toContain('2026-10-12');
 });
+it('does not treat recommendations from a different custom baseline as the selected analysis',()=>{
+ const selected={...filters,compare:'custom' as const,compareFrom:'2026-09-20',compareTo:'2026-09-20'},r=record('historical');
+ r.reviews=[{id:'custom-review',storeDate:filters.to,createdAt:'2026-10-08T12:00:00Z',current:true,payload:{type:'ai',filters:{...selected,compareFrom:'2026-09-21',compareTo:'2026-09-21'},actions:[{title:'Investigate offer alignment',detail:'Evidence from the other comparison.',nextStep:'Review the offer.',severity:'investigate',impact:null,sourceIds:[]}]}}];
+ expect(buildAlertQueue([r],selected)).toEqual([]);
+ const queue=buildAlertQueue([r],selected,{includeLatestReview:true});expect(queue).toHaveLength(1);expect(queue[0].category).toBe('Latest daily review');
+ expect(buildAlertQueue([r],{...selected,compareFrom:'2026-09-21',compareTo:'2026-09-21'})[0].category).toBe('AI review recommendation');
+});
 it('provides readable supporting figures instead of hundreds of row identifiers',()=>{
  const a=buildAlertQueue([record()],filters)[0];expect(a.figures.find(x=>x.label==='Revenue')).toMatchObject({current:110,previous:100});expect(a.figures.find(x=>x.label==='Spend')).toMatchObject({current:20,previous:10});expect(a.period).toMatchObject({from:filters.from,to:filters.to});
 });
-it('keeps AI recommendations source-linked, date-scoped and resolved after tracking',()=>{const r=record('historical');r.reviews=[{id:'rev',storeDate:filters.to,current:true,payload:{type:'ai',filters,actions:[{title:'Investigate offer alignment',detail:'Dated evidence',nextStep:'Review the campaign audience',severity:'investigate',impact:30,sourceIds:['review:original']}]}}];let queue=buildAlertQueue([r],filters);expect(queue).toHaveLength(1);expect(queue[0].evidence[1]).toContain('/reviews/rev');r.findings=[{id:'tracked',title:queue[0].title,detail:'Dated evidence',severity:'investigate',status:'closed',owner:'',evidence:queue[0].evidence}];expect(buildAlertQueue([r],filters)).toEqual([]);expect(buildAlertQueue([{...r,findings:[]}],{...filters,from:'2026-10-06',to:'2026-10-06'})).toEqual([]);});
+it('keeps AI recommendations source-linked, date-scoped and resolved after tracking',()=>{const r=record('historical');r.reviews=[{id:'rev',storeDate:filters.to,current:true,payload:{type:'ai',filters,actions:[{title:'Investigate offer alignment',detail:'Dated evidence',nextStep:'Review the campaign audience',severity:'investigate',impact:30,sourceIds:['review:original']}]}}];const queue=buildAlertQueue([r],filters);expect(queue).toHaveLength(1);expect(queue[0].evidence[1]).toContain('/reviews/rev');r.findings=[{id:'tracked',title:queue[0].title,detail:'Dated evidence',severity:'investigate',status:'closed',owner:'',evidence:queue[0].evidence}];expect(buildAlertQueue([r],filters)).toEqual([]);expect(buildAlertQueue([{...r,findings:[]}],{...filters,from:'2026-10-06',to:'2026-10-06'})).toEqual([]);});
 it('suppresses incompatible AI scope and duplicate deterministic recommendations, including closed copies',()=>{const r=record(),signal=buildAlertQueue([r],filters)[0];r.reviews=[{id:'rev',storeDate:filters.to,current:true,payload:{type:'ai',filters,actions:[{title:signal.title,detail:'Same budget issue',nextStep:'Review budgets',severity:'act',impact:null,sourceIds:['s']}]}}];expect(buildAlertQueue([r],filters)).toHaveLength(1);r.findings=[{id:'closed',title:signal.title,status:'closed',evidence:signal.evidence}];expect(buildAlertQueue([r],filters)).toEqual([]);const historical={...record('historical'),reviews:r.reviews};for(const f of [{...filters,mode:'partial'},{...filters,market:'DE'},{...filters,page:'/another'}])expect(buildAlertQueue([historical],f as any)).toEqual([]);});
 it('does not turn unavailable sources or historical imports into performance alerts',()=>{
  const empty={...queryClient(client,[],[],filters),findings:[]} as any;

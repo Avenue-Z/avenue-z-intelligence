@@ -4,6 +4,7 @@ import type {Store} from './store';
 export type SnapshotDay={snapshotId:string;date:string;sourceId:string};
 export type SnapshotDayManifest=SnapshotDay&{generation:string;chunkCount:number;characters:number;payloadHash:string};
 const codecVersion=1,chunkCharacters=64*1024,maxCharacters=6*1024*1024,chunksPerPage=4;
+const smallBatchCharacters=chunkCharacters*chunksPerPage,smallBatchManifests=32;
 class ProjectionIntegrityError extends Error{}
 const scope=(org:string,client:string,day:SnapshotDay)=>[org,client,day.snapshotId,day.date,codecVersion];
 const dayKey=(day:Pick<SnapshotDay,'snapshotId'|'date'>)=>JSON.stringify([day.snapshotId,day.date]);
@@ -36,12 +37,19 @@ export async function readSnapshotDayProjection(db:Store['db'],org:string,client
   const payload=parts.join('');if(payload.length!==manifest.characters||await digest(payload)!==manifest.payloadHash)throw new ProjectionIntegrityError('Day integrity mismatch');checkBudget(deadline);return payload;
  }catch(error){checkBudget(deadline);if(error instanceof ProjectionIntegrityError)await discardSnapshotDayProjection(db,org,client,manifest);return null;}
 }
-/** Batch tiny history days instead of replacing one grouped raw request with
- * dozens of serial RPCs. At most four 64Ki-character chunks enter one response. */
+/** Pack tiny history days within the existing 256Ki-character valid-payload budget.
+ * The count cap bounds metadata and integrity work even for very small days. */
+export function smallSnapshotDayBatchWithinLimits(manifests:SnapshotDayManifest[]){
+ return manifests.length>0&&manifests.length<=smallBatchManifests&&manifests.every(m=>m.chunkCount===1&&Number.isInteger(m.characters)&&m.characters>0&&m.characters<=chunkCharacters)&&manifests.reduce((total,m)=>total+m.characters,0)<=smallBatchCharacters;
+}
 export async function readSmallSnapshotDayProjections(db:Store['db'],org:string,client:string,manifests:SnapshotDayManifest[],deadline?:number):Promise<Map<string,string>>{
  const result=new Map<string,string>();if(!manifests.length)return result;
- if(manifests.length>4||manifests.some(m=>m.chunkCount!==1||!Number.isInteger(m.characters)||m.characters<1||m.characters>chunkCharacters))return result;
- try{checkBudget(deadline);const rows=(await db.prepare('SELECT c.snapshotId,c.date,c.generation,c.payload FROM json_each(?) p JOIN snapshot_day_projection_chunks c ON c.snapshotId=json_extract(p.value,\'$.snapshotId\') AND c.date=json_extract(p.value,\'$.date\') AND c.generation=json_extract(p.value,\'$.generation\') WHERE c.organizationId=? AND c.clientId=? AND c.codecVersion=? AND c.chunkIndex=0').bind(JSON.stringify(manifests.map(({snapshotId,date,generation})=>({snapshotId,date,generation}))),org,client,codecVersion).all()).results as {snapshotId:string;date:string;generation:string;payload:string}[];checkBudget(deadline);
+ if(!smallSnapshotDayBatchWithinLimits(manifests))return result;
+ // Codec JSON escapes NUL, which otherwise truncates SQLite length(TEXT).
+ // SQLite counts codepoints, so <= keeps valid astral text. Exact JS UTF16
+ // length/hash checks remain below. Corrupt under-reporting can fetch at most
+ // twice the declared character budget before rejection, never an unbounded row.
+ try{checkBudget(deadline);const rows=(await db.prepare('SELECT c.snapshotId,c.date,c.generation,c.payload FROM json_each(?) p JOIN snapshot_day_projection_chunks c ON c.snapshotId=json_extract(p.value,\'$.snapshotId\') AND c.date=json_extract(p.value,\'$.date\') AND c.generation=json_extract(p.value,\'$.generation\') WHERE c.organizationId=? AND c.clientId=? AND c.codecVersion=? AND c.chunkIndex=0 AND instr(c.payload,char(0))=0 AND length(c.payload)<=json_extract(p.value,\'$.characters\')').bind(JSON.stringify(manifests.map(({snapshotId,date,generation,characters})=>({snapshotId,date,generation,characters}))),org,client,codecVersion).all()).results as {snapshotId:string;date:string;generation:string;payload:string}[];checkBudget(deadline);
   for(const manifest of manifests){const row=rows.find(r=>r.snapshotId===manifest.snapshotId&&r.date===manifest.date&&r.generation===manifest.generation);if(!row||typeof row.payload!=='string'||row.payload.length!==manifest.characters||await digest(row.payload)!==manifest.payloadHash){await discardSnapshotDayProjection(db,org,client,manifest);continue;}result.set(dayKey(manifest),row.payload);}
  }catch(error){checkBudget(deadline);}
  return result;

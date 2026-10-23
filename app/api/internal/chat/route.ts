@@ -1,5 +1,6 @@
 import {companyWorkspaceAccess,publicCompanyAIErrors} from '../../../../lib/server/company-workspace-bridge';
-import {answerAI,parseAIRequest} from '../../../../lib/ai/server';
+import {parseAIRequest} from '../../../../lib/ai/server';
+import {answerPlatformAI as answerAI} from '../../../../lib/ai/platform-chat';
 export const maxDuration=180;
 export async function POST(request:Request){
  try{

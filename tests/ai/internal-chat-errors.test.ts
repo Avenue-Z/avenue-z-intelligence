@@ -2,6 +2,7 @@ import {afterEach,expect,it,vi} from 'vitest';
 const state=vi.hoisted(()=>({error:null as Error|null}));
 vi.mock('../../lib/server/company-workspace-bridge',()=>({publicCompanyAIErrors:['Hourly AI request limit reached. Please try again later.'],companyWorkspaceAccess:async()=>({scope:{organizationId:'o',role:'admin',actorId:'a',permittedClientIds:['kind-patches']},params:new URLSearchParams({clientId:'kind-patches',payload:JSON.stringify({clientId:'kind-patches',question:'Current revenue',filters:{}})})})}));
 vi.mock('../../lib/ai/server',()=>({parseAIRequest:()=>({clientId:'kind-patches',filters:{}}),answerAI:async()=>{if(state.error)throw state.error;return {id:'answer'};}}));
+vi.mock('../../lib/ai/platform-chat',()=>({answerPlatformAI:async()=>{if(state.error)throw state.error;return {id:'answer'};}}));
 import {POST} from '../../app/api/internal/chat/route';
 afterEach(()=>{state.error=null;vi.restoreAllMocks();});
 it.each([

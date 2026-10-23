@@ -1,8 +1,9 @@
 import {DatabaseSync} from 'node:sqlite';
+import {createHash} from 'node:crypto';
 import {readFileSync,readdirSync} from 'node:fs';
 import {expect,it} from 'vitest';
 import {Store} from '../../lib/server/store';
-import {backfillSnapshotDayProjections,writeSnapshotDayProjection} from '../../lib/server/snapshot-day-projections';
+import {backfillSnapshotDayProjections,writeSnapshotDayProjection,smallSnapshotDayBatchWithinLimits,readSmallSnapshotDayProjections,type SnapshotDayManifest} from '../../lib/server/snapshot-day-projections';
 import {observationCodec} from '../../lib/server/observation-codec';
 import type {Client,Observation,QueryFilters,SourceBatch} from '../../lib/analytics/contracts';
 import clients from '../../data/initial-clients.json';
@@ -171,4 +172,66 @@ it('keeps complete earlier selected-period traffic totals alongside matched-hour
  expect(result.datasetSeries.traffic.map(point=>point.summary.sessions)).toEqual([100,100,10]);expect(result.comparisonDatasetSeries.traffic.map(point=>point.summary.sessions)).toEqual([100,100,10]);
  expect(result.trendDatasetSeries.traffic.filter(point=>point.summary.sessions!==null).map(point=>[point.date,point.summary.sessions])).toEqual(['2026-10-07','2026-10-08','2026-10-09','2026-10-10','2026-10-11','2026-10-12'].map(date=>[date,10]));
  expect(result.trendComparisonDatasetSeries.traffic.filter(point=>point.summary.sessions!==null).map(point=>point.summary.sessions)).toEqual([10,10,10]);
+});
+
+it('packs a cold thirty-day headline read into one bounded RPC with exactly the raw observations and metrics',async()=>{
+ const projected=database(),legacy=database(false),client={...(clients[0] as Client),id:'a',timezone:'UTC'},base=batch().rows[0];
+ const dates=Array.from({length:30},(_,index)=>new Date(Date.UTC(2026,8,12+index)).toISOString().slice(0,10));
+ const rows:Observation[]=dates.flatMap((date,index)=>Object.entries({revenue:index===29?0:100+index,orders:index+1,sessions:1000+index,converting_sessions:index+1}).map(([metric,value])=>({...base,date,dataset:'overview',metric,value,definition:metric,population:'human_sessions',currency:metric==='revenue'?'USD':null,dimensions:{}})));
+ for(const fixture of [projected,legacy]){const store=new Store(fixture.connect());await store.run("INSERT INTO clients(id,organizationId,name,slug,timezone,currency,color,config) VALUES('a','o','A','a','UTC','USD','blue',?)",JSON.stringify(client.config));await store.persistBatch('o','source',{...batch(),rows},'thirty-headlines','2026-10-12T00:00:00Z');await store.saveQualification('o','a','source',1,1,{profiles:Object.keys({revenue:0,orders:0,sessions:0,converting_sessions:0}).map(metric=>({dataset:'overview',metric}))},'admin');}
+ const selected={...filters,from:'2026-10-11',to:'2026-10-11',view:'overview'},selection={datasets:['overview'],includePriorWeek:false,includeOperations:false,trendDatasets:[]},before=projected.queries.length;
+ const actual=await new Store(projected.connect()).observations('o','a',selected,true,undefined,selection),expected=await new Store(legacy.connect()).observations('o','a',selected,true,undefined,selection);
+ expect(actual).toEqual(expected);expect(actual).toHaveLength(120);
+ const actualAnalytics=queryClient(client,actual,[],selected,{preparedDatasets:['overview']}),expectedAnalytics=queryClient(client,expected,[],selected,{preparedDatasets:['overview']});
+ expect(actualAnalytics.metrics).toEqual(expectedAnalytics.metrics);expect(actualAnalytics.series).toEqual(expectedAnalytics.series);expect(actualAnalytics.metrics.revenue).toBe(0);
+ expect(rawReads(projected.queries.slice(before))).toBe(0);
+ expect(projected.queries.slice(before).filter(sql=>sql.includes('JOIN snapshot_day_projection_chunks'))).toHaveLength(1);
+});
+
+
+it('caps small batches at32 manifests and the original256Ki character budget before reading',async()=>{
+ const manifest=(characters:number,index=0):SnapshotDayManifest=>({snapshotId:`snapshot-${index}`,date:'2026-10-10',sourceId:'source',generation:'generation',chunkCount:1,characters,payloadHash:'hash'});
+ expect(smallSnapshotDayBatchWithinLimits(Array.from({length:32},(_,index)=>manifest(8192,index)))).toBe(true);
+ expect(smallSnapshotDayBatchWithinLimits(Array.from({length:4},(_,index)=>manifest(65536,index)))).toBe(true);
+ expect(smallSnapshotDayBatchWithinLimits(Array.from({length:33},(_,index)=>manifest(1,index)))).toBe(false);
+ const overBudget=Array.from({length:5},(_,index)=>manifest(65536,index));expect(smallSnapshotDayBatchWithinLimits(overBudget)).toBe(false);
+ for(const characters of [0,-1,0.5,NaN,65537])expect(smallSnapshotDayBatchWithinLimits([manifest(characters)])).toBe(false);
+ expect(smallSnapshotDayBatchWithinLimits([{...manifest(1),chunkCount:2}])).toBe(false);
+ const fixture=database();expect((await readSmallSnapshotDayProjections(fixture.connect(),'o','a',overBudget)).size).toBe(0);expect(fixture.queries).toEqual([]);
+});
+
+it.each([{days:33,padding:100,sizes:[32,1]},{days:5,padding:64000,sizes:[4,1]}])('packs contiguous days within both batch limits: %j',async({days,padding,sizes})=>{
+ const fixture=database(),store=new Store(fixture.connect()),rows:Observation[]=Array.from({length:days},(_,index)=>({...batch().rows[0],date:new Date(Date.UTC(2026,8,9+index)).toISOString().slice(0,10),dataset:'overview',metric:'revenue',dimensions:{label:'x'.repeat(padding)},value:index}));
+ await store.persistBatch('o','source',{...batch(),rows},'packing-boundary','2026-10-12T00:00:00Z');await store.saveQualification('o','a','source',1,1,{profiles:[{dataset:'overview',metric:'revenue'}]},'admin');
+ const db=fixture.connect(),prepare=db.prepare,groups:{snapshotId:string;date:string;generation:string}[][]=[];
+ db.prepare=(sql:string)=>{const statement=prepare(sql);if(sql.includes('JOIN snapshot_day_projection_chunks')){const bind=statement.bind;statement.bind=(...values:unknown[])=>{groups.push(JSON.parse(String(values[0])));return bind(...values);};}return statement;};
+ const result=await new Store(db).observations('o','a',undefined,true,undefined,{datasets:['overview'],includeOperations:false});
+ expect(result).toHaveLength(days);expect(groups.map(group=>group.length)).toEqual(sizes);expect(groups.flatMap(group=>group.map(day=>day.date))).toEqual(rows.map(row=>row.date));
+ for(const group of groups){const characters=group.reduce((sum,day)=>sum+Number(fixture.sqlite.prepare('SELECT characters FROM snapshot_day_projection_entries WHERE snapshotId=? AND date=? AND generation=?').get(day.snapshotId,day.date,day.generation)?.characters),0);expect(characters).toBeLessThanOrEqual(256*1024);}
+ expect(rawReads(fixture.queries)).toBe(0);
+});
+
+it.each(['missing','hash','declared-length','invalid-first','nul-payload','source','date','generation'])('retains valid Unicode neighbors and exactly falls back on an invalid %s in a larger batch',async invalid=>{
+ const projected=database(),legacy=database(false),rows:Observation[]=Array.from({length:8},(_,index)=>({...batch().rows[0],date:`2026-10-${String(index+4).padStart(2,'0')}`,dataset:'overview',metric:'revenue',dimensions:{label:'市場🙂'},value:index}));
+ for(const fixture of [projected,legacy]){const store=new Store(fixture.connect());await store.persistBatch('o','source',{...batch(),rows},'unicode-days','2026-10-12T00:00:00Z');await store.saveQualification('o','a','source',1,1,{profiles:[{dataset:'overview',metric:'revenue'}]},'admin');}
+ const badDate=invalid==='invalid-first'?'2026-10-04':'2026-10-06',where=`WHERE date='${badDate}'`;
+ if(invalid==='missing')projected.sqlite.exec(`DELETE FROM snapshot_day_projection_chunks ${where}`);
+ if(invalid==='hash')projected.sqlite.exec(`UPDATE snapshot_day_projection_chunks SET payload='corrupt' ${where}`);
+ if(invalid==='declared-length')projected.sqlite.exec(`UPDATE snapshot_day_projection_entries SET characters=1 ${where}`);
+ if(invalid==='invalid-first')projected.sqlite.exec(`UPDATE snapshot_day_projection_entries SET characters=0 ${where}`);
+ if(invalid==='nul-payload'){projected.sqlite.prepare('UPDATE snapshot_day_projection_chunks SET payload=? WHERE date=?').run('\u0000'+'x'.repeat(1000),badDate);projected.sqlite.exec(`UPDATE snapshot_day_projection_entries SET characters=1 ${where}`);}
+ if(invalid==='generation')projected.sqlite.exec(`UPDATE snapshot_day_projection_entries SET generation='other-generation' ${where}`);
+ if(invalid==='source'||invalid==='date'){
+  const row=JSON.parse(String(projected.sqlite.prepare('SELECT payload FROM observations WHERE date=?').get(badDate)?.payload)) as Observation;
+  const payload=observationCodec.encode([{...row,...invalid==='source'?{sourceId:'foreign-source'}:{date:'2026-01-01'}}]);
+  projected.sqlite.prepare('UPDATE snapshot_day_projection_chunks SET payload=? WHERE date=?').run(payload,badDate);
+  projected.sqlite.prepare('UPDATE snapshot_day_projection_entries SET characters=?,payloadHash=? WHERE date=?').run(payload.length,createHash('sha256').update(payload).digest('hex'),badDate);
+ }
+ const db=projected.connect(),prepare=db.prepare,transferredDates:string[]=[];
+ db.prepare=(sql:string)=>{const statement=prepare(sql);if(sql.includes('JOIN snapshot_day_projection_chunks')){const all=statement.all;statement.all=async()=>{const result=await all();transferredDates.push(...result.results.map(row=>String(row.date)));return result;};}return statement;};
+ const selected={...filters,from:'2026-10-11',to:'2026-10-11',view:'overview'},selection={datasets:['overview'],includePriorWeek:false,includeOperations:false,trendDatasets:[]};
+ const actual=await new Store(db).observations('o','a',selected,true,undefined,selection),expected=await new Store(legacy.connect()).observations('o','a',selected,true,undefined,selection);
+ expect(actual).toEqual(expected);expect(actual).toHaveLength(8);expect(actual.every(row=>row.dimensions.label==='市場🙂'&&row.sourceId==='source')).toBe(true);expect(actual.some(row=>row.value===0)).toBe(true);expect(rawReads(projected.queries)).toBe(1);
+ expect(transferredDates.filter(date=>date!==badDate)).toHaveLength(7);
+ if(['declared-length','invalid-first','nul-payload'].includes(invalid))expect(transferredDates).not.toContain(badDate);
 });

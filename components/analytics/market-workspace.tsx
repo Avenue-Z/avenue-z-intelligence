@@ -12,6 +12,9 @@ type MarketRecord=ExplorerRecord;
 const marketMetrics:ExplorerMetric[]=['revenue','orders','aov','refunds','discounts'];
 const noRows:ExplorerRecord['details']=[];
 const noSeries:ExplorerSeriesPoint[]=[];
+// Session-only countries do not define financial totals. Keep financial rows
+// with missing values so the strict aggregate still reports those as unknown.
+const financialTotals=(rows:MarketRecord['details'])=>aggregateExplorerRows(rows.filter(row=>marketMetrics.some(metric=>Object.hasOwn(row.metrics,metric))),'all')[0];
 export function marketWorkspaceHref(clientId:string,filters:QueryFilters,market:string){
  const params=new URLSearchParams(Object.entries({...filters,...unsupportedClientFilterReset(filters,'markets'),view:'markets',market:market==='Unspecified'?'':market}).filter((entry):entry is [string,string]=>typeof entry[1]==='string'));
  return `/clients/${encodeURIComponent(clientId)}?${params}`;
@@ -20,8 +23,8 @@ export function marketWorkspaceHref(clientId:string,filters:QueryFilters,market:
 export function MarketWorkspace({record,filters,update}:{record:MarketRecord;filters:QueryFilters;update:(changes:Record<string,string>)=>void}){
  const [metric,setMetric]=useState<ExplorerMetric>('revenue'),[top,setTop]=useState(10);
  const rows=record.views.markets?.details??(filters.view==='markets'?record.details:noRows),previousRows=record.comparisonViews?.markets?.details??noRows;
- const groups=useMemo(()=>aggregateExplorerRows(rows,'market'),[rows]),totals=useMemo(()=>aggregateExplorerRows(rows,'all')[0],[rows]);
- const previousGroups=useMemo(()=>aggregateExplorerRows(previousRows,'market'),[previousRows]),previousTotals=useMemo(()=>aggregateExplorerRows(previousRows,'all')[0],[previousRows]);
+ const groups=useMemo(()=>aggregateExplorerRows(rows,'market'),[rows]),totals=useMemo(()=>financialTotals(rows),[rows]);
+ const previousGroups=useMemo(()=>aggregateExplorerRows(previousRows,'market'),[previousRows]),previousTotals=useMemo(()=>financialTotals(previousRows),[previousRows]);
  const previousByMarket=useMemo(()=>new Map(previousGroups.map(group=>[group.label,group])),[previousGroups]);
  const label=comparisonLabel(filters),currency=record.client.currency;
  const current=record.datasetSeries?.markets??noSeries,previous=record.comparisonDatasetSeries?.markets??noSeries;

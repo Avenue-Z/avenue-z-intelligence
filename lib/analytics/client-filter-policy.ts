@@ -9,7 +9,7 @@ export type DimensionFilterKey=typeof dimensionFilterKeys[number];
 export function supportedClientFilters(view:string):readonly DimensionFilterKey[]{
  if(view==='revenue'||view==='products')return ['stream'];
  if(view==='markets')return ['market'];
- if(view==='traffic'||view==='funnels')return ['market','source','device','page'];
+ if(view==='traffic'||view==='funnels'||view==='ga4')return ['market','source','device','page'];
  return [];
 }
 export function unsupportedClientFilterReset(filters:QueryFilters,view=filters.view):Record<string,string>{

@@ -4,9 +4,10 @@ import {workspaceDatasets} from './workspace-datasets';
 import {confirmedIntradayCutoff} from './intraday-coverage';
 import {unsupportedClientFilterReset} from './client-filter-policy';
 import {summarize} from './query';
+import {clientSubscriptionsEnabled} from './client-feature-policy';
 
 const dataset=(view:string)=>view==='overview'?'funnels':view;
-const required=(view:string,focused:boolean)=>view==='overview'&&!focused?['overview']:workspaceDatasets(view);
+const required=(view:string,focused:boolean,clientId:string)=>view==='overview'&&!focused?['overview']:workspaceDatasets(view,clientId);
 
 /** Reuse only aggregates prepared for this response's exact data selection. */
 export function selectWorkspaceView(workspace:Workspace,view:string,focusedClientId=workspace.focusedClientId):Workspace|null{
@@ -18,7 +19,7 @@ export function selectWorkspaceView(workspace:Workspace,view:string,focusedClien
   if(view==='reviews'&&record.reviewsIndexOnly)return null;
   if(workspace.filters.mode==='partial'&&view!==workspace.filters.view){const nextCutoff=confirmedIntradayCutoff(record.connections,view,record.client.timezone,workspace.filters.to);if(!nextCutoff||nextCutoff!==record.cutoff)return null;}
   const prepared=record.preparedDatasets??[previousDataset,...Object.keys(record.views??{})];
-  if(!required(view,!!focusedClientId).every(name=>prepared.includes(name)))return null;
+  if(!required(view,!!focusedClientId,record.client.id).every(name=>prepared.includes(name)))return null;
   if(view===workspace.filters.view){clients.push(record);continue;}
   const viewPriorMetrics=view==='overview'?record.prior:record.comparisonViews?.[nextDataset]?.viewMetrics??summarize([]);
   if(view==='overview'&&!prepared.includes('funnels')){const views={...record.views,...prepared.includes(previousDataset)?{[previousDataset]:{details:record.details,actions:record.actions,viewMetrics:record.datasetMetrics}}:{}};clients.push({...record,details:[],actions:[],views,datasetMetrics:record.metrics,viewMetrics:record.metrics,viewPriorMetrics});continue;}
@@ -110,11 +111,13 @@ export class WorkspacePreloader{
  }
  preload(workspace:Workspace,params:URLSearchParams,clientId:string,views:readonly string[]=preloadViews){
   const scope=scopeKey(workspace.scope);if(this.scope&&this.scope!==scope){this.cancel();this.cache.invalidate();}this.scope=scope;
-  if(!workspace.scope.permittedClientIds.includes(clientId)||!workspace.clients.some(record=>record.client.id===clientId))return;
+  const record=workspace.clients.find(record=>record.client.id===clientId);
+  if(!workspace.scope.permittedClientIds.includes(clientId)||!record)return;
   params=new URLSearchParams(params);params.set('clientId',clientId);this.select(params);
   const sources=sourceFingerprint(workspace,clientId),wave=this.selection+sources;
   if(this.wave&&this.wave!==wave){this.cancel(true);this.cache.invalidate();this.cache.remember(workspace);}this.wave=wave;
   for(const view of views){
+   if(view==='subscriptions'&&!clientSubscriptionsEnabled(clientId,record.client.config.subscriptionsEnabled))continue;
    const filters={...workspace.filters,view,...unsupportedClientFilterReset(workspace.filters,view)},next=new URLSearchParams(params);next.set('view',view);
    for(const [key,value]of Object.entries(unsupportedClientFilterReset(workspace.filters,view)))next.set(key,value);
    const key=workspaceRequestKey(next);if(this.attempted.has(key)||this.pending.has(key))continue;

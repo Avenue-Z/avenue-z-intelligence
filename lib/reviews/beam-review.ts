@@ -1,0 +1,14 @@
+import type {buildAIContext} from '../ai/context';
+import type {QueryFilters} from '../analytics/contracts';
+import {change} from '../analytics/metrics';
+type ReviewClient=ReturnType<typeof buildAIContext>['clients'][number];
+export function authoritativeBeamSpendReview(c:ReviewClient,f:QueryFilters){
+ const motion=(c.providerReporting??c.beamReporting)?.motion;if(!motion||motion.current.spend===null&&motion.comparison.spend===null)return null;
+ const current=motion.current,prior=motion.comparison,money=(n:number|null)=>n===null?'Unavailable':new Intl.NumberFormat('en-US',{style:'currency',currency:c.client.currency,maximumFractionDigits:2}).format(n),percent=(n:number|null)=>n===null?'unavailable':`${n>=0?'+':''}${(n*100).toFixed(1)}%`;
+ const revenueChange=change(c.metrics.revenue,c.prior.revenue),spendChange=current.complete&&prior.complete&&current.closed&&prior.closed&&f.mode==='closed'?change(current.spend,prior.spend):null;
+ const pace=revenueChange===null||spendChange===null?'A complete closed provider-date spend comparison is not available.':revenueChange<0&&spendChange<0?`Meta spend fell ${spendChange<revenueChange-.01?'faster':spendChange>revenueChange+.01?'slower':'proportionally'} than Shopify revenue.`:`Meta spend growth was ${spendChange>revenueChange+.01?'higher':spendChange<revenueChange-.01?'lower':'proportional'} than Shopify revenue growth.`;
+ const headline=`Spend vs revenue: Shopify revenue ${percent(revenueChange)}; Meta provider-date spend ${percent(spendChange)}. ${pace}`;
+ const commerceLabel=c.providerReporting?.commerceLabel??'Shopify net sales excluding Faire';
+ const paragraph=`${commerceLabel} are ${money(c.metrics.revenue)} versus ${money(c.prior.revenue)} for ${f.from}–${f.to} versus ${c.comparison.from}–${c.comparison.to} in ${c.client.timezone}. Motion's full Meta-account spend is ${money(current.spend)} versus ${money(prior.spend)} for provider report dates ${current.from}–${current.to} versus ${prior.from}–${prior.to}. ${pace} The account timezone is unverified and these are independent dated measurements; matched MER and hourly efficiency are unavailable. ${current.complete&&prior.complete?'':'Spend totals cover only the explicitly reported dates.'}`;
+ return {headline,paragraph,columns:['Measurement','Selected dates','Comparison dates','Change'],rows:[[commerceLabel,money(c.metrics.revenue),money(c.prior.revenue),percent(revenueChange)],['Meta full-account provider-date spend',money(current.spend),money(prior.spend),percent(spendChange)],['Motion report dates',`${current.from}–${current.to}`,`${prior.from}–${prior.to}`,'Provider account timezone unverified'],['Spend report coverage',`${current.reportedDays}/${current.expectedDays} report dates`,`${prior.reportedDays}/${prior.expectedDays} report dates`,'Cached provider reports']]};
+}

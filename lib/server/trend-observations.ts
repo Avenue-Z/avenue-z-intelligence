@@ -15,7 +15,7 @@ const checkBudget=(deadline?:number)=>{if(deadline!==undefined&&Date.now()>=dead
  * projections are preferred; legacy facts use bounded indexed pages. */
 export async function readTrendObservations(store:Store,pointers:Pointer[],datasets:string[],filters:QueryFilters,scope:{organizationId:string;clientId:string},cutoff?:TrendCutoff,deadline?:number,identity?:TrendCacheIdentity):Promise<Observation[]>{
  if(!pointers.length||!datasets.length)return [];
- if(filters.mode==='partial'&&(!cutoff||trendCutoffEnd(filters.to,cutoff)===null))return [];
+ if(filters.mode==='partial'&&(!cutoff||trendCutoffEnd(filters.to,cutoff)===null)&&!(scope.clientId==='beam'&&datasets.some(dataset=>['media','creatives','experiments'].includes(dataset))))return [];
  checkBudget(deadline);
  // Native preparation must populate reusable days even when a foreground
  // request already installed this hour's derived range.

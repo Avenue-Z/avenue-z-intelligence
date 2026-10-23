@@ -7,7 +7,7 @@ import {Temporal} from '@js-temporal/polyfill';
 import {QueryCache} from './query-cache';
 import {observationCodec} from './observation-codec';
 import {durableObservationPayload} from './durable-observation-cache';
-import {snapshotDayManifests,snapshotDayManifest,readSnapshotDayProjection,readSmallSnapshotDayProjections,discardSnapshotDayProjection,writeSnapshotDayProjection,snapshotDayPayload} from './snapshot-day-projections';
+import {snapshotDayManifests,snapshotDayManifest,readSnapshotDayProjection,readSmallSnapshotDayProjections,smallSnapshotDayBatchWithinLimits,discardSnapshotDayProjection,writeSnapshotDayProjection,snapshotDayPayload} from './snapshot-day-projections';
 import {trendContextWindows} from '../analytics/trend-context';
 import {TrendRollupAccumulator} from '../analytics/trend-rollup';
 import {readTrendObservations} from './trend-observations';
@@ -171,7 +171,7 @@ export class Store {
     // a visitor avoids allocating a second full 30K-row observation array.
     const consume=async(pointer:typeof pointers[number],payload:string|null|undefined)=>{const manifest=snapshotDayManifest(manifests,pointer);let used=false;if(payload)try{observationCodec.visit(payload,row=>{if(accepts(row,pointer.date))addRow(row);},pointer);used=true;}catch(error){if(!(error instanceof Error)||error.message!=='Invalid observation projection')throw error;if(manifest)await discardSnapshotDayProjection(this.db,org,client,manifest);}if(!used)legacyPointers.push(pointer);};
     for(let index=0;index<pointers.length;){checkBudget();const pointer=pointers[index],manifest=snapshotDayManifest(manifests,pointer);
-      if(manifest?.chunkCount===1){const group:typeof pointers=[],small=[];while(index<pointers.length&&group.length<4){const next=pointers[index],entry=snapshotDayManifest(manifests,next);if(entry?.chunkCount!==1)break;group.push(next);small.push(entry);index++;}const payloads=await readSmallSnapshotDayProjections(this.db,org,client,small,options?.deadline);for(const next of group)await consume(next,payloads.get(JSON.stringify([next.snapshotId,next.date])));}
+      if(manifest?.chunkCount===1){const group:typeof pointers=[],small=[];while(index<pointers.length){const next=pointers[index],entry=snapshotDayManifest(manifests,next);if(!entry||!smallSnapshotDayBatchWithinLimits([...small,entry]))break;group.push(next);small.push(entry);index++;}if(!group.length){index++;await consume(pointer,null);continue;}const payloads=await readSmallSnapshotDayProjections(this.db,org,client,small,options?.deadline);for(const next of group)await consume(next,payloads.get(JSON.stringify([next.snapshotId,next.date])));}
       else{index++;await consume(pointer,manifest?await readSnapshotDayProjection(this.db,org,client,manifest,options?.deadline):null);}
     }
     // Seek within each captured snapshot/date using the primary key. Sorting

@@ -11,9 +11,9 @@ function storedFilters(value:unknown):QueryFilters|null{
 }
 
 /** Composer metadata and history never require the source observation archive. */
-export async function loadAISession(clientId:string|undefined,requested:QueryFilters,reviewId?:string):Promise<Session>{
+export async function loadAISession(clientId:string|undefined,requested:QueryFilters,reviewId?:string,existingScope?:AccessScope,store?:Store):Promise<Session>{
  let filters=parseFilters(new URLSearchParams({...requested}));
- const scope=await requireClientAccess(clientId),s=getStore();
+ const scope=existingScope??await requireClientAccess(clientId,false,store),s=store??getStore();
  if(clientId&&!scope.permittedClientIds.includes(clientId))throw Error('Client access denied');
  if(reviewId&&!clientId)throw Error('Client identity required for a review');
  const clients=(await s.clients(scope.organizationId)).filter(client=>scope.permittedClientIds.includes(client.id)&&(!clientId||client.id===clientId));

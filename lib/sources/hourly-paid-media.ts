@@ -121,7 +121,9 @@ async function appPages(config:KindConfig,window:{from:string;to:string},columns
  // Default report ordering can change between offset requests, repeating some
  // rows and omitting others. Fetch the existing bounded report in one response;
  // reaching its cap remains an error, and duplicate/hour-total checks still run.
- const params=new URLSearchParams({api_key:config.APPLOVIN_REPORT_KEY,start:window.from,end:window.to,format:'json',report_type:'advertiser',columns,not_zero:'1',limit:'40000',offset:'0'}),data=await providerJson(fetcher,`https://r.applovin.com/report?${params}`,{},deadline,0,55000);
+ // Website advertisers use the supported web report. Only advertiser cost is
+ // requested; conversion attribution metrics are outside this spend contract.
+ const params=new URLSearchParams({api_key:config.APPLOVIN_REPORT_KEY,start:window.from,end:window.to,format:'json',report_type:'advertiser',attribution_mode:'click',columns,not_zero:'1',limit:'40000',offset:'0'}),data=await providerJson(fetcher,`https://r.applovin.com/webReport?${params}`,{},deadline,0,55000);
  if(data.code!==200||!Array.isArray(data.results))throw new Error('AppLovin hourly report rejected');
  if(data.results.length>=40000)throw new Error('AppLovin hourly report exceeds its row limit');
  return data.results as Raw[];

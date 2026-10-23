@@ -6,15 +6,15 @@ import clients from '../../data/initial-clients.json';
 import type {SourceBatch} from '../../lib/analytics/contracts';
 import {fingerprint} from '../../lib/reviews/build';
 import * as retention from '../../lib/jobs/archive-materialization-retention';
-const state=vi.hoisted(()=>({store:null as any,fail:false,syncCompleted:[] as string[],runtimePlatform:'sites',syncElapsedMs:0,drainCurrent:false}));
+const state=vi.hoisted(()=>({store:null as any,fail:false,syncCompleted:[] as string[],runtimePlatform:'sites',syncClients:[] as string[],syncElapsedMs:0,drainCurrent:false}));
 vi.mock('@avenue/runtime',()=>({get runtimePlatform(){return state.runtimePlatform;}}));
 vi.mock('../../lib/server/access',()=>({getStore:()=>state.store}));
 vi.mock('../../lib/server/secrets',()=>({serverSecret:(key:string)=>key==='APP_ORGANIZATION_ID'?'o':null}));
-vi.mock('../../lib/jobs/sync',()=>({enqueueDue:async()=>{},runSyncBatch:async()=>{vi.setSystemTime(Date.now()+state.syncElapsedMs);if(state.drainCurrent)for(const id of state.syncCompleted)await state.store.finish(id);return {completed:state.syncCompleted,failed:[]};},generateReview:async(scope:any,c:any,date:string)=>{if(state.fail)throw new Error('sensitive provider detail');return state.store.saveReview(scope.organizationId,c.id,date,'generated',{actorId:scope.actorId},new Date().toISOString());}}));
+vi.mock('../../lib/jobs/sync',()=>({enqueueDue:async()=>{},runSyncBatch:async(scope:{permittedClientIds:string[]})=>{state.syncClients=[...scope.permittedClientIds];vi.setSystemTime(Date.now()+state.syncElapsedMs);if(state.drainCurrent)for(const id of state.syncCompleted)await state.store.finish(id);return {completed:state.syncCompleted,failed:[]};},generateReview:async(scope:any,c:any,date:string)=>{if(state.fail)throw new Error('sensitive provider detail');return state.store.saveReview(scope.organizationId,c.id,date,'generated',{actorId:scope.actorId},new Date().toISOString());}}));
 import {reviewTick,syncTick} from '../../lib/jobs/runner';
 import {DailyScheduler} from '../../lib/jobs/scheduler';
 beforeEach(async()=>{
- vi.useFakeTimers();vi.setSystemTime(new Date('2026-10-12T13:05:00Z'));state.fail=false;state.syncCompleted=[];state.runtimePlatform='sites';state.syncElapsedMs=0;state.drainCurrent=false;
+ vi.useFakeTimers();vi.setSystemTime(new Date('2026-10-12T13:05:00Z'));state.fail=false;state.syncCompleted=[];state.runtimePlatform='sites';state.syncElapsedMs=0;state.drainCurrent=false;state.syncClients=[];
  const db=new DatabaseSync(':memory:');for(const f of readdirSync('drizzle').filter(f=>f.endsWith('.sql')))db.exec(readFileSync(`drizzle/${f}`,'utf8'));
  const prepare=(sql:string)=>{let v:any[]=[];const api={bind(...values:any[]){v=values;return api;},async all(){return {results:db.prepare(sql).all(...v)};},async first(){return db.prepare(sql).get(...v)??null;},async run(){return {meta:{changes:Number(db.prepare(sql).run(...v).changes)}};}};return api;};state.store=new Store({prepare,batch:async(ss:any[])=>Promise.all(ss.map(s=>s.run()))});
  const c=clients[0];await state.store.run("INSERT INTO organizations VALUES('o','Avenue Z',1)");
@@ -168,4 +168,16 @@ it.each(['capacity-db','maintenance-db','archive'])('isolates optional %s failur
  const s:Store=state.store;state.runtimePlatform='vercel';await s.enqueue('o','kind-patches','s','current','2026-10-12T13:00:00Z');await s.finish('o:s:current');state.syncCompleted=['o:s:current'];maintenanceCapacity(s);
  if(failure==='capacity-db'){const first=s.first.bind(s);vi.spyOn(s,'first').mockImplementation((sql,...args)=>sql.startsWith('PRAGMA ')?Promise.reject(Error('Private capacity failure')):first(sql,...args));}
  const prune=vi.spyOn(retention,'pruneArchivedMaterializations').mockRejectedValue(Error('Private maintenance '+failure));const result=await syncTick();expect(result.completed).toEqual(['o:s:current']);expect(result.failed).toEqual([]);expect(await s.first('SELECT status FROM jobs WHERE id=?','o:s:current')).toEqual({status:'complete'});expect(await s.all('SELECT * FROM runner_leases')).toEqual([]);if(failure!=='capacity-db')expect(prune).toHaveBeenCalledTimes(1);
+});
+
+it('leaves Beam source jobs to their independent cron while preserving other client ingestion',async()=>{
+ const c=clients[1],s=state.store;await s.run('INSERT INTO clients VALUES(?,?,?,?,?,?,?,?,?)',c.id,'o',c.name,c.slug,c.timezone,c.currency,c.color,JSON.stringify(c.config),1);
+ await syncTick();expect(state.syncClients).toContain('kind-patches');expect(state.syncClients).not.toContain('beam');
+});
+it('publishes Beam at 08:00 from closed Shopify core coverage without requiring platform-hour or subscription feeds',async()=>{
+ const c=clients[1],s=state.store;vi.setSystemTime(new Date('2026-10-12T12:05:00Z'));
+ await s.run('INSERT INTO clients VALUES(?,?,?,?,?,?,?,?,?)',c.id,'o',c.name,c.slug,c.timezone,c.currency,c.color,JSON.stringify(c.config),1);
+ for(const [id,provider,metric] of [['beam-sales','beam-shopify-sales','revenue'],['beam-sessions','beam-shopify-sessions','sessions']]){await s.run("INSERT INTO connections VALUES(?,'o','beam','Beam source',?,'registered','secret',60,1,'2026-10-12T12:04:00Z','2026-10-12T04:00:00Z',NULL,1)",id,provider);await s.saveQualification('o','beam',id,1,1,{profiles:[{dataset:'overview',metric,hourly:true}]},'admin');}
+ await s.run("INSERT INTO connections VALUES('beam-motion','o','beam','Motion','beam-motion','registered','secret',60,1,'2026-10-11T12:00:00Z',NULL,NULL,1)");await s.saveQualification('o','beam','beam-motion',1,1,{profiles:[{dataset:'media',metric:'platform_spend',hourly:false}]},'admin');
+ expect((await reviewTick()).completed).toHaveLength(1);expect((await s.reviews('o','beam'))[0].storeDate).toBe('2026-10-11');
 });

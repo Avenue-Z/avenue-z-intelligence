@@ -1,6 +1,7 @@
 import type {Observation,QueryFilters} from './contracts';
 import type {FunnelRollupObservation} from './funnel-rollup';
 import {sanitizePage,sourceMarket} from '../sources/kind-patches';
+import {beamPlatformReport} from './beam-platform-reports';
 import {trendCutoffEnd,type TrendCutoff} from './trend-context';
 
 const dimensions=['market','source','device','page','stream'] as const;
@@ -26,7 +27,7 @@ export class TrendRollupAccumulator {
  private ends=new Map<string,number|null>();
  constructor(private filters:QueryFilters,private cutoff?:TrendCutoff){this.active=dimensions.filter(dimension=>!!filters[dimension]);}
  add(input:Observation,sourceGrain?:ReturnType<typeof grain>){
-  if(this.filters.mode==='partial'){
+  if(this.filters.mode==='partial'&&!beamPlatformReport(input)){
    if(!this.ends.has(input.date))this.ends.set(input.date,this.cutoff?trendCutoffEnd(input.date,this.cutoff):null);
    const end=this.ends.get(input.date);if(end===null||end===undefined||!input.end||!Number.isFinite(Date.parse(input.end))||Date.parse(input.end)>end)return;
   }

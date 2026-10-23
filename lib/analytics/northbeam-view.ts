@@ -1,0 +1,23 @@
+import type {QueryFilters} from './contracts';
+import {northbeamProfile,validNorthbeamDate,type NorthbeamDashboard,type NorthbeamRange} from './northbeam-dashboard';
+import {comparisonPeriod,shiftDate,todayIn} from './windows';
+export function parseNorthbeamViewFilters(params:URLSearchParams,now=new Date()):QueryFilters{
+ const today=todayIn(northbeamProfile.reportingTimezone,now),live=params.get('period')==='today'||!params.has('from')&&!params.has('to')&&params.get('mode')!=='closed',fallback=live?today:shiftDate(today,-1),from=live?today:params.get('from')||fallback,to=live?today:params.get('to')||from;
+ if(!validNorthbeamDate(from)||!validNorthbeamDate(to)||from>to||to>today||Date.parse(to)-Date.parse(from)>29*86400000)throw Error('Choose up to 30 Northbeam reporting days ending today or earlier');
+ for(const key of ['market','stream','source','device','page'])if(params.get(key))throw Error('This Northbeam profile reports all platforms without dimension filters');
+ const compare=params.get('compare')||'previous';if(!['previous','weekday','fourWeeks','thirtyDays','custom'].includes(compare))throw Error('Invalid Northbeam comparison');
+ const filters:QueryFilters={from,to,view:'northbeam',mode:to===today?'partial':'closed',compare:compare as QueryFilters['compare'],market:'',stream:'',source:'',device:'',page:'',...live?{period:'today' as const}:{}};
+ if(compare==='custom'){const from=params.get('compareFrom');if(!from||!validNorthbeamDate(from))throw Error('Invalid Northbeam comparison');filters.compareFrom=from;if(params.get('compareTo')){const to=params.get('compareTo')!;if(!validNorthbeamDate(to))throw Error('Invalid Northbeam comparison');filters.compareTo=to;}}
+ const comparison=comparisonPeriod(filters);if(comparison.to>today)throw Error('Northbeam comparison cannot include future days');if(compare==='custom')filters.compareTo=comparison.to;return filters;
+}
+export function northbeamCachedRange(now=new Date()):NorthbeamRange{const to=todayIn(northbeamProfile.reportingTimezone,now);return {from:shiftDate(to,-29),to};}
+export function northbeamSelection(report:NorthbeamDashboard,range:NorthbeamRange):NorthbeamDashboard{
+ const rows=new Map(report.daily.map(row=>[row.date,row])),daily:NorthbeamDashboard['daily']=[];
+ for(let date=range.from;date<=range.to;date=shiftDate(date,1))daily.push(rows.get(date)??{date,spend:null,attributedRevenue:null,roas:null,capturedAt:null,providerAsOf:null,exportFinishedAt:null});
+ const missingDays=daily.filter(row=>row.spend===null||row.attributedRevenue===null).map(row=>row.date),containsCurrentDay=report.range.containsCurrentDay&&range.to===report.range.to,complete=report.activation.enabled&&!missingDays.length&&!containsCurrentDay;
+ const sum=(key:'spend'|'attributedRevenue')=>{const result=daily.reduce((n,row)=>n+(row[key]??0),0);return report.activation.enabled&&!missingDays.length&&Number.isFinite(result)?result:null;},spend=sum('spend'),attributedRevenue=sum('attributedRevenue');
+ return {...report,range:{...range,containsCurrentDay},daily,summary:{spend,attributedRevenue,roas:spend!==null&&spend>0&&attributedRevenue!==null?attributedRevenue/spend:null},coverage:{cachedDays:daily.length-missingDays.length,requestedDays:daily.length,missingDays,complete},status:!report.activation.enabled?'disabled':missingDays.length===daily.length?'empty':complete?'ready':'partial'};
+}
+export function buildNorthbeamView(report:NorthbeamDashboard,filters:QueryFilters){const current=northbeamSelection(report,filters),comparison=comparisonPeriod(filters),previous=northbeamSelection(report,comparison),comparisonAllowed=current.coverage.complete&&previous.coverage.complete;return {report,filters,current,previous,comparisonAllowed,comparisonReason:current.range.containsCurrentDay?'Current provider day is partial; daily reports do not provide a matched-hour comparison.':comparisonAllowed?null:'Comparison unavailable: both closed periods require every provider day to be captured.'};}
+export type NorthbeamView=ReturnType<typeof buildNorthbeamView>;
+export function northbeamTrend(view:NorthbeamView,days:7|30){const range={from:shiftDate(view.filters.to,-days+1),to:view.filters.to},current=northbeamSelection(view.report,range),offset=Math.round((Date.parse(view.previous.range.from)-Date.parse(view.current.range.from))/86400000),previous=northbeamSelection(view.report,{from:shiftDate(range.from,offset),to:shiftDate(range.to,offset)});return {series:current.daily.map(({date,spend,attributedRevenue,roas})=>({date,spend,attributedRevenue,roas})),comparisonSeries:view.comparisonAllowed?previous.daily.map(({date,spend,attributedRevenue,roas})=>({date,spend,attributedRevenue,roas})):[]};}
