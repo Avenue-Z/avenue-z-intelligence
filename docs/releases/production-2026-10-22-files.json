@@ -1,0 +1,3252 @@
+[
+  {
+    "file": ".github/workflows/sync.yml",
+    "sha": "4aa1832a989df8f839aa59ee567a2a6b09596d6e",
+    "size": 622
+  },
+  {
+    "file": ".gitignore",
+    "sha": "99e1bd81914975981af42d13cf555044ecce85fe",
+    "size": 628
+  },
+  {
+    "file": ".npmrc",
+    "sha": "0bc97ee1a5f41148e16988044264bedc31d0cc3c",
+    "size": 45
+  },
+  {
+    "file": ".vercelignore",
+    "sha": "7e52657cca32571f04887bfdac0fe6ea408b597e",
+    "size": 109
+  },
+  {
+    "file": "AGENTS.md",
+    "sha": "8a38a9be445fb29e9ce77bb23d1086eb2dc3d656",
+    "size": 678
+  },
+  {
+    "file": "CLAUDE.md",
+    "sha": "c140473a3a5fbe89301c99d9d0d1b76c5971f2c3",
+    "size": 11
+  },
+  {
+    "file": "README.md",
+    "sha": "7a13568f26db04fee889603ac61bc13878ca3342",
+    "size": 4019
+  },
+  {
+    "file": "app/api/auth/[...auth]/route.ts",
+    "sha": "15ca1f5f3ca2f11b130548e87ace15c1e85bfab5",
+    "size": 293
+  },
+  {
+    "file": "app/api/chat/route.ts",
+    "sha": "7fd81e9c6d60502300b68fe897dcbf66b1ac277c",
+    "size": 2294
+  },
+  {
+    "file": "app/api/clients/[clientId]/evidence/route.ts",
+    "sha": "4b0c8805f2c486f1e0ce50cd93b996dc67fff408",
+    "size": 1033
+  },
+  {
+    "file": "app/api/clients/[clientId]/export/route.ts",
+    "sha": "25c7e4de1175f09cc7e6e60b01beed4b409ede18",
+    "size": 945
+  },
+  {
+    "file": "app/api/cron/autobrush-cache/route.ts",
+    "sha": "9b9123216d64422687dc6cb259f84377ea5621e0",
+    "size": 325
+  },
+  {
+    "file": "app/api/cron/autobrush-ga4/route.ts",
+    "sha": "fddb80487b6256b69f9b7649073f576589c4f253",
+    "size": 1232
+  },
+  {
+    "file": "app/api/cron/autobrush-history/route.ts",
+    "sha": "f72f325cc45fdf73f91e8bd0b1f8931754680ee0",
+    "size": 322
+  },
+  {
+    "file": "app/api/cron/autobrush-northbeam-qualify/route.ts",
+    "sha": "3899469d312ff18eae68aa1d0bdcf76983271952",
+    "size": 1806
+  },
+  {
+    "file": "app/api/cron/autobrush-northbeam/route.ts",
+    "sha": "f20d26f1cd26e62762b0e5135e25094886d6d4bd",
+    "size": 1174
+  },
+  {
+    "file": "app/api/cron/autobrush-qualify/route.ts",
+    "sha": "298b8d65eca27bbd10277035555cc5c8b84fb97e",
+    "size": 1286
+  },
+  {
+    "file": "app/api/cron/autobrush-sync/route.ts",
+    "sha": "b0f710c0149cbbe3e0a843779e5c0fe5580d6d83",
+    "size": 318
+  },
+  {
+    "file": "app/api/cron/beam-cache/route.ts",
+    "sha": "fc1a2a20827c4cb329b77d73ee97278248da6f40",
+    "size": 310
+  },
+  {
+    "file": "app/api/cron/beam-ga4/route.ts",
+    "sha": "adef65fb4283aeaab26e125d7dfe0a70003633ba",
+    "size": 1222
+  },
+  {
+    "file": "app/api/cron/beam-history/route.ts",
+    "sha": "2dca7aa220039351ca91cdee62dc0b3ab9bf1643",
+    "size": 307
+  },
+  {
+    "file": "app/api/cron/beam-sync/route.ts",
+    "sha": "27c3b43be0564f9db23d2c06d6da9103744be538",
+    "size": 303
+  },
+  {
+    "file": "app/api/cron/cache/route.ts",
+    "sha": "c229d25427f109d9417224b2671b7197166dc3ef",
+    "size": 300
+  },
+  {
+    "file": "app/api/cron/history/route.ts",
+    "sha": "22b23058be8710949f9c2c03f4dddbd3c7deb83a",
+    "size": 322
+  },
+  {
+    "file": "app/api/cron/reviews/route.ts",
+    "sha": "ce0bb3dbaf67994e2374469595ac60e41a081efd",
+    "size": 296
+  },
+  {
+    "file": "app/api/cron/sync/route.ts",
+    "sha": "404964ad672b124a963754370b430ba7c0388117",
+    "size": 292
+  },
+  {
+    "file": "app/api/integrations/ga4/autobrush/callback/route.ts",
+    "sha": "62ab77cc3f5b8d01273fc27466f9294cc23e8899",
+    "size": 435
+  },
+  {
+    "file": "app/api/integrations/ga4/autobrush/connect/route.ts",
+    "sha": "2db3c40568f1cfc74a1e9a42fcf4bcd23646e9f9",
+    "size": 434
+  },
+  {
+    "file": "app/api/integrations/ga4/autobrush/reports/route.ts",
+    "sha": "6f422e4c6c8c897fbc67484e053c4b9d3cae2deb",
+    "size": 391
+  },
+  {
+    "file": "app/api/integrations/ga4/autobrush/status/route.ts",
+    "sha": "290d0231dc50ef92a7995a4661520439e9727b3d",
+    "size": 433
+  },
+  {
+    "file": "app/api/integrations/ga4/beam/callback/route.ts",
+    "sha": "6bd8cc4ee26e1a767b72cce1e32948efe1978f68",
+    "size": 892
+  },
+  {
+    "file": "app/api/integrations/ga4/beam/connect/route.ts",
+    "sha": "ad4ddd4ec3ef6ab4a1bf278d27c18ab7a1756e98",
+    "size": 392
+  },
+  {
+    "file": "app/api/integrations/ga4/beam/reports/route.ts",
+    "sha": "09c32989171e64ef7dd9d0188759eadd7ef96944",
+    "size": 379
+  },
+  {
+    "file": "app/api/integrations/ga4/beam/status/route.ts",
+    "sha": "6df92904e6a90d1a5d169ca7877844120c484869",
+    "size": 391
+  },
+  {
+    "file": "app/api/integrations/motion/autobrush/callback/route.ts",
+    "sha": "f9d200dfc7ed4c20d620b9b160da76e8f83a0075",
+    "size": 493
+  },
+  {
+    "file": "app/api/integrations/motion/autobrush/connect/route.ts",
+    "sha": "96a68661768ebd1c99e617bfbcf993e313fc033a",
+    "size": 492
+  },
+  {
+    "file": "app/api/integrations/motion/autobrush/status/route.ts",
+    "sha": "e1eeef298c2f37a5155a9f5fbcbaab0497f2495b",
+    "size": 491
+  },
+  {
+    "file": "app/api/integrations/motion/beam/callback/route.ts",
+    "sha": "4b2d6724f884c27d1786df696cabb0e459164a17",
+    "size": 402
+  },
+  {
+    "file": "app/api/integrations/motion/beam/connect/route.ts",
+    "sha": "5f0ec07d439c132b383fbfa4e0b97a14aeb573a2",
+    "size": 401
+  },
+  {
+    "file": "app/api/integrations/motion/beam/status/route.ts",
+    "sha": "fd6620a23518e7766b83a8df7d96f7ce8152e83d",
+    "size": 400
+  },
+  {
+    "file": "app/api/integrations/northbeam/autobrush/reports/route.ts",
+    "sha": "afd5ac68bd615253f6efa16fdc4d37775ee55463",
+    "size": 411
+  },
+  {
+    "file": "app/api/integrations/shopify/autobrush/callback/route.ts",
+    "sha": "775a6568695e69bd8753fe0d6db2777d46cf7167",
+    "size": 434
+  },
+  {
+    "file": "app/api/integrations/shopify/autobrush/connect/route.ts",
+    "sha": "3a155cf83c0f819bb6f90bce33a798cca7e98ed3",
+    "size": 433
+  },
+  {
+    "file": "app/api/integrations/shopify/autobrush/status/route.ts",
+    "sha": "db826c8ffcba17fce1bc99dcb7fc8d1816f15e2b",
+    "size": 432
+  },
+  {
+    "file": "app/api/integrations/shopify/beam/callback/route.ts",
+    "sha": "955c0a4e411a01da663a884644b47fb2560da926",
+    "size": 405
+  },
+  {
+    "file": "app/api/integrations/shopify/beam/connect/route.ts",
+    "sha": "ba3e4875d56f118f3bd56bc3027b630e58fe8db9",
+    "size": 404
+  },
+  {
+    "file": "app/api/integrations/shopify/beam/status/route.ts",
+    "sha": "2314e51561ec7b387bf2133550dd27ef3dfc1ce1",
+    "size": 403
+  },
+  {
+    "file": "app/api/internal/chat/route.ts",
+    "sha": "ab6c9ef9830771162b362ae9c8d9b6c1dc584cdb",
+    "size": 2702
+  },
+  {
+    "file": "app/api/internal/evidence/route.ts",
+    "sha": "bcca020d8a8d97911e54844f1dc155b0b57fb253",
+    "size": 645
+  },
+  {
+    "file": "app/api/internal/export/route.ts",
+    "sha": "86517b3328f76eb040463b662472d895e7848a01",
+    "size": 639
+  },
+  {
+    "file": "app/api/internal/kind-sources/route.ts",
+    "sha": "774a509a5e8d71da70e8bf9402346bd4d7119116",
+    "size": 1533
+  },
+  {
+    "file": "app/api/internal/migration/route.ts",
+    "sha": "fec40f7257e8b5f896ee0de8505a346304cdf808",
+    "size": 2592
+  },
+  {
+    "file": "app/api/internal/review/route.ts",
+    "sha": "95d994e0bdff28a00c0daf2e6676d4321e02672c",
+    "size": 1648
+  },
+  {
+    "file": "app/api/internal/sync/route.ts",
+    "sha": "a3457eb7de5263a46a04c00b88a368443d8ec983",
+    "size": 864
+  },
+  {
+    "file": "app/api/internal/workspace/route.ts",
+    "sha": "23f3e342fab59ca1d5230d0e84b923c31da6156a",
+    "size": 1714
+  },
+  {
+    "file": "app/api/webhooks/recharge/route.ts",
+    "sha": "3999f0b1df1adc67ace8307c14ed87138fe75bea",
+    "size": 578
+  },
+  {
+    "file": "app/api/workspace/route.ts",
+    "sha": "68a8ef4d817800bf1801e34f36d3c09743d34285",
+    "size": 1323
+  },
+  {
+    "file": "app/avenue-brand-preview.css",
+    "sha": "f12a6bb08a55f63fa1338d1545483a6c433d8352",
+    "size": 15970
+  },
+  {
+    "file": "app/chatgpt-auth.ts",
+    "sha": "14b4b98b053707a68a23b435fe186a42105469cc",
+    "size": 3061
+  },
+  {
+    "file": "app/clients/[clientId]/page.tsx",
+    "sha": "6cea3310a31b877afed7eb4d5bcc688a79e34ac1",
+    "size": 455
+  },
+  {
+    "file": "app/clients/[clientId]/reviews/[reviewId]/export/route.ts",
+    "sha": "24d7ab7f0a42781cd68daea62b27405486cb91e0",
+    "size": 1101
+  },
+  {
+    "file": "app/clients/[clientId]/reviews/[reviewId]/page.tsx",
+    "sha": "c773563f3d3a82c1b05f3a9182359924923a5880",
+    "size": 1803
+  },
+  {
+    "file": "app/globals.css",
+    "sha": "e44a15bc39d1a2c2c1ffef9f49a71503d6546eb4",
+    "size": 41951
+  },
+  {
+    "file": "app/layout.tsx",
+    "sha": "eddf48e3db1c98253332ef78f5eee4b94edd210e",
+    "size": 669
+  },
+  {
+    "file": "app/page.tsx",
+    "sha": "9463cadc06a3f2b9e5ce837651bd14f533f2b139",
+    "size": 2312
+  },
+  {
+    "file": "app/signin/page.tsx",
+    "sha": "7ef539d9bae2c0880b0ac26e78bc8640a4e10c91",
+    "size": 890
+  },
+  {
+    "file": "build/connector-preview-plugin.mjs",
+    "sha": "bf1a8bc716ae6610ce74f807b51d1dad11091ad3",
+    "size": 7211
+  },
+  {
+    "file": "build/connector-preview-worker.mjs",
+    "sha": "0985157153650ce517a33f6285d808ba957fdc4d",
+    "size": 594
+  },
+  {
+    "file": "build/sites-vite-plugin.LICENSE",
+    "sha": "b4005d826078e5a519e83677c1609982f6b6be1b",
+    "size": 1063
+  },
+  {
+    "file": "build/sites-vite-plugin.ts",
+    "sha": "b0fe5a7e8d411a0383b9cfcf7f744285273cc14f",
+    "size": 7185
+  },
+  {
+    "file": "build/sites-worker.ts",
+    "sha": "c9baa0536b9fe652ee3bdb44ea421d4951b93daf",
+    "size": 1279
+  },
+  {
+    "file": "cloudflare-env.d.ts",
+    "sha": "13d514b9bd229530cf2455207c4ee041aea6b4f0",
+    "size": 99
+  },
+  {
+    "file": "components.json",
+    "sha": "071e3c0866fa155a273f08565e761a9e6c91b97e",
+    "size": 420
+  },
+  {
+    "file": "components/analytics/ai-chat.tsx",
+    "sha": "88b6eaa2e5260ed3fcd70fe93b202001f219b66c",
+    "size": 6677
+  },
+  {
+    "file": "components/analytics/alerts.tsx",
+    "sha": "117d4a97348e9d4a2cc5ef3df148a9c9e25115e9",
+    "size": 6384
+  },
+  {
+    "file": "components/analytics/autobrush-overview.tsx",
+    "sha": "cf7bfd2e4caae1874218aea9f776302adce296ab",
+    "size": 3861
+  },
+  {
+    "file": "components/analytics/beam-overview.tsx",
+    "sha": "60a91942da7987e56506fa8d37918c173d412370",
+    "size": 13082
+  },
+  {
+    "file": "components/analytics/beam-spend-workspace.tsx",
+    "sha": "47c9dc8496987d9924b1177a3d3d44d2f1f4401b",
+    "size": 5272
+  },
+  {
+    "file": "components/analytics/chart.tsx",
+    "sha": "49e0f1e7566d12357aa2bdbefd231afee1468cb8",
+    "size": 6651
+  },
+  {
+    "file": "components/analytics/client-workspace.tsx",
+    "sha": "941c68e0f5e4f64e0e9becd67553fb307e525a16",
+    "size": 14788
+  },
+  {
+    "file": "components/analytics/dashboard.tsx",
+    "sha": "413f5a24e4e5027c00f614217ebc755d8d242dc5",
+    "size": 19991
+  },
+  {
+    "file": "components/analytics/detail-table.tsx",
+    "sha": "c74f13da8f6bd25c1412e5958d7829b55f081879",
+    "size": 8310
+  },
+  {
+    "file": "components/analytics/executive-overview.module.css",
+    "sha": "c7e0016079684960146689effdf55be4193d71fa",
+    "size": 11543
+  },
+  {
+    "file": "components/analytics/executive-overview.tsx",
+    "sha": "34e12b2e2433865eda1d3598f771a72d747333bf",
+    "size": 10039
+  },
+  {
+    "file": "components/analytics/ga4-workspace.tsx",
+    "sha": "db6b0401e42c50b120e60ee233e678c6d4b182b5",
+    "size": 16599
+  },
+  {
+    "file": "components/analytics/market-workspace.tsx",
+    "sha": "aba5731374177ffd1968ca9463d495e1ec52f226",
+    "size": 7097
+  },
+  {
+    "file": "components/analytics/metric-comparison.module.css",
+    "sha": "3e9aefcce4768972b92fe57d2838ea63b84bc05a",
+    "size": 482
+  },
+  {
+    "file": "components/analytics/metric-comparison.tsx",
+    "sha": "d7f13dbbaef179ef5d7fab30286d34075adfdfe5",
+    "size": 2430
+  },
+  {
+    "file": "components/analytics/metric-visualization.module.css",
+    "sha": "84839b5527c61a7d18335c3f1023d2d9058489e7",
+    "size": 2719
+  },
+  {
+    "file": "components/analytics/metric-visualization.tsx",
+    "sha": "6a7be503e5345dc08cbbf9ad7b7e31092d22973f",
+    "size": 10389
+  },
+  {
+    "file": "components/analytics/northbeam-workspace.tsx",
+    "sha": "a569908fa64bdf35a48637c4ae6e84952b673f63",
+    "size": 11475
+  },
+  {
+    "file": "components/analytics/order-diagnostics.tsx",
+    "sha": "64d2a70a77ba7813bbf14cd577267124b418090a",
+    "size": 12832
+  },
+  {
+    "file": "components/analytics/portfolio-chart.tsx",
+    "sha": "f5561e7ba0a32d23cb7007c150e4d532a14a012d",
+    "size": 10211
+  },
+  {
+    "file": "components/analytics/product-workspace.tsx",
+    "sha": "25c01a1690abc0142ae40f84975cde953e3f36d3",
+    "size": 3207
+  },
+  {
+    "file": "components/analytics/records.tsx",
+    "sha": "8a988717d46e84c4ea069cd9c62ec692df370c42",
+    "size": 5608
+  },
+  {
+    "file": "components/analytics/revenue-workspace.module.css",
+    "sha": "8ea9af5bb61314ce550e5dceff3b2ad70ed9374a",
+    "size": 4787
+  },
+  {
+    "file": "components/analytics/revenue-workspace.tsx",
+    "sha": "1497ab3f85608ddf7cb9bd11d156155dd1aefc29",
+    "size": 16987
+  },
+  {
+    "file": "components/analytics/review-document.tsx",
+    "sha": "d503e74f42aa0d89dac13604e634b6f6528e283b",
+    "size": 5299
+  },
+  {
+    "file": "components/analytics/reviews.tsx",
+    "sha": "05e38dffc138e867593fd65f0c448251733f15b4",
+    "size": 6633
+  },
+  {
+    "file": "components/analytics/settings.tsx",
+    "sha": "6466d2395e78187e65511637e7468d8425fe6e6a",
+    "size": 12880
+  },
+  {
+    "file": "components/analytics/spend-workspace.tsx",
+    "sha": "05c7c7e261e88cdac07024c40116aa90d7c0836e",
+    "size": 13575
+  },
+  {
+    "file": "components/analytics/subscription-workspace.module.css",
+    "sha": "64917417a9da78187ea11d000ea0a85018fdf87c",
+    "size": 1869
+  },
+  {
+    "file": "components/analytics/subscription-workspace.tsx",
+    "sha": "0721923ab8c9bf72c81a342ab6d7b9ffe2bb7614",
+    "size": 21242
+  },
+  {
+    "file": "components/analytics/traffic-workspace.module.css",
+    "sha": "4c9a2b501bda13abf45045920fa08bfb8978d776",
+    "size": 5249
+  },
+  {
+    "file": "components/analytics/traffic-workspace.tsx",
+    "sha": "5bb56d5bcf2308fff47ba95ce7cc4080d338a5af",
+    "size": 35653
+  },
+  {
+    "file": "components/auth/google-signin-button.tsx",
+    "sha": "52969f20731ed693a205d750db4d7040b703276e",
+    "size": 2025
+  },
+  {
+    "file": "components/auth/sign-in-screen.module.css",
+    "sha": "1d2af3a32dd5ff637e638dcfe5bb6d8d5a6c3100",
+    "size": 4330
+  },
+  {
+    "file": "components/auth/sign-in-screen.tsx",
+    "sha": "b477805da5a6bf0c87adf5b6bfcc6966a3ab56d5",
+    "size": 2520
+  },
+  {
+    "file": "components/connector-error.tsx",
+    "sha": "0b54f3e16fb4cd1b93b9452f7d9cac3b0c2fe842",
+    "size": 1082
+  },
+  {
+    "file": "components/theme-provider.tsx",
+    "sha": "38a71497de70091113aa9c2503ae678d575e1844",
+    "size": 432
+  },
+  {
+    "file": "components/theme-toggle.module.css",
+    "sha": "a05367ac48d8a14ab29ef05bfc476f08ffca998b",
+    "size": 525
+  },
+  {
+    "file": "components/theme-toggle.tsx",
+    "sha": "e21e35fa64869584169ab02bab041a2ccb68d081",
+    "size": 997
+  },
+  {
+    "file": "components/ui/accordion.tsx",
+    "sha": "539f4b0bf4704818ad1352b328e68dbe57f5471a",
+    "size": 2048
+  },
+  {
+    "file": "components/ui/alert-dialog.tsx",
+    "sha": "870fc4c64b209e677dfe94958e901a4d50a2d4e9",
+    "size": 5439
+  },
+  {
+    "file": "components/ui/alert.tsx",
+    "sha": "80ac45632c53358992bbfb955370ae87e9e107fb",
+    "size": 1614
+  },
+  {
+    "file": "components/ui/aspect-ratio.tsx",
+    "sha": "186021629af4684f62369c6d8410338465b091a7",
+    "size": 274
+  },
+  {
+    "file": "components/ui/attachment.tsx",
+    "sha": "2771dc56985fee6818a3ae372e8707262ab1de64",
+    "size": 6002
+  },
+  {
+    "file": "components/ui/avatar.tsx",
+    "sha": "057e4ec5f9a85b7aeb0bd55b2a3ceb7c81f26553",
+    "size": 2916
+  },
+  {
+    "file": "components/ui/badge.tsx",
+    "sha": "dd14174bad0e7cd658d5f0c0479d48697c9b50f5",
+    "size": 1776
+  },
+  {
+    "file": "components/ui/breadcrumb.tsx",
+    "sha": "20195df0d0f9f85db00e57fd6865e12b0d6167cf",
+    "size": 2350
+  },
+  {
+    "file": "components/ui/bubble.tsx",
+    "sha": "f0e2cf88c1cb506c24f1a703eb95c862dfe37ed7",
+    "size": 4699
+  },
+  {
+    "file": "components/ui/button-group.tsx",
+    "sha": "58144148969b5fe227d349e8afe697c2f25508ae",
+    "size": 2202
+  },
+  {
+    "file": "components/ui/button.tsx",
+    "sha": "2ee6bfd1bae7f37ec48c0fbe8812d956f72968c0",
+    "size": 2392
+  },
+  {
+    "file": "components/ui/calendar.tsx",
+    "sha": "3ec93352f855f99aeaafb8c2c4748635b3a56b12",
+    "size": 7832
+  },
+  {
+    "file": "components/ui/card.tsx",
+    "sha": "1f9a9a608a0985d7f22ef37cb5c965bb68c4e5ce",
+    "size": 1987
+  },
+  {
+    "file": "components/ui/carousel.tsx",
+    "sha": "46588b1ac2efd1668d18a59b24741ac2452fa9f9",
+    "size": 5556
+  },
+  {
+    "file": "components/ui/chart.tsx",
+    "sha": "56660512d82d5ac19eba4c05f6d94adbb3ac6c98",
+    "size": 10614
+  },
+  {
+    "file": "components/ui/checkbox.tsx",
+    "sha": "9f40ef7e1f43606bd8e6d8558ee4e5d06bb2a736",
+    "size": 1214
+  },
+  {
+    "file": "components/ui/collapsible.tsx",
+    "sha": "e9fc6a0cf48b2b363a4b544490c2663e9793a545",
+    "size": 795
+  },
+  {
+    "file": "components/ui/combobox.tsx",
+    "sha": "0fb8cdfed6c09ae8153af8222f29477ce9bd8e3c",
+    "size": 9158
+  },
+  {
+    "file": "components/ui/command.tsx",
+    "sha": "532ad0e19ea88e2e1837111e547fe755bcaed12b",
+    "size": 4818
+  },
+  {
+    "file": "components/ui/context-menu.tsx",
+    "sha": "3f4a73c4a676744180c2b1c7e2c23a47046f444d",
+    "size": 8268
+  },
+  {
+    "file": "components/ui/dialog.tsx",
+    "sha": "d5d93691062ae4f522b682cce1fc7b4ac5b634ba",
+    "size": 4303
+  },
+  {
+    "file": "components/ui/direction.tsx",
+    "sha": "f5c285ee85de720559125212021f181b2425ce0c",
+    "size": 506
+  },
+  {
+    "file": "components/ui/drawer.tsx",
+    "sha": "16e744a88b565c22b399512517f489da26592fed",
+    "size": 4255
+  },
+  {
+    "file": "components/ui/dropdown-menu.tsx",
+    "sha": "e2b3b7d0e773eb7248a2f82a05b47dcaec7d2dd7",
+    "size": 8418
+  },
+  {
+    "file": "components/ui/empty.tsx",
+    "sha": "04918d70011b844e59fbe82718ed22630feeeedb",
+    "size": 2396
+  },
+  {
+    "file": "components/ui/field.tsx",
+    "sha": "e670bd471562ad48d64ee64d61a5abf65bb729fa",
+    "size": 6159
+  },
+  {
+    "file": "components/ui/form.tsx",
+    "sha": "2cf37958326fc7b95821bbbc5f78b18bc6ea1e21",
+    "size": 3757
+  },
+  {
+    "file": "components/ui/hover-card.tsx",
+    "sha": "afd73957d5dd9c0940bda9013c2cf1901eca1d39",
+    "size": 1526
+  },
+  {
+    "file": "components/ui/input-group.tsx",
+    "sha": "1bcc305fbda7ecdddeb8e220abea23ef523b6ef2",
+    "size": 5065
+  },
+  {
+    "file": "components/ui/input-otp.tsx",
+    "sha": "23a2174867d61f5d26e5dc2ff084e134ea405590",
+    "size": 2254
+  },
+  {
+    "file": "components/ui/input.tsx",
+    "sha": "06c34b72fef9dc67cd6b5af1e0ce5305f0cdb56d",
+    "size": 962
+  },
+  {
+    "file": "components/ui/item.tsx",
+    "sha": "68654e49bdc8f28cfc44032709290987edb0b0ff",
+    "size": 4486
+  },
+  {
+    "file": "components/ui/kbd.tsx",
+    "sha": "526205369e35330fae576d34a115138d7a911668",
+    "size": 862
+  },
+  {
+    "file": "components/ui/label.tsx",
+    "sha": "a99938256badeaa5f000f008140391c7e61c3d19",
+    "size": 606
+  },
+  {
+    "file": "components/ui/marker.tsx",
+    "sha": "2d934e568f0743d71dd242f72f1a1c77b92fa74f",
+    "size": 1864
+  },
+  {
+    "file": "components/ui/menubar.tsx",
+    "sha": "dbb362a2dbac0cc593a46a08bc1f90f6a6f256f5",
+    "size": 8389
+  },
+  {
+    "file": "components/ui/message-scroller.tsx",
+    "sha": "a761ec08c37bc473abc816f97bc43b7d91c27391",
+    "size": 3992
+  },
+  {
+    "file": "components/ui/message.tsx",
+    "sha": "d80cd40eb488371e33b32caff60213ebe8b4aba0",
+    "size": 2232
+  },
+  {
+    "file": "components/ui/native-select.tsx",
+    "sha": "0b01089407e5c5ac13e3e11c54bfab09bd691f16",
+    "size": 1995
+  },
+  {
+    "file": "components/ui/navigation-menu.tsx",
+    "sha": "4b12065be4faf144deec6ada9aa8d817bde57c1f",
+    "size": 6658
+  },
+  {
+    "file": "components/ui/pagination.tsx",
+    "sha": "53c460ab54ad675036c7d9e80edfc53ea1c3f7b0",
+    "size": 2717
+  },
+  {
+    "file": "components/ui/popover.tsx",
+    "sha": "ec814498a0efcca5c51efe9ba76cb3bd992d968e",
+    "size": 2357
+  },
+  {
+    "file": "components/ui/progress.tsx",
+    "sha": "097c7400942bb55ae5b93e5e51beda3e07a4aab8",
+    "size": 755
+  },
+  {
+    "file": "components/ui/radio-group.tsx",
+    "sha": "096a64f0005023206cf9271bc8ca6625529d25ba",
+    "size": 1460
+  },
+  {
+    "file": "components/ui/resizable.tsx",
+    "sha": "847fb071da9c752315617aa399d3ba434e1e80bd",
+    "size": 1815
+  },
+  {
+    "file": "components/ui/scroll-area.tsx",
+    "sha": "4aaa43f6cd28194551dd86533731fccbc5e0763e",
+    "size": 1639
+  },
+  {
+    "file": "components/ui/select.tsx",
+    "sha": "60ccee176393e5fc0471921cf40a45c31f347004",
+    "size": 6353
+  },
+  {
+    "file": "components/ui/separator.tsx",
+    "sha": "b3c5437c3d6ecf3e9720a07a18249d232b5d32a6",
+    "size": 694
+  },
+  {
+    "file": "components/ui/sheet.tsx",
+    "sha": "928f0a396f78253608b3a5996fed5fa56b64e965",
+    "size": 4188
+  },
+  {
+    "file": "components/ui/sidebar.tsx",
+    "sha": "4c22cbad22e3841536f1179377f476cc128cd81d",
+    "size": 21526
+  },
+  {
+    "file": "components/ui/skeleton.tsx",
+    "sha": "b6519faed74d6c006f6174911b766c0e15e28713",
+    "size": 276
+  },
+  {
+    "file": "components/ui/slider.tsx",
+    "sha": "b48db732996f51569efb1fc281e7d98a672d8ffb",
+    "size": 1991
+  },
+  {
+    "file": "components/ui/sonner.tsx",
+    "sha": "5dca69a0e1a5ded1ab58b2f7504f5d17ecb2f2eb",
+    "size": 1034
+  },
+  {
+    "file": "components/ui/spinner.tsx",
+    "sha": "698020d2553ad0b4d840e98d117d5007fd4f1aad",
+    "size": 331
+  },
+  {
+    "file": "components/ui/switch.tsx",
+    "sha": "6d1415d4c12600632ed80c276263cb42fe925310",
+    "size": 1408
+  },
+  {
+    "file": "components/ui/table.tsx",
+    "sha": "a8c83829252031e7d8d004f4155ea318e51eb43a",
+    "size": 2478
+  },
+  {
+    "file": "components/ui/tabs.tsx",
+    "sha": "e85c28393783c6ca68a51b43de856be5d23ed17d",
+    "size": 3782
+  },
+  {
+    "file": "components/ui/textarea.tsx",
+    "sha": "e3ee46f069b757baa95302d1a30e03c2927edcc1",
+    "size": 759
+  },
+  {
+    "file": "components/ui/toggle-group.tsx",
+    "sha": "cff2c3706d481ecdfedd177e8c848deed663e111",
+    "size": 2308
+  },
+  {
+    "file": "components/ui/toggle.tsx",
+    "sha": "fe98a386ffb1ca975f675410ab4a3f6adb1c14fb",
+    "size": 1565
+  },
+  {
+    "file": "components/ui/tooltip.tsx",
+    "sha": "7b503022ca77ae37a5a27006dcacf0779fc0c2f2",
+    "size": 1830
+  },
+  {
+    "file": "config/vercel.env.example",
+    "sha": "aa07b9c2e8da96ed9b3e13bfa74b133e2bd4a17c",
+    "size": 2019
+  },
+  {
+    "file": "data/initial-clients.json",
+    "sha": "bcb76def9b7b8b2a3297e3adcf1f3f5bdccae2d3",
+    "size": 3492
+  },
+  {
+    "file": "db/index.ts",
+    "sha": "5f0021f310f036bfeb8a1e2c758f582babacc2d3",
+    "size": 423
+  },
+  {
+    "file": "db/schema.ts",
+    "sha": "133b34e9ad164318643b4c619c2965fa341112d9",
+    "size": 8055
+  },
+  {
+    "file": "docs/design.md",
+    "sha": "d1c29ed148a0d34f0671450aab81d4fc1d33c8db",
+    "size": 24311
+  },
+  {
+    "file": "docs/historical-imports.md",
+    "sha": "de0c5aa7bb33966e33381e101b3681619dbc0ce6",
+    "size": 2054
+  },
+  {
+    "file": "docs/implementation-plan.md",
+    "sha": "3e3b6fd063696875770e386ecf4fa166dbabeda5",
+    "size": 26762
+  },
+  {
+    "file": "docs/independent-runtime.md",
+    "sha": "6f5260c3d8a14afffb6537d670dad1bff6ad58f3",
+    "size": 8773
+  },
+  {
+    "file": "docs/kind-patches-sources.md",
+    "sha": "49fa0145e1942b97aa76ca57ce67ebdcb0680b61",
+    "size": 10381
+  },
+  {
+    "file": "docs/runbook.md",
+    "sha": "a9e7668ad307c1964d95cba490d9209cdf3f20ff",
+    "size": 5692
+  },
+  {
+    "file": "docs/source-contract.md",
+    "sha": "f4f13b0465b2cd7a4160cc94d12d20b749b5ff43",
+    "size": 5141
+  },
+  {
+    "file": "docs/vercel-deployment.md",
+    "sha": "68d8438a5aae55ae05c5240f013f880bc83882d8",
+    "size": 11312
+  },
+  {
+    "file": "drizzle.config.ts",
+    "sha": "5df729a362aff2748c00427a87289295269df66a",
+    "size": 148
+  },
+  {
+    "file": "drizzle/0000_early_hannibal_king.sql",
+    "sha": "5abb6ebacd6a772dd15a0c94793f9dcbbfadd221",
+    "size": 3437
+  },
+  {
+    "file": "drizzle/0001_light_katie_power.sql",
+    "sha": "d649ce15b980dc6015f4dc38ba7f9e5952a1e754",
+    "size": 459
+  },
+  {
+    "file": "drizzle/0002_glorious_komodo.sql",
+    "sha": "da90be308fd58cee45529ecf300af27e2e8c49ac",
+    "size": 649
+  },
+  {
+    "file": "drizzle/0003_application_scheduler.sql",
+    "sha": "2a6e1aae48be463ccbc72826b5da9096f9a99eed",
+    "size": 633
+  },
+  {
+    "file": "drizzle/0004_member_identities.sql",
+    "sha": "ad27fad86e32cdb2ae6f63765d562e5db2404b9a",
+    "size": 163
+  },
+  {
+    "file": "drizzle/0005_observation_cache.sql",
+    "sha": "372d8df179bb58b841fbfa1f3e92e77ddc9d71ee",
+    "size": 687
+  },
+  {
+    "file": "drizzle/0006_closed_snapshot_hashes.sql",
+    "sha": "4cacfaa16b481ea19595bb55931571a6063a787d",
+    "size": 60
+  },
+  {
+    "file": "drizzle/0007_observation_dataset_index.sql",
+    "sha": "f6ff77c052bfac7c6551fc6a9531bf664d9ca2bd",
+    "size": 318
+  },
+  {
+    "file": "drizzle/0008_snapshot_day_projections.sql",
+    "sha": "d98b33ef01a879d1cfdfaec71d91f1d20e743b0e",
+    "size": 865
+  },
+  {
+    "file": "drizzle/0009_prepared_workspace_cache.sql",
+    "sha": "809d73e8f391728f3bd17ae88e5bc76c5e35b602",
+    "size": 523
+  },
+  {
+    "file": "drizzle/0010_provider_credentials.sql",
+    "sha": "7c79e48e1572b82c36a89e4d3a943f7c57b87230",
+    "size": 271
+  },
+  {
+    "file": "drizzle/0011_ga4_report_cache.sql",
+    "sha": "b33f836342ab2c520ec4b952e765e81c7faccb0e",
+    "size": 390
+  },
+  {
+    "file": "drizzle/0012_northbeam_report_cache.sql",
+    "sha": "68a573e65f44df7d91584c4fed6972596e53d500",
+    "size": 878
+  },
+  {
+    "file": "drizzle/meta/0000_snapshot.json",
+    "sha": "f52350a2cf827f8db5133f684214d78a0cd898b7",
+    "size": 19756
+  },
+  {
+    "file": "drizzle/meta/0001_snapshot.json",
+    "sha": "1a2e642520b2d149f5d1c2f6a0f51e0ec0302a66",
+    "size": 22126
+  },
+  {
+    "file": "drizzle/meta/0002_snapshot.json",
+    "sha": "d08048427e2bb5201a82f308042ef372c65aecc8",
+    "size": 25034
+  },
+  {
+    "file": "drizzle/meta/0003_snapshot.json",
+    "sha": "715c22a6d98bae69bd93d2727e838b78eb4902db",
+    "size": 28625
+  },
+  {
+    "file": "drizzle/meta/_journal.json",
+    "sha": "fa3ef34fd8b8e6e0b8ace676106335231bfd5a56",
+    "size": 1089
+  },
+  {
+    "file": "eslint.config.mjs",
+    "sha": "4cabe66146f961658a3c76465bcb57e80314404e",
+    "size": 846
+  },
+  {
+    "file": "examples/d1/app/api/notes/route.ts",
+    "sha": "79967ad93a9ff68f48f82828078ab85ad00e2ec8",
+    "size": 1700
+  },
+  {
+    "file": "examples/d1/db/schema.ts",
+    "sha": "766d1eb792e84dadf6ff4b9ecc5c65e3e68ab70a",
+    "size": 370
+  },
+  {
+    "file": "hooks/use-mobile.ts",
+    "sha": "cdb9aae9ca8d354d767e8da4731ff7eb4a16d532",
+    "size": 565
+  },
+  {
+    "file": "lib/ai/chat-input.ts",
+    "sha": "f90ef5ff91fb7fb76b235234c751b8578e395b99",
+    "size": 25243
+  },
+  {
+    "file": "lib/ai/chat-phases.ts",
+    "sha": "0501500bb1027b422078d0e6d4b174459160eead",
+    "size": 1100
+  },
+  {
+    "file": "lib/ai/chat-scope.ts",
+    "sha": "f110a733c88c882b7e87acb7dc64615ce5bb3222",
+    "size": 3430
+  },
+  {
+    "file": "lib/ai/chat-standard.ts",
+    "sha": "c72cd6a7a881a790a41b7df609bcf67ae0ec3ba9",
+    "size": 138
+  },
+  {
+    "file": "lib/ai/context.ts",
+    "sha": "3bbbe4207c4deb637751e80b34dd2a91508b83c0",
+    "size": 38987
+  },
+  {
+    "file": "lib/ai/evidence.ts",
+    "sha": "6a957e2a5ce63767672157c1d95ef54858434c77",
+    "size": 16745
+  },
+  {
+    "file": "lib/ai/ga4-context.ts",
+    "sha": "144da4a910863c36325c879c2578fee92b68be09",
+    "size": 6095
+  },
+  {
+    "file": "lib/ai/model-input.ts",
+    "sha": "963e6c78ade2fe11b21bb0daa7cd82a8ea855918",
+    "size": 9009
+  },
+  {
+    "file": "lib/ai/northbeam-context.ts",
+    "sha": "78daaf78bd1411da40e1fd5ff729c74b0368d287",
+    "size": 2427
+  },
+  {
+    "file": "lib/ai/platform-chat.ts",
+    "sha": "a51bdf5a8fd191aede659a68f42f1b901bb8f10f",
+    "size": 4926
+  },
+  {
+    "file": "lib/ai/platform-evidence.ts",
+    "sha": "6a442b0ba3276da6b38a99e5a165b37087fdb703",
+    "size": 24687
+  },
+  {
+    "file": "lib/ai/platform-provider.ts",
+    "sha": "a6291594de5f7416db263e7d334ef55d810145b9",
+    "size": 12801
+  },
+  {
+    "file": "lib/ai/platform-session.ts",
+    "sha": "21996d37acdb2c6c9493d7e3ac399a6e305f107c",
+    "size": 1364
+  },
+  {
+    "file": "lib/ai/platform-tools.ts",
+    "sha": "4da3a3e959582b2896a785c8106b0b2ac5d0904c",
+    "size": 14505
+  },
+  {
+    "file": "lib/ai/provider.ts",
+    "sha": "e68bdd244bf2a0e0e0d015d3f9fe780336900465",
+    "size": 4238
+  },
+  {
+    "file": "lib/ai/server.ts",
+    "sha": "c73420c64a77f24f34787da343531d555617e4f9",
+    "size": 24882
+  },
+  {
+    "file": "lib/ai/session.ts",
+    "sha": "cadc93e32b9af7571f8506c8b6bf726a07ecb8c7",
+    "size": 3914
+  },
+  {
+    "file": "lib/analytics/active-customer-comparison.ts",
+    "sha": "9f09bd2b69ab956e43b1e4fd4079837d00008cf6",
+    "size": 3062
+  },
+  {
+    "file": "lib/analytics/alerts.ts",
+    "sha": "fc88fb9cd4a838bee65b103da1daba9d621b4d6c",
+    "size": 13174
+  },
+  {
+    "file": "lib/analytics/beam-overview.ts",
+    "sha": "196aaf61dc496a8b6f6746648bcfe87fad28ee0f",
+    "size": 8821
+  },
+  {
+    "file": "lib/analytics/beam-platform-reports.ts",
+    "sha": "ccaf4e972a726043d6fcc4935d7af05b934fd7b6",
+    "size": 720
+  },
+  {
+    "file": "lib/analytics/beam-spend.ts",
+    "sha": "7919bce6c8f8b594f03024dac544d9cef87037b5",
+    "size": 3646
+  },
+  {
+    "file": "lib/analytics/benchmark.ts",
+    "sha": "fea755fae5cc63f8bf071ed378df989037cc00cc",
+    "size": 3552
+  },
+  {
+    "file": "lib/analytics/channel-label.ts",
+    "sha": "0e9e2063b01e42b87a5a30c35b299ac2df4817b9",
+    "size": 625
+  },
+  {
+    "file": "lib/analytics/client-feature-policy.ts",
+    "sha": "045f92ef60f300deff141028277eebe88f586eee",
+    "size": 1415
+  },
+  {
+    "file": "lib/analytics/client-filter-policy.ts",
+    "sha": "8a86b572438f2156e57d543a577deb747b4052b6",
+    "size": 1236
+  },
+  {
+    "file": "lib/analytics/contracts.ts",
+    "sha": "79d89d3fb82a258f12236ca64de32959114a1d7e",
+    "size": 3479
+  },
+  {
+    "file": "lib/analytics/dataset-series.ts",
+    "sha": "d00cf46f273a888cbd85edb11a618164a02f9f79",
+    "size": 2109
+  },
+  {
+    "file": "lib/analytics/display.ts",
+    "sha": "7823e13aa4716f1f65131f2969e3813704cefc12",
+    "size": 1633
+  },
+  {
+    "file": "lib/analytics/funnel-rollup.ts",
+    "sha": "f512591b9b900a32332dde028f35aaed912d23c7",
+    "size": 5627
+  },
+  {
+    "file": "lib/analytics/ga4-dashboard.ts",
+    "sha": "df973dbdcc25768e24212afccca4510058f58a2e",
+    "size": 16626
+  },
+  {
+    "file": "lib/analytics/ga4-page-privacy.ts",
+    "sha": "7699e0eadf8cffd15c5cf13fb1f0e47657d9bda4",
+    "size": 2545
+  },
+  {
+    "file": "lib/analytics/ga4-profile.ts",
+    "sha": "1ddfeffd05566917a1f07c93217f899d15606422",
+    "size": 1512
+  },
+  {
+    "file": "lib/analytics/intraday-coverage.ts",
+    "sha": "7f2b65fdda37703d4f44817daf3d3baa7ce067b7",
+    "size": 2639
+  },
+  {
+    "file": "lib/analytics/live-period.ts",
+    "sha": "431ffa21e47232c08bb020c8350148b515f7e629",
+    "size": 1297
+  },
+  {
+    "file": "lib/analytics/metrics.ts",
+    "sha": "d9de74ee26daf42f99f933353a00723a0f6ad421",
+    "size": 1853
+  },
+  {
+    "file": "lib/analytics/month-to-date.ts",
+    "sha": "fe259b8a2d73378f145181e7b030eb6d9e5d7ce5",
+    "size": 7614
+  },
+  {
+    "file": "lib/analytics/northbeam-dashboard.ts",
+    "sha": "fa4f0e9b7df457b0e9dd5a3403e602c6b3816780",
+    "size": 4574
+  },
+  {
+    "file": "lib/analytics/northbeam-view.ts",
+    "sha": "b42c29b0482e5179357c985b631931b06e0c3aec",
+    "size": 4687
+  },
+  {
+    "file": "lib/analytics/order-diagnostics.ts",
+    "sha": "684bd406713776a411de2f366e040e164e46bfbd",
+    "size": 4003
+  },
+  {
+    "file": "lib/analytics/portfolio-scope.ts",
+    "sha": "e9fe54bb467d15e08ba87497a9ba4e54098c01b7",
+    "size": 4198
+  },
+  {
+    "file": "lib/analytics/portfolio.ts",
+    "sha": "90880ad82587cb5e6e3383b27890de3685e1ed74",
+    "size": 8980
+  },
+  {
+    "file": "lib/analytics/presentation.ts",
+    "sha": "9f3d7320856c71c5e94062048a9cbf0bd8755cb4",
+    "size": 4362
+  },
+  {
+    "file": "lib/analytics/query.ts",
+    "sha": "ce608e8adfe13ac98cacbe8b472e190ca609fac5",
+    "size": 21049
+  },
+  {
+    "file": "lib/analytics/rate-qualification.ts",
+    "sha": "79d9113b9b05c0e5406e4018d1966c69e6d36e05",
+    "size": 1052
+  },
+  {
+    "file": "lib/analytics/reporting-date.ts",
+    "sha": "ae844de77e414d0f3b8e2ea02a0f6076a73cc573",
+    "size": 1534
+  },
+  {
+    "file": "lib/analytics/revenue-presentation.ts",
+    "sha": "29975d8cc585b19318f2122636189c8af56386f2",
+    "size": 5448
+  },
+  {
+    "file": "lib/analytics/source-precedence.ts",
+    "sha": "4be07cd0bda93fe85ac29257cdbdbed266028f9f",
+    "size": 3918
+  },
+  {
+    "file": "lib/analytics/subscription-comparison.ts",
+    "sha": "a43ad41609f17c0c524991160a6dbcd71732bb3d",
+    "size": 1563
+  },
+  {
+    "file": "lib/analytics/subscription-explorer.ts",
+    "sha": "684d4738d29fef3500fb27e6cfd832521adaa69e",
+    "size": 8271
+  },
+  {
+    "file": "lib/analytics/subscriptions.ts",
+    "sha": "336fd9dc0ddd0a4fbc10cd7e0ef33d7dbee26fad",
+    "size": 1926
+  },
+  {
+    "file": "lib/analytics/traffic-comparison.ts",
+    "sha": "45caa12212204f0da76907bb65c47bb598c3679b",
+    "size": 2097
+  },
+  {
+    "file": "lib/analytics/traffic-explorer.ts",
+    "sha": "c7fd7414b54775c8a8005efc4a21803c3a5598fa",
+    "size": 4532
+  },
+  {
+    "file": "lib/analytics/traffic-page-loader.ts",
+    "sha": "708bfd023a0efd195c3684b679e3dd993f531c17",
+    "size": 5163
+  },
+  {
+    "file": "lib/analytics/traffic-presentation.ts",
+    "sha": "478f4d794cbf6740d9d17f54caa28d4f461cc826",
+    "size": 2342
+  },
+  {
+    "file": "lib/analytics/trend-context.ts",
+    "sha": "72c0da2cc7501c9e76bfc7c0baf2d00146320689",
+    "size": 2311
+  },
+  {
+    "file": "lib/analytics/trend-rollup.ts",
+    "sha": "6aea11fea3fed851eb81e70af7950ec42a501d22",
+    "size": 5759
+  },
+  {
+    "file": "lib/analytics/trends.ts",
+    "sha": "6399ca647f6b15ff4564e4ad8e60a6194b9fab58",
+    "size": 318
+  },
+  {
+    "file": "lib/analytics/visualization.ts",
+    "sha": "1db672f4af39be57d839ff0d0c3f38ad84c1a204",
+    "size": 3421
+  },
+  {
+    "file": "lib/analytics/windows.ts",
+    "sha": "08eb22299b58631e364795d7fb9878a1b06fc927",
+    "size": 1863
+  },
+  {
+    "file": "lib/analytics/workspace-cache.ts",
+    "sha": "fdfe43e590ce72d94a54482145aa4520d0bc2b55",
+    "size": 10800
+  },
+  {
+    "file": "lib/analytics/workspace-datasets.ts",
+    "sha": "75d78d90cd187b55422330187835137945edccbe",
+    "size": 2084
+  },
+  {
+    "file": "lib/auth/sign-in.ts",
+    "sha": "f60981a7d1f44579009a1ccf1f4aa782995f2e6f",
+    "size": 3699
+  },
+  {
+    "file": "lib/connector-context.ts",
+    "sha": "37e5f8814bee1b8c593568625fb326a6b987693e",
+    "size": 612
+  },
+  {
+    "file": "lib/connector-contract.mts",
+    "sha": "4b21e8ed0f67c503e7879621ef28c028c84ad2f0",
+    "size": 5362
+  },
+  {
+    "file": "lib/connector-errors.mts",
+    "sha": "6b41d854777fdb49e35f0ef80cc2b88e929ba728",
+    "size": 2717
+  },
+  {
+    "file": "lib/connector-preview.d.ts",
+    "sha": "0e7f8ba6bc5d77a03c99f5b2b35b3f70e0ab508a",
+    "size": 433
+  },
+  {
+    "file": "lib/connectors.ts",
+    "sha": "f8b9142852a059be4f8807b32435d6cfdb511e4e",
+    "size": 416
+  },
+  {
+    "file": "lib/jobs/archive-materialization-retention.ts",
+    "sha": "7b9a1e146104edba1c8f07b80b72ce4fdbb66b82",
+    "size": 33552
+  },
+  {
+    "file": "lib/jobs/autobrush-captures.ts",
+    "sha": "a875d08c74a1c091377aa19a9799cd7e9d6d432c",
+    "size": 1011
+  },
+  {
+    "file": "lib/jobs/autobrush-history.ts",
+    "sha": "55e1b89d91c8a1e1975f6faecf9bdf979317d34b",
+    "size": 5420
+  },
+  {
+    "file": "lib/jobs/autobrush-northbeam-sync.ts",
+    "sha": "67adf71c4dfff7f6f508ad33297826417874b069",
+    "size": 7889
+  },
+  {
+    "file": "lib/jobs/autobrush-sync.ts",
+    "sha": "0cb55e8b55eeaa31a01df9064b2ab451c2e5058a",
+    "size": 3274
+  },
+  {
+    "file": "lib/jobs/beam-captures.ts",
+    "sha": "599d051e7d95d0b5e75841a8095e0e733c207de5",
+    "size": 1140
+  },
+  {
+    "file": "lib/jobs/beam-history.ts",
+    "sha": "5838d208c4e4d55e3f44385a221a53e424afea48",
+    "size": 5349
+  },
+  {
+    "file": "lib/jobs/beam-sync.ts",
+    "sha": "bac944159cd275f590420de66755791bc0151cd0",
+    "size": 3203
+  },
+  {
+    "file": "lib/jobs/bounded-recharge-history.ts",
+    "sha": "d6cab4c0d97cbe18daa3fe120f89af39b6eeb644",
+    "size": 3883
+  },
+  {
+    "file": "lib/jobs/cache-runner.ts",
+    "sha": "19cc13131eb388ee96b21a515e4b6f816a41d84c",
+    "size": 1870
+  },
+  {
+    "file": "lib/jobs/closed-session-dates.ts",
+    "sha": "bb51f6ad2252c9e9b3b44c97224cd6532280b439",
+    "size": 3171
+  },
+  {
+    "file": "lib/jobs/ga4-sync.ts",
+    "sha": "63f81036aad2187dd7adb975a9bdcb14b31a0fd5",
+    "size": 6133
+  },
+  {
+    "file": "lib/jobs/hourly-history.ts",
+    "sha": "a24b688dd8c2986913b05cd0ddcdbc0791c00461",
+    "size": 9364
+  },
+  {
+    "file": "lib/jobs/publication-retry.ts",
+    "sha": "9e2359e7cc13f2e2f26d0fa480dabdaef25c0b7c",
+    "size": 871
+  },
+  {
+    "file": "lib/jobs/run-hourly-history.ts",
+    "sha": "d9bb47e48fe5f3bc0fbd2a219f6bcca8fd4dc36c",
+    "size": 18130
+  },
+  {
+    "file": "lib/jobs/runner.ts",
+    "sha": "4906fb50623d487e58227a5620d079b59013d167",
+    "size": 9113
+  },
+  {
+    "file": "lib/jobs/scheduler.ts",
+    "sha": "70bee15883eaf0dc51a316d55e3504cbd461c278",
+    "size": 6631
+  },
+  {
+    "file": "lib/jobs/sync.ts",
+    "sha": "3f18fa085d50d2f961710ca413cc2344975e94b3",
+    "size": 18186
+  },
+  {
+    "file": "lib/reviews/beam-review.ts",
+    "sha": "a5bbc7622848aa5c74974dc24f51d964b0c36ac8",
+    "size": 2835
+  },
+  {
+    "file": "lib/reviews/build.ts",
+    "sha": "cc13d3cda1fdd0201b3ec9a1342c58c0ed1f46fa",
+    "size": 1898
+  },
+  {
+    "file": "lib/reviews/diagnoses.ts",
+    "sha": "ce9be3fc743541179059fefcba511446fa9e0c66",
+    "size": 14763
+  },
+  {
+    "file": "lib/reviews/document.ts",
+    "sha": "760c804df3260b6e6d3511bca6c27b946b3c9b2d",
+    "size": 7947
+  },
+  {
+    "file": "lib/reviews/generation.ts",
+    "sha": "a08ff23d8669fa8f2fcf460bb974027513c7d978",
+    "size": 1037
+  },
+  {
+    "file": "lib/reviews/import.ts",
+    "sha": "b576ed7bcca5ced41a9a6d132319d784a7c59db6",
+    "size": 521
+  },
+  {
+    "file": "lib/reviews/index.ts",
+    "sha": "8f0da22164d8febdb35bb24a0f82638199d50ba2",
+    "size": 712
+  },
+  {
+    "file": "lib/reviews/manual-scope.ts",
+    "sha": "8728c8358fb23ed3af050605f87472daa241aec4",
+    "size": 510
+  },
+  {
+    "file": "lib/reviews/refine.ts",
+    "sha": "6e64d4cba466a6cc02919e7c88dec573ffbf1d3c",
+    "size": 21517
+  },
+  {
+    "file": "lib/reviews/spend-review.ts",
+    "sha": "4e2d617b60531e46790ccc520b07f88b78e1547c",
+    "size": 2278
+  },
+  {
+    "file": "lib/reviews/tables.ts",
+    "sha": "e0e09e32b6ff982d1c5abc271e2b945d6a2ee3f2",
+    "size": 27122
+  },
+  {
+    "file": "lib/server/access.ts",
+    "sha": "c1a4803b000655f8427e846e78b52153a9a0d675",
+    "size": 4117
+  },
+  {
+    "file": "lib/server/actions.ts",
+    "sha": "55d785089c7eef1f9820c6761f0d50f7b0d51acb",
+    "size": 8435
+  },
+  {
+    "file": "lib/server/active-customer-comparison.ts",
+    "sha": "4488f9aedf690b9c3d368c071a3158318f6dda3a",
+    "size": 4544
+  },
+  {
+    "file": "lib/server/analytics-memory.ts",
+    "sha": "a49b7e29fd90a9027e03452926455d6ad3148a66",
+    "size": 1767
+  },
+  {
+    "file": "lib/server/autobrush-cron.ts",
+    "sha": "6721720c51da6bd393e1ddab9ec9cf01281d367a",
+    "size": 1053
+  },
+  {
+    "file": "lib/server/autobrush-ga4-connection.ts",
+    "sha": "e291e3eb305ab98b57d6229852c95942859ccece",
+    "size": 15078
+  },
+  {
+    "file": "lib/server/autobrush-motion-connection.ts",
+    "sha": "3a971a277969ee781166c5b9b05f17f0db7d9988",
+    "size": 13787
+  },
+  {
+    "file": "lib/server/autobrush-northbeam-dashboard.ts",
+    "sha": "6c455196ccd6d34d1497379a03d412b0eeb9ac19",
+    "size": 2936
+  },
+  {
+    "file": "lib/server/autobrush-northbeam-qualification.ts",
+    "sha": "af4f353872ba51870802b44897f73f6bed63e851",
+    "size": 19444
+  },
+  {
+    "file": "lib/server/autobrush-shopify-connection.ts",
+    "sha": "bd4c0defedb3ba2da2a5319470e83e5c5a3af83a",
+    "size": 13231
+  },
+  {
+    "file": "lib/server/autobrush-source-qualification.ts",
+    "sha": "de323390cc081e22ecb2d38fc035abe87614f648",
+    "size": 2240
+  },
+  {
+    "file": "lib/server/beam-cron.ts",
+    "sha": "4521941c8bd31f01798c600d2c8ec929e4dfd0e9",
+    "size": 928
+  },
+  {
+    "file": "lib/server/cache-warming.ts",
+    "sha": "238dea6bb15404d1af6c1bf2a1ed8a917bb8b6e5",
+    "size": 7780
+  },
+  {
+    "file": "lib/server/chat-request-store.ts",
+    "sha": "fabe6f86de0630d90de41d4fc1c81dd5ef6ed305",
+    "size": 828
+  },
+  {
+    "file": "lib/server/client-evidence.ts",
+    "sha": "853b010212a46c83c56809ba21cb01679fd2fa4b",
+    "size": 3262
+  },
+  {
+    "file": "lib/server/company-workspace-bridge.ts",
+    "sha": "5531df3447c4e1c81fc3c7d96a663c2d6094ec9a",
+    "size": 11656
+  },
+  {
+    "file": "lib/server/configuration.ts",
+    "sha": "fa2aefba83789a0e1f379ec822b430d6f58b4fa9",
+    "size": 2755
+  },
+  {
+    "file": "lib/server/cron.ts",
+    "sha": "f6f5c631d9edb75578a2c36a43e21529bdde0f8a",
+    "size": 1119
+  },
+  {
+    "file": "lib/server/database-fetch.ts",
+    "sha": "20a5af6284b162caf646c838887dee5601d81e86",
+    "size": 3676
+  },
+  {
+    "file": "lib/server/durable-observation-cache.ts",
+    "sha": "ffc0dcbb49e3471bd57d0f8d249ef9d6acb1b1b3",
+    "size": 8984
+  },
+  {
+    "file": "lib/server/export.ts",
+    "sha": "a30768d52a8e26d4dcad73be1580b298478120e9",
+    "size": 421
+  },
+  {
+    "file": "lib/server/ga4-connection.ts",
+    "sha": "e4b8262e6743f42cf485f3e172a4b77a93526593",
+    "size": 9824
+  },
+  {
+    "file": "lib/server/ga4-dashboard.ts",
+    "sha": "5779c7384e4889d697ed35acbaa5985f58c0f307",
+    "size": 4316
+  },
+  {
+    "file": "lib/server/ga4-profile-config.ts",
+    "sha": "3ea6ad3d297c153678daba19b9ee9003954f2ddc",
+    "size": 1134
+  },
+  {
+    "file": "lib/server/ga4-report-cache.ts",
+    "sha": "80c0c5d26b3da33715b63c11b8567223c3942742",
+    "size": 11062
+  },
+  {
+    "file": "lib/server/migration.ts",
+    "sha": "ffd0086e98c7675c5f7bd84606e708abed455b24",
+    "size": 1250
+  },
+  {
+    "file": "lib/server/motion-connection.ts",
+    "sha": "5d8e0f23e6e1e32a57615dc17414386fed841585",
+    "size": 8820
+  },
+  {
+    "file": "lib/server/northbeam-report-cache.ts",
+    "sha": "54a32368a779b5d7dab57823b5333a6a653bdf9a",
+    "size": 9636
+  },
+  {
+    "file": "lib/server/observation-codec.ts",
+    "sha": "b83c43a3753c43a067f93bcb850ddd29dbbc03a3",
+    "size": 4431
+  },
+  {
+    "file": "lib/server/policy.ts",
+    "sha": "64da90dbefa65e507e80f0a2b18412937c00c70d",
+    "size": 631
+  },
+  {
+    "file": "lib/server/prepared-workspace-cache.ts",
+    "sha": "5f773195266d266b8e1cd104ffe0d781dbec68fb",
+    "size": 22144
+  },
+  {
+    "file": "lib/server/private-runner.ts",
+    "sha": "3040a9ae689ee2d925844a8f738a541c58dd50cd",
+    "size": 1141
+  },
+  {
+    "file": "lib/server/provider-credentials.ts",
+    "sha": "091d663b412ff50995954f4078dda02467682220",
+    "size": 3796
+  },
+  {
+    "file": "lib/server/query-cache.ts",
+    "sha": "ece4195a79cc660f03aaa909185ae31e01c15d0c",
+    "size": 2253
+  },
+  {
+    "file": "lib/server/recharge-creation-retention.ts",
+    "sha": "6b71be7ce657e217ee39e5a6807a79991fecf618",
+    "size": 3062
+  },
+  {
+    "file": "lib/server/recharge-event-retention.ts",
+    "sha": "4c7e9f968581b2010808b01ab4e09784aa621502",
+    "size": 3613
+  },
+  {
+    "file": "lib/server/recharge-webhook.ts",
+    "sha": "9a99a0e833b900f434e182e94710b6bcf84db584",
+    "size": 7192
+  },
+  {
+    "file": "lib/server/request-origin.ts",
+    "sha": "712152044fb9233fa35b28cd0dd3d7208a3c3d47",
+    "size": 413
+  },
+  {
+    "file": "lib/server/runtime.ts",
+    "sha": "a9da64d4a90b3415e4968ad8aa7810f914534833",
+    "size": 1060
+  },
+  {
+    "file": "lib/server/runtime.vercel.ts",
+    "sha": "1aff0162fa627d6a88acf9c74eff68f015a13b3b",
+    "size": 1338
+  },
+  {
+    "file": "lib/server/secrets.ts",
+    "sha": "fdad8cbdb515d74110913e34e1f1d155b1a9353a",
+    "size": 188
+  },
+  {
+    "file": "lib/server/shared-database.ts",
+    "sha": "f10c533ad45328116429ff664f00b6f49ab06b8b",
+    "size": 450
+  },
+  {
+    "file": "lib/server/shopify-connection.ts",
+    "sha": "7d0c3002baa971e966e68ce6a9b132c096e7eee4",
+    "size": 8202
+  },
+  {
+    "file": "lib/server/snapshot-day-projections.ts",
+    "sha": "e53962e72b372ce864d7aaa6f75f466e9fc89a61",
+    "size": 13610
+  },
+  {
+    "file": "lib/server/sqlite-bindings.ts",
+    "sha": "03bcbea01096e20ecf949bbda4102fc740a9349d",
+    "size": 1277
+  },
+  {
+    "file": "lib/server/standalone-auth.ts",
+    "sha": "53c031bd6b351c2b88a31ce4ddb1a8091a816246",
+    "size": 6874
+  },
+  {
+    "file": "lib/server/store.ts",
+    "sha": "f397a00ed610013805fef9a5c60a62ee0b5cbdc5",
+    "size": 51237
+  },
+  {
+    "file": "lib/server/trend-day-cache.ts",
+    "sha": "3188fc50b1eb06152149be5a10714489f83da15f",
+    "size": 5030
+  },
+  {
+    "file": "lib/server/trend-observations.ts",
+    "sha": "599d0e4647a5877fdf59039887d531df0ec228d4",
+    "size": 10702
+  },
+  {
+    "file": "lib/server/workspace.ts",
+    "sha": "a6961b1a043e9f5b464fbfffc35c849aa0411044",
+    "size": 11413
+  },
+  {
+    "file": "lib/sources/autobrush-fetch.ts",
+    "sha": "d0c052c12ee9c828887bfa8e6620d765ebe89c34",
+    "size": 5275
+  },
+  {
+    "file": "lib/sources/autobrush-intelligems.ts",
+    "sha": "55a2f2a3eabe7c9965ecf0ba6faa0cb0dbc83a46",
+    "size": 14730
+  },
+  {
+    "file": "lib/sources/autobrush-motion.ts",
+    "sha": "2772096a86e658c1ef884106011008f0143d2571",
+    "size": 15459
+  },
+  {
+    "file": "lib/sources/autobrush-northbeam.ts",
+    "sha": "6532bd8654b42f4ef6dbcc031a7a2673ff837cc7",
+    "size": 14530
+  },
+  {
+    "file": "lib/sources/autobrush-shopify.ts",
+    "sha": "917d41620f48906e8953cd4760641bbd022304be",
+    "size": 15582
+  },
+  {
+    "file": "lib/sources/autobrush-sources.ts",
+    "sha": "0d147ab563a9a8accfe28932636e62c47d37c354",
+    "size": 3125
+  },
+  {
+    "file": "lib/sources/beam-fetch.ts",
+    "sha": "b8a5facf17ea4767d83fb86cee3dad2cdaf78449",
+    "size": 5394
+  },
+  {
+    "file": "lib/sources/beam-intelligems.ts",
+    "sha": "8a93940dc7edcd9b788e88a365cffcacf5e87880",
+    "size": 11072
+  },
+  {
+    "file": "lib/sources/beam-motion.ts",
+    "sha": "9cef155e0357c2db8e2d658916332b40f6737f6e",
+    "size": 14942
+  },
+  {
+    "file": "lib/sources/beam-shopify.ts",
+    "sha": "3478c03c0bfc7bc1be4d6369472c189ac87743e7",
+    "size": 14295
+  },
+  {
+    "file": "lib/sources/beam-sources.ts",
+    "sha": "7bd0a006887d4771d71b037931f20e6995165f1c",
+    "size": 2555
+  },
+  {
+    "file": "lib/sources/connect-kind.ts",
+    "sha": "e7420078de048d5ee4933522fcd3f2c3fed86248",
+    "size": 3875
+  },
+  {
+    "file": "lib/sources/ga4-auth.ts",
+    "sha": "bf12a316fb36f6905c8d547d4ec29a00c1af0540",
+    "size": 9371
+  },
+  {
+    "file": "lib/sources/ga4-data.ts",
+    "sha": "caa72190efc65899930770f333de6976bb0191fe",
+    "size": 12934
+  },
+  {
+    "file": "lib/sources/gateway.ts",
+    "sha": "8537704cefefeada67d7ef2f9cd5b522be56decb",
+    "size": 2178
+  },
+  {
+    "file": "lib/sources/hourly-paid-media.ts",
+    "sha": "77226661d205329cbb3f03d280c513c711d429ca",
+    "size": 16595
+  },
+  {
+    "file": "lib/sources/kind-fetch.ts",
+    "sha": "3e6e0036711489707a805d46bc33fa05b1d95f8c",
+    "size": 19348
+  },
+  {
+    "file": "lib/sources/kind-patches.ts",
+    "sha": "d65babba84173df3c91fc51ac15755f9eccee275",
+    "size": 34491
+  },
+  {
+    "file": "lib/sources/motion-auth.ts",
+    "sha": "15048516f0e6bbd5f2134c1704ddedc6136b297e",
+    "size": 9269
+  },
+  {
+    "file": "lib/sources/motion-mcp.ts",
+    "sha": "b4d0fc725225b9fa7dddbadacf7f299605606661",
+    "size": 7690
+  },
+  {
+    "file": "lib/sources/qualification.ts",
+    "sha": "ce928a95425a0979f82e19e1b0e50c8387dbf66a",
+    "size": 5554
+  },
+  {
+    "file": "lib/sources/recharge-cancellations.ts",
+    "sha": "45fd8e3bafab16e48dc49481eec03871d1abbaf6",
+    "size": 5742
+  },
+  {
+    "file": "lib/sources/recharge-provider-json.ts",
+    "sha": "44036ec0835fa4f909efdb4d0dbab780a2a605fa",
+    "size": 4249
+  },
+  {
+    "file": "lib/sources/recharge-subscription-cohort.ts",
+    "sha": "c7f28827ca3625523de54d8ab8d5d1c92eb01bea",
+    "size": 13160
+  },
+  {
+    "file": "lib/sources/registered-contract.ts",
+    "sha": "cfc2c24d65665a6829e8c7ee5b1da30c90dfd7b7",
+    "size": 3073
+  },
+  {
+    "file": "lib/sources/shopify-auth.ts",
+    "sha": "506a52d4e94fbc515db3245c04a8d0772035c952",
+    "size": 8377
+  },
+  {
+    "file": "lib/sources/shopify-graphql.ts",
+    "sha": "810f5890abb5897e09c38a505a24efa77d5a315b",
+    "size": 3629
+  },
+  {
+    "file": "lib/sources/shopify-hourly-commerce.ts",
+    "sha": "fe7635d336a2b8508a74b3c5dc016de3dcea6a25",
+    "size": 9816
+  },
+  {
+    "file": "lib/sources/shopify-hourly-traffic.ts",
+    "sha": "d6f505b9943a77a2671b34fb8b4f71876ac380c0",
+    "size": 6322
+  },
+  {
+    "file": "lib/sources/tw-diagnostics.ts",
+    "sha": "8fa57cdeb6c3605e1b6184343f153125de093dd1",
+    "size": 13449
+  },
+  {
+    "file": "lib/sources/tw-hourly-markets.ts",
+    "sha": "2bf35412e35c8b5112f7771726787ac9ae51ddfe",
+    "size": 3721
+  },
+  {
+    "file": "lib/utils.ts",
+    "sha": "edf351d874d6710ffff09bbbad7de26cace8fd8c",
+    "size": 177
+  },
+  {
+    "file": "next.config.ts",
+    "sha": "fa6cc130c7be90e5f652a98f680b9fd29ea37608",
+    "size": 291
+  },
+  {
+    "file": "package-lock.json",
+    "sha": "b75cc7a1b013a53b0238662b59c375a370ebf3fb",
+    "size": 559466
+  },
+  {
+    "file": "package.json",
+    "sha": "c4abec30ae4b3077d1f5f116684528fbf80ad6ae",
+    "size": 2488
+  },
+  {
+    "file": "postcss.config.mjs",
+    "sha": "8f8be689e9af58f80351df6e6b551146822f42a4",
+    "size": 94
+  },
+  {
+    "file": "public/brand/Avenir-Black.woff2",
+    "sha": "78e3adea86128ce53ec247747782bc1c14f0520a",
+    "size": 29480
+  },
+  {
+    "file": "public/brand/Avenir-Heavy.woff2",
+    "sha": "9d2fdcc7e11df3f00262458be7cadd7f8a3a93c2",
+    "size": 42184
+  },
+  {
+    "file": "public/brand/Avenir-Medium.woff2",
+    "sha": "7a184e8b19bbbc1ff0455ac35470b1a189385cd7",
+    "size": 43972
+  },
+  {
+    "file": "public/brand/Avenir-Roman.woff2",
+    "sha": "d329f8f79770627442c22008baeb866c57c2fe4a",
+    "size": 31416
+  },
+  {
+    "file": "public/brand/avenue-z-black.svg",
+    "sha": "956c2ddb8ce7f81c89b54e7eecd4a6216f51a008",
+    "size": 4556
+  },
+  {
+    "file": "public/brand/avenue-z-symbol-white.svg",
+    "sha": "44279d798902be8a78a64f02c4a57305d53b9f44",
+    "size": 415
+  },
+  {
+    "file": "public/brand/avenue-z-white.svg",
+    "sha": "cdf30cd83c30013ffcd9b6e781d43bdc08dae0c6",
+    "size": 4542
+  },
+  {
+    "file": "public/favicon.svg",
+    "sha": "5f31b6be437efd444d2920804d60d5532e6b03e8",
+    "size": 185
+  },
+  {
+    "file": "public/file.svg",
+    "sha": "43e2751ad2c3e5f28ebe755f2863e8d505827106",
+    "size": 392
+  },
+  {
+    "file": "public/globe.svg",
+    "sha": "bc7491d499a6d08cd34d102fab946adda3316864",
+    "size": 1036
+  },
+  {
+    "file": "public/window.svg",
+    "sha": "aaa393c36db17afe79aa846c53d64832d3ef55d6",
+    "size": 386
+  },
+  {
+    "file": "scripts/build-verified.sh",
+    "sha": "317eb841a67f69fc70a01444a1a46e8541aad436",
+    "size": 661
+  },
+  {
+    "file": "scripts/connector-preview/connector-preview-session.mjs",
+    "sha": "6c8549cfd2aaf10cdf919f345bc9ecdd4f24a5f0",
+    "size": 6842
+  },
+  {
+    "file": "scripts/connector-preview/host-binding.mjs",
+    "sha": "6dbe39ccdf80d18c40de4419796849a9b66f4f3f",
+    "size": 7793
+  },
+  {
+    "file": "scripts/connector-preview/protocol.mjs",
+    "sha": "dc934c99a67ad8ebefcbd31757a212a75c6d7bb5",
+    "size": 1781
+  },
+  {
+    "file": "scripts/execution-profile.mjs",
+    "sha": "d17e3a523e3052c4cea081cfe1cd1189d2fcce2b",
+    "size": 624
+  },
+  {
+    "file": "scripts/install-ci.mjs",
+    "sha": "05498ae1a57a03a510c6aa413bc870c47609dbce",
+    "size": 1685
+  },
+  {
+    "file": "scripts/install-ci.sh",
+    "sha": "c72a5dd68768125fc48797b3823369803110f6f9",
+    "size": 6783
+  },
+  {
+    "file": "scripts/install-pnpm.sh",
+    "sha": "1f0a3e3f2d186c4abc23a3f835c3114f0b17ed78",
+    "size": 9015
+  },
+  {
+    "file": "scripts/migrate-vercel.mjs",
+    "sha": "50ab46cd0cb4ecdedb92d466094a290625c56d4c",
+    "size": 1391
+  },
+  {
+    "file": "scripts/npm-install.mjs",
+    "sha": "acb4ea6cbc5a57dc0e25595246f5c4fa7c702946",
+    "size": 7025
+  },
+  {
+    "file": "scripts/pnpm-install.mjs",
+    "sha": "de278e41e8e345c2b956f41835b2d2f7957159cb",
+    "size": 10633
+  },
+  {
+    "file": "scripts/run-framework.mjs",
+    "sha": "10bb277c68ae8d408d2b598dd21c91b2eed14f0f",
+    "size": 1034
+  },
+  {
+    "file": "scripts/sites-env.mjs",
+    "sha": "b81973dd33c1d5f10527eb8c3e8ab78242248960",
+    "size": 906
+  },
+  {
+    "file": "scripts/sites-env.sh",
+    "sha": "a3adb314556d4b08d475f89f27c914498154b553",
+    "size": 1530
+  },
+  {
+    "file": "scripts/sync-cloud.mjs",
+    "sha": "a5df0a9fe1fdaf75af36726f234c0b2d8c2ae025",
+    "size": 801
+  },
+  {
+    "file": "tests/ai/autobrush-review.test.ts",
+    "sha": "13cbc30ed7671124b336fbe742ec83c0932e498b",
+    "size": 9268
+  },
+  {
+    "file": "tests/ai/beam-review.test.ts",
+    "sha": "f05cf66e4df446c696293d1cad7a2398216de5aa",
+    "size": 12758
+  },
+  {
+    "file": "tests/ai/chat-input.test.ts",
+    "sha": "dc77bea2bb394dac8e31cf78820707280ff4852c",
+    "size": 26267
+  },
+  {
+    "file": "tests/ai/chat-live-context.test.ts",
+    "sha": "e248dbaa37f0bc69556290a7999f42eb646ed843",
+    "size": 8803
+  },
+  {
+    "file": "tests/ai/chat-request-store.test.ts",
+    "sha": "3b75228750e9d1dfd972463253ff69dfdef8aa51",
+    "size": 11329
+  },
+  {
+    "file": "tests/ai/chat-scope.test.ts",
+    "sha": "c2dd49951180ea31dd3b821cdd227c575d2525b5",
+    "size": 4445
+  },
+  {
+    "file": "tests/ai/context.test.ts",
+    "sha": "304897ae491921dcfed16548354380aa8957e02c",
+    "size": 8323
+  },
+  {
+    "file": "tests/ai/evidence.test.ts",
+    "sha": "5f6f66225abd9dda37dd3155a144a41547248531",
+    "size": 13435
+  },
+  {
+    "file": "tests/ai/ga4-context.test.ts",
+    "sha": "31c2f354ef5ddc20e5a1e87327e14c92da001997",
+    "size": 8296
+  },
+  {
+    "file": "tests/ai/internal-chat-errors.test.ts",
+    "sha": "a90b0a8b2485ce863e69aad6026c1467c67fbd89",
+    "size": 2265
+  },
+  {
+    "file": "tests/ai/model-input.test.ts",
+    "sha": "ba64861f9283be5c2b1ba61e92e649a0f6889ddf",
+    "size": 8865
+  },
+  {
+    "file": "tests/ai/northbeam-context.test.ts",
+    "sha": "b54f63fa274bca0ef5c06d71ed15599156c8cc1b",
+    "size": 4436
+  },
+  {
+    "file": "tests/ai/northbeam-server.test.ts",
+    "sha": "cc9111d52111fee5c23c5280cf2e19a5d7e773c6",
+    "size": 4443
+  },
+  {
+    "file": "tests/ai/platform-chat.test.ts",
+    "sha": "c196e77582863fdc20725d81ad716c610fc43375",
+    "size": 8149
+  },
+  {
+    "file": "tests/ai/platform-evidence.test.ts",
+    "sha": "522021062dd026dae81ad01a5b4e159be8be8ee7",
+    "size": 25974
+  },
+  {
+    "file": "tests/ai/platform-provider.test.ts",
+    "sha": "c51dcb067599b18aa19fae38a1e3ec564e4d4b33",
+    "size": 11749
+  },
+  {
+    "file": "tests/ai/platform-tools.test.ts",
+    "sha": "6738962853ffd96c1187c1a52bac863261777230",
+    "size": 9394
+  },
+  {
+    "file": "tests/ai/provider.test.ts",
+    "sha": "cb6efc3cb96625a74d0651802e56fc582254a26e",
+    "size": 12145
+  },
+  {
+    "file": "tests/ai/server.test.ts",
+    "sha": "52a03c0199b87cc8f14ea741c359185394a73b67",
+    "size": 40649
+  },
+  {
+    "file": "tests/ai/session.test.ts",
+    "sha": "20ff8cf5a4d3d6978b07bb6bdd2f78060177cfad",
+    "size": 7792
+  },
+  {
+    "file": "tests/ai/visual-breakdowns.test.ts",
+    "sha": "8b0f1cad073c4bef8c139d9433980addd73a60d5",
+    "size": 12261
+  },
+  {
+    "file": "tests/analytics/alerts.test.ts",
+    "sha": "b6e7b4ab87c29979306acdeadcd011585d45b43f",
+    "size": 19805
+  },
+  {
+    "file": "tests/analytics/autobrush-ga4-reporting.test.ts",
+    "sha": "0217b36132d593b5f2085ea5679f02bae78d2e08",
+    "size": 13091
+  },
+  {
+    "file": "tests/analytics/autobrush-platform-reports.test.ts",
+    "sha": "9dc09f6c14b561a938af24d2fad17cf664f545b8",
+    "size": 3552
+  },
+  {
+    "file": "tests/analytics/beam-overview.test.ts",
+    "sha": "5d04920bb5be0dc747a3099d64bce8f75c75c286",
+    "size": 20452
+  },
+  {
+    "file": "tests/analytics/beam-platform-reports.test.ts",
+    "sha": "2092013285f9048fa07170747d2252e1b8d85163",
+    "size": 4881
+  },
+  {
+    "file": "tests/analytics/beam-spend.test.ts",
+    "sha": "c5eb6f0245deee895002597d7ed1dd015b1d2b89",
+    "size": 5423
+  },
+  {
+    "file": "tests/analytics/beam-workspace-cache.test.ts",
+    "sha": "c223ca48a8670e4f339991fc712584134132e976",
+    "size": 3211
+  },
+  {
+    "file": "tests/analytics/beam-workspace-datasets.test.ts",
+    "sha": "d872d12f2b4e1b281cccf93d6e356874f290f9b6",
+    "size": 1164
+  },
+  {
+    "file": "tests/analytics/benchmark-index.test.ts",
+    "sha": "f31498b1caec2c467ebcdec1ed74815f73be82a2",
+    "size": 3248
+  },
+  {
+    "file": "tests/analytics/benchmark-market-aliases.test.ts",
+    "sha": "b7be887091a3fa1d39767e7e8d0e24a7547ea1a4",
+    "size": 3376
+  },
+  {
+    "file": "tests/analytics/benchmark.test.ts",
+    "sha": "186fd1d1ef201aaba7d6efb52690aca683fb91ea",
+    "size": 676
+  },
+  {
+    "file": "tests/analytics/client-workspace-autobrush.test.ts",
+    "sha": "7b82d9d1edc637444e5a40d979256d7083ee3a8d",
+    "size": 5086
+  },
+  {
+    "file": "tests/analytics/client-workspace-beam.test.ts",
+    "sha": "cc777699dfe11955db5788dcb1dde0c402eb5ae7",
+    "size": 3247
+  },
+  {
+    "file": "tests/analytics/contextual-dataset-series.test.ts",
+    "sha": "1c0af287f56293b1c0c8727e3ee21741267b59f5",
+    "size": 7004
+  },
+  {
+    "file": "tests/analytics/daily-efficiency.test.ts",
+    "sha": "1b5ed1fb932848a9cc9434a3e797e9882d984bfd",
+    "size": 6868
+  },
+  {
+    "file": "tests/analytics/dashboard-ga4-scope.test.ts",
+    "sha": "b33819618386b880fd422bd5866beb1d4129a967",
+    "size": 9247
+  },
+  {
+    "file": "tests/analytics/dataset-series.test.ts",
+    "sha": "dc08aba51ce138691e5f8336cca6046f39c76328",
+    "size": 4927
+  },
+  {
+    "file": "tests/analytics/detail-table-comparison.test.ts",
+    "sha": "c4e1f90c8b65bcdc5b17033ffaa975cb0ba699f2",
+    "size": 2767
+  },
+  {
+    "file": "tests/analytics/display.test.ts",
+    "sha": "64cab50ee0f2fb4afaabc8fb031f44fa4cc0dd93",
+    "size": 6072
+  },
+  {
+    "file": "tests/analytics/executive-overview.test.ts",
+    "sha": "791362248e36eec2a77e6068435c1694b9bc2eec",
+    "size": 9814
+  },
+  {
+    "file": "tests/analytics/explorer-trend-context.test.ts",
+    "sha": "fcebb02c96588f01660bd7f5c528880ae41135cd",
+    "size": 5364
+  },
+  {
+    "file": "tests/analytics/funnel-rollup.test.ts",
+    "sha": "0eb7181526184857c32aed6c6ff0e0cd6b37561b",
+    "size": 7208
+  },
+  {
+    "file": "tests/analytics/ga4-dashboard.test.ts",
+    "sha": "94a3cdc4e3c45bf35fd9cba9f0f9f6630d2f36d2",
+    "size": 17735
+  },
+  {
+    "file": "tests/analytics/ga4-page-privacy.test.ts",
+    "sha": "562be8c750e645ed7852b12abd171bae47686396",
+    "size": 11236
+  },
+  {
+    "file": "tests/analytics/ga4-workspace.test.ts",
+    "sha": "3095df818f5e7f3e6df247abd734136af6d3a4c9",
+    "size": 12646
+  },
+  {
+    "file": "tests/analytics/intraday-coverage.test.ts",
+    "sha": "65722e9a9f6137fe1d2f098e1242609eba19baa9",
+    "size": 3124
+  },
+  {
+    "file": "tests/analytics/live-period.test.ts",
+    "sha": "63256eed893b90de5255b1c18d7e7323d4d58ecd",
+    "size": 2591
+  },
+  {
+    "file": "tests/analytics/live-reporting-date.test.ts",
+    "sha": "6db5c9409831bd330d92aadd91953d902f51c8ad",
+    "size": 2489
+  },
+  {
+    "file": "tests/analytics/market-financial-totals.test.ts",
+    "sha": "33af2c9efb9b95524195c71879bf6993a4a15bb0",
+    "size": 5015
+  },
+  {
+    "file": "tests/analytics/market-labels.test.ts",
+    "sha": "71961d6012dcc85faea6279c7026edc9c1d433f2",
+    "size": 6600
+  },
+  {
+    "file": "tests/analytics/market-workspace.test.ts",
+    "sha": "dff5458bc916e4e1bc1e6ef8da70c8443ad2d139",
+    "size": 6684
+  },
+  {
+    "file": "tests/analytics/metric-summary.test.ts",
+    "sha": "9b4737222fa6b5f4d06a8d4d3ff1db39e4a712ad",
+    "size": 3189
+  },
+  {
+    "file": "tests/analytics/metric-visualization.test.ts",
+    "sha": "08c3c8600b57b67dcec6c3f1b6ac6a427c8d0233",
+    "size": 3354
+  },
+  {
+    "file": "tests/analytics/metrics.test.ts",
+    "sha": "05ebb75f4cb784fd43f484cb3cef9ffada203fd6",
+    "size": 1698
+  },
+  {
+    "file": "tests/analytics/month-to-date.test.ts",
+    "sha": "8c08e2ed487e8fffab6d37ebfa5e2d0aba5be013",
+    "size": 5983
+  },
+  {
+    "file": "tests/analytics/northbeam-dashboard.test.ts",
+    "sha": "7624f9195dd81359fa0f69c222900d8efeea05ae",
+    "size": 2486
+  },
+  {
+    "file": "tests/analytics/northbeam-workspace.test.ts",
+    "sha": "fd364062a48865e210c0c4d363a17b9011a7cbd4",
+    "size": 8956
+  },
+  {
+    "file": "tests/analytics/order-diagnostics-workspace.test.ts",
+    "sha": "e3162672722e73f90897e68e0ca2bf4bf2827dd4",
+    "size": 7791
+  },
+  {
+    "file": "tests/analytics/order-diagnostics.test.ts",
+    "sha": "d734e0ea0603b26a2ec28d2d4782e849092a349d",
+    "size": 2954
+  },
+  {
+    "file": "tests/analytics/portfolio-navigation.test.ts",
+    "sha": "50725dde15ae248c493497b3741dfce02854974b",
+    "size": 1279
+  },
+  {
+    "file": "tests/analytics/portfolio-scope.test.ts",
+    "sha": "71ad0aadcea364f119fef68dafe562fecc4df936",
+    "size": 4975
+  },
+  {
+    "file": "tests/analytics/portfolio.test.ts",
+    "sha": "ddae86aaa4a6a8ea501f5674e151f03ba95614b8",
+    "size": 9065
+  },
+  {
+    "file": "tests/analytics/presentation.test.ts",
+    "sha": "dadeff03720b8c3e860d462c9cfbaf63db310872",
+    "size": 8052
+  },
+  {
+    "file": "tests/analytics/product-workspace.test.ts",
+    "sha": "eb77055a33f8570c8411f42d1cf60d657408acfc",
+    "size": 5154
+  },
+  {
+    "file": "tests/analytics/query.test.ts",
+    "sha": "b12997801d570045f1f6b34657bcc651368b6c0e",
+    "size": 9657
+  },
+  {
+    "file": "tests/analytics/revenue-presentation.test.ts",
+    "sha": "30301b3d2464041d743c6ea2b43c14ff07d2f255",
+    "size": 5451
+  },
+  {
+    "file": "tests/analytics/revenue-workspace.test.ts",
+    "sha": "2afd9fc7b849752334329d2ecaaecee5cb86bfcd",
+    "size": 4469
+  },
+  {
+    "file": "tests/analytics/review-index.test.ts",
+    "sha": "8faf120da08a2c7d00faac616fe30497e46524d0",
+    "size": 1485
+  },
+  {
+    "file": "tests/analytics/settings-timestamps.test.ts",
+    "sha": "ae3ac7ec8238605d97a8d1a41803bced286e6f5e",
+    "size": 3063
+  },
+  {
+    "file": "tests/analytics/source-precedence.test.ts",
+    "sha": "054c64199193b6ac08d53a0770fba4fd4e7c49cf",
+    "size": 3922
+  },
+  {
+    "file": "tests/analytics/spend-workspace.test.ts",
+    "sha": "84252d741ac0f5c21d084a26a3a69a44e4a0925c",
+    "size": 6179
+  },
+  {
+    "file": "tests/analytics/subscription-comparison.test.ts",
+    "sha": "f2fce7c2c0be92e27d120ab2060b491b980a2def",
+    "size": 2243
+  },
+  {
+    "file": "tests/analytics/subscription-explorer.test.ts",
+    "sha": "8636a5332351c41d9ffd1c87474204d00fd68644",
+    "size": 9868
+  },
+  {
+    "file": "tests/analytics/subscription-workspace.test.ts",
+    "sha": "de8b078179b7ae4391b1967299d9f832de8015f4",
+    "size": 13754
+  },
+  {
+    "file": "tests/analytics/subscriptions.test.ts",
+    "sha": "94fbc244c18b984b04d5876e781bea57e5ef10d2",
+    "size": 2328
+  },
+  {
+    "file": "tests/analytics/traffic-comparison.test.ts",
+    "sha": "84a6e27c22c55cb2621748beb0f5aff342f0c547",
+    "size": 1254
+  },
+  {
+    "file": "tests/analytics/traffic-explorer.test.ts",
+    "sha": "b356f43e2ebcfd56ef3c6ac11d79cd0bfdaea04e",
+    "size": 6211
+  },
+  {
+    "file": "tests/analytics/traffic-page-loader.test.ts",
+    "sha": "7606a697444df2754f9d25f0dd76d5a80c8029a5",
+    "size": 6494
+  },
+  {
+    "file": "tests/analytics/traffic-presentation.test.ts",
+    "sha": "9e9bac1e20a3cdbc3bad58d14ef6b13bbeeb9db9",
+    "size": 2834
+  },
+  {
+    "file": "tests/analytics/traffic-workspace.test.ts",
+    "sha": "b62b80512f5a8561797305471b074872c3d17adf",
+    "size": 24052
+  },
+  {
+    "file": "tests/analytics/trend-context.test.ts",
+    "sha": "782507011cd15a55f32096d2e32edaf374298d9d",
+    "size": 2025
+  },
+  {
+    "file": "tests/analytics/trend-rollup.test.ts",
+    "sha": "82294269f76246b7d1e82f0c0fd242725fbd35c0",
+    "size": 7149
+  },
+  {
+    "file": "tests/analytics/trends.test.ts",
+    "sha": "2eba88be081b153e196b7fb8b2587274a2556a3d",
+    "size": 650
+  },
+  {
+    "file": "tests/analytics/view-projections.test.ts",
+    "sha": "910e3f5c0d7206e27c1e22409e493fe447cfa6f6",
+    "size": 6240
+  },
+  {
+    "file": "tests/analytics/visualization.test.ts",
+    "sha": "7b17824cad9e6dad636c0dbe8e227be93c239f2d",
+    "size": 3699
+  },
+  {
+    "file": "tests/analytics/windows.test.ts",
+    "sha": "5baef03ea8af1222a9abfa6e42ca5423de464aec",
+    "size": 800
+  },
+  {
+    "file": "tests/analytics/workspace-cache.test.ts",
+    "sha": "82fca43c18dd9c0a2909ab5ab897f37c4686a1b6",
+    "size": 28604
+  },
+  {
+    "file": "tests/auth/sign-in.test.ts",
+    "sha": "bba763865f2db9f025dda6abd1beefa6a5de8cb5",
+    "size": 3090
+  },
+  {
+    "file": "tests/helpers/northbeam-store.ts",
+    "sha": "f49ba45904b4035c45de57e1079648bb2884d152",
+    "size": 1115
+  },
+  {
+    "file": "tests/jobs/archive-materialization-retention.test.ts",
+    "sha": "e60f2900fbd50f72606be2b2437241d78caa72aa",
+    "size": 69563
+  },
+  {
+    "file": "tests/jobs/autobrush-history.test.ts",
+    "sha": "f5810a18c5f1880587d5202e948916c2ab6fc2a1",
+    "size": 11579
+  },
+  {
+    "file": "tests/jobs/autobrush-northbeam-sync.test.ts",
+    "sha": "4f1adb7bf00c3e2c3a410d1f866210bca613313c",
+    "size": 10725
+  },
+  {
+    "file": "tests/jobs/autobrush-provider-date-freshness.test.ts",
+    "sha": "983f5654c9a24395f291e08de13606f1e04a2b4d",
+    "size": 10895
+  },
+  {
+    "file": "tests/jobs/autobrush-sync-tail.test.ts",
+    "sha": "6056da42082b972a30e935086bafde35cfc0cc8d",
+    "size": 3932
+  },
+  {
+    "file": "tests/jobs/autobrush-sync.test.ts",
+    "sha": "eb4f2388f9bdf56e91657b0da31383d63ae67b46",
+    "size": 7159
+  },
+  {
+    "file": "tests/jobs/beam-captures.test.ts",
+    "sha": "1790e2fb7baf1782aec8470c17236978bcf0e98d",
+    "size": 2294
+  },
+  {
+    "file": "tests/jobs/beam-history.test.ts",
+    "sha": "ba31479c8950284bed4b4c2a3564e6a55ee24bb0",
+    "size": 11404
+  },
+  {
+    "file": "tests/jobs/beam-sync-tail.test.ts",
+    "sha": "d3a8afa3e98a21c4bc1697a49c404fa2265745b0",
+    "size": 2840
+  },
+  {
+    "file": "tests/jobs/beam-sync.test.ts",
+    "sha": "b3db27c2d52e38c219ac6ce79a89df1f274d24b6",
+    "size": 7004
+  },
+  {
+    "file": "tests/jobs/bounded-recharge-history.test.ts",
+    "sha": "5869ac2fe40b3d1dc28849f2911295597639244a",
+    "size": 12380
+  },
+  {
+    "file": "tests/jobs/cache-runner.test.ts",
+    "sha": "1c98a7b0b3d1e1c7b6e9c0cc66c09d93b6101ff4",
+    "size": 6137
+  },
+  {
+    "file": "tests/jobs/closed-session-dates.test.ts",
+    "sha": "10739537ca43e77c00ecb92f66e5738b3106c8d0",
+    "size": 6744
+  },
+  {
+    "file": "tests/jobs/current-closed-tail.test.ts",
+    "sha": "7dbc5dfc6fca799b2071efc159acbb5965d96c0d",
+    "size": 14974
+  },
+  {
+    "file": "tests/jobs/current-publication-budget.test.ts",
+    "sha": "75a101c946550a74a3e2ad612d8cd75366aca48f",
+    "size": 26847
+  },
+  {
+    "file": "tests/jobs/current-source-health.test.ts",
+    "sha": "d255fa5f590367d3d4b5ffd064b01ddbfcd5b8fb",
+    "size": 22013
+  },
+  {
+    "file": "tests/jobs/enqueue-hourly-coverage.test.ts",
+    "sha": "b3272300accd6579fe0a92b52d4017963db6863a",
+    "size": 6237
+  },
+  {
+    "file": "tests/jobs/ga4-sync-runner.test.ts",
+    "sha": "bb1184e798c001d29dc6a770b45a7196bf16fd7c",
+    "size": 9415
+  },
+  {
+    "file": "tests/jobs/ga4-sync.test.ts",
+    "sha": "864c5ba746d94ab425fb3d7e37fb8c0dc911aaec",
+    "size": 1617
+  },
+  {
+    "file": "tests/jobs/history-budget.test.ts",
+    "sha": "d27daf5028cb1942a850852ccbc77f1c41ccab30",
+    "size": 10479
+  },
+  {
+    "file": "tests/jobs/hourly-history.test.ts",
+    "sha": "ea859e08c8c171e541ed3101ef6535f0aa26adf6",
+    "size": 22134
+  },
+  {
+    "file": "tests/jobs/private-archive-reader.test.ts",
+    "sha": "0133c4c328f1f1b2e2e4e36975ca9e8185ef9a36",
+    "size": 4973
+  },
+  {
+    "file": "tests/jobs/recharge-retained-creations.test.ts",
+    "sha": "e156ed52bcb650a95d4ae2cf3cd8fdd82ee8d724",
+    "size": 7573
+  },
+  {
+    "file": "tests/jobs/run-hourly-history.test.ts",
+    "sha": "e42af1c0684ac6038c1a955ea570897eaba2d33f",
+    "size": 34557
+  },
+  {
+    "file": "tests/jobs/runner.test.ts",
+    "sha": "f49c075664639fd49f0e8db159d0b84fec9a6b53",
+    "size": 26050
+  },
+  {
+    "file": "tests/jobs/scheduler-acquire-hrana.test.ts",
+    "sha": "d16c6537df061c84beb3cfc8fa2430ed998a3ac3",
+    "size": 7310
+  },
+  {
+    "file": "tests/jobs/scheduler-acquire-recovery.test.ts",
+    "sha": "e00a418ed736c33065faf06ebdd7f264e1663475",
+    "size": 10981
+  },
+  {
+    "file": "tests/jobs/scheduler-release-recovery.test.ts",
+    "sha": "6bf10d619e41b0870a510823b9b827991ab3b3dc",
+    "size": 6402
+  },
+  {
+    "file": "tests/jobs/scheduler.test.ts",
+    "sha": "cac31fb81b278b89a206567d27130815068c1559",
+    "size": 4005
+  },
+  {
+    "file": "tests/jobs/sync.test.ts",
+    "sha": "20398b6018e37db3b7d0ec06c4765d0d273192b9",
+    "size": 5647
+  },
+  {
+    "file": "tests/jobs/writing-capture-resume.test.ts",
+    "sha": "64cfea50a15473584cccd2e8ccc188061453c50c",
+    "size": 13309
+  },
+  {
+    "file": "tests/reviews/build.test.ts",
+    "sha": "3beac9a003a0a69c719a42b928ffe0061d3cbc41",
+    "size": 865
+  },
+  {
+    "file": "tests/reviews/diagnostics-tables.test.ts",
+    "sha": "e1d5d5fa8f6caf5cb16793baab07da5e7308024f",
+    "size": 5334
+  },
+  {
+    "file": "tests/reviews/document.test.ts",
+    "sha": "ad1432fdd1a252582e82f97e522ac83f8c6d94c1",
+    "size": 4378
+  },
+  {
+    "file": "tests/reviews/generation.test.ts",
+    "sha": "682c3dfc4ecb64f45573b3ae4ece114e7a0fac1d",
+    "size": 1175
+  },
+  {
+    "file": "tests/reviews/import.test.ts",
+    "sha": "1bfbb0b47bf938d4aae44feca075a38710f0b5d3",
+    "size": 720
+  },
+  {
+    "file": "tests/reviews/manual-scope.test.ts",
+    "sha": "5f250a935b8a2cc099eac3d5d88157b3b383abcf",
+    "size": 821
+  },
+  {
+    "file": "tests/reviews/refine.test.ts",
+    "sha": "bf4e49dfb634ef4acb003c364c5f4348b752189d",
+    "size": 17490
+  },
+  {
+    "file": "tests/reviews/spend-review.test.ts",
+    "sha": "23dae51ff534d4eec199b609365d5e439921e030",
+    "size": 914
+  },
+  {
+    "file": "tests/reviews/strategy-diagnoses.test.ts",
+    "sha": "0094744b6e580fbc7016e7d6ca9d8c37ee40c815",
+    "size": 11193
+  },
+  {
+    "file": "tests/server/access.test.ts",
+    "sha": "d02015ae4bcc5c9591c8c8815a3d6e37480f7c73",
+    "size": 1264
+  },
+  {
+    "file": "tests/server/active-customer-comparison.test.ts",
+    "sha": "4c900460dd261eb4321cf46d5ce63127fb3a7537",
+    "size": 11842
+  },
+  {
+    "file": "tests/server/analytics-memory-native.test.ts",
+    "sha": "51c194c0f142eacf4f4c0ee99e081c4155612797",
+    "size": 1391
+  },
+  {
+    "file": "tests/server/analytics-memory.test.ts",
+    "sha": "2c169b36aa56dedab0dc1fc6f4d34fb27dfe8608",
+    "size": 1175
+  },
+  {
+    "file": "tests/server/autobrush-ga4-connection.test.ts",
+    "sha": "929c2530743561279428d48ec2915632a47896c1",
+    "size": 26094
+  },
+  {
+    "file": "tests/server/autobrush-ga4-cron.test.ts",
+    "sha": "ebe18bf5f2ca24c7a1ba255aaec8bc7f734571f3",
+    "size": 2997
+  },
+  {
+    "file": "tests/server/autobrush-motion-connection.test.ts",
+    "sha": "5772ae3b955da2f80ea3b71e6e1b4f449b9c1a56",
+    "size": 21096
+  },
+  {
+    "file": "tests/server/autobrush-northbeam-cron.test.ts",
+    "sha": "78178d26572d1f52c95e6d5771f74cf1bdce6f78",
+    "size": 3031
+  },
+  {
+    "file": "tests/server/autobrush-northbeam-dashboard.test.ts",
+    "sha": "c0233c1a797909b269b67b6f9ea2778060ec5942",
+    "size": 4580
+  },
+  {
+    "file": "tests/server/autobrush-northbeam-qualification.test.ts",
+    "sha": "badfa63df5583c5c1d053a08adfe971127630cbf",
+    "size": 15904
+  },
+  {
+    "file": "tests/server/autobrush-northbeam-route.test.ts",
+    "sha": "1dea863b4ea421790867a18157c17486c4659e4d",
+    "size": 2998
+  },
+  {
+    "file": "tests/server/autobrush-shopify-connection.test.ts",
+    "sha": "a29100f1b4b844492a78020378846fd77c3021ee",
+    "size": 18720
+  },
+  {
+    "file": "tests/server/autobrush-source-qualification.test.ts",
+    "sha": "db075dd8cb04aa6730ad47378cdb2f94eb28f3a1",
+    "size": 1852
+  },
+  {
+    "file": "tests/server/beam-ga4-cron.test.ts",
+    "sha": "1ad499580c631bb138327e8ac4dc6f957ebcf1c0",
+    "size": 2982
+  },
+  {
+    "file": "tests/server/chatgpt-auth-paths.test.ts",
+    "sha": "e5416cbd473a72cb5d04e74d7a00fa6d1e1179b2",
+    "size": 1235
+  },
+  {
+    "file": "tests/server/client-evidence-native.test.ts",
+    "sha": "48d416187ab67870e4b14febe9f474120f8731a6",
+    "size": 9465
+  },
+  {
+    "file": "tests/server/client-evidence-routes.test.ts",
+    "sha": "81489b8cbb0e1aa344a99166b32572fa7e84f04b",
+    "size": 3965
+  },
+  {
+    "file": "tests/server/closed-pointer-cache.test.ts",
+    "sha": "de60c3282d4bc32dfd075ab3482af403c793a76f",
+    "size": 11321
+  },
+  {
+    "file": "tests/server/company-workspace-bridge.test.ts",
+    "sha": "6d95e2f19be96216b58a22f0f941a03b17372604",
+    "size": 19519
+  },
+  {
+    "file": "tests/server/configuration.test.ts",
+    "sha": "f4698ce148ceebd4b51e94c5710e023490a281b2",
+    "size": 1294
+  },
+  {
+    "file": "tests/server/cron.test.ts",
+    "sha": "05bea04648ccb124bffe3a9ba561cb835124d80a",
+    "size": 2727
+  },
+  {
+    "file": "tests/server/database-fetch.test.ts",
+    "sha": "03792d3124665dc9ead1923605dfb3e9c486b397",
+    "size": 8032
+  },
+  {
+    "file": "tests/server/durable-observation-cache.test.ts",
+    "sha": "a4ff5cb1268f88ece42d0b3f4ec7f5c18e92937f",
+    "size": 11983
+  },
+  {
+    "file": "tests/server/export.test.ts",
+    "sha": "6260b1bd6ec8174782d9a846244acada789ad1e5",
+    "size": 270
+  },
+  {
+    "file": "tests/server/focused-workspace.test.ts",
+    "sha": "ad325071b361fb2b8cf0157d1b33a6aff2e9d692",
+    "size": 14096
+  },
+  {
+    "file": "tests/server/ga4-connection.test.ts",
+    "sha": "2f86d698e75be4485d29a3b238836cf590ac3625",
+    "size": 16146
+  },
+  {
+    "file": "tests/server/ga4-dashboard.test.ts",
+    "sha": "4f22b97e0e948a722e6fe6f455568ed6a3379dac",
+    "size": 9348
+  },
+  {
+    "file": "tests/server/ga4-report-cache.test.ts",
+    "sha": "6d88d12195adb8179fa17254763fabf9ce16147e",
+    "size": 17266
+  },
+  {
+    "file": "tests/server/ga4-shared-callback.test.ts",
+    "sha": "f0d86a950d08b5b4f750a2e8f20fd23000d905db",
+    "size": 5773
+  },
+  {
+    "file": "tests/server/migration.test.ts",
+    "sha": "3166e633c79038be6b3aef6f583726aacf3ffbd7",
+    "size": 1723
+  },
+  {
+    "file": "tests/server/motion-connection.test.ts",
+    "sha": "a5bf035343869d21fe55c1970a636de56a8632dd",
+    "size": 8033
+  },
+  {
+    "file": "tests/server/northbeam-report-cache.test.ts",
+    "sha": "be67f49e762c0a630ceb7e4fe7353feba1481427",
+    "size": 6804
+  },
+  {
+    "file": "tests/server/observation-cache.test.ts",
+    "sha": "0dc7fab0f39d8e83631aadbf58820627aec81118",
+    "size": 19962
+  },
+  {
+    "file": "tests/server/observation-codec.test.ts",
+    "sha": "fc242157271492af9d4b37e7a82101b021d3fd02",
+    "size": 1864
+  },
+  {
+    "file": "tests/server/observation-dataset-index.test.ts",
+    "sha": "9bd4b25cf88c0e51d4936dad55b126debae93ab5",
+    "size": 4916
+  },
+  {
+    "file": "tests/server/observation-selection.test.ts",
+    "sha": "00dafe3e9bd8533cac9cd2338757dd965b0f2f64",
+    "size": 6791
+  },
+  {
+    "file": "tests/server/observation-single-dataset-seek.test.ts",
+    "sha": "083f6414306932e38edc9f505d8d7ab1fd5df787",
+    "size": 6475
+  },
+  {
+    "file": "tests/server/portable-store.test.ts",
+    "sha": "73bd8838d268ff76435d00e12333274d25e97836",
+    "size": 1730
+  },
+  {
+    "file": "tests/server/prepared-workspace-cache.test.ts",
+    "sha": "0884d1826fb2c0a277e32974d23c0b21a8b75e0c",
+    "size": 38173
+  },
+  {
+    "file": "tests/server/private-runner.test.ts",
+    "sha": "8e73118e288769bcaf07179754a44467e0993361",
+    "size": 1551
+  },
+  {
+    "file": "tests/server/provider-credentials.test.ts",
+    "sha": "4da235da67853287e5dbe0f3bba64804b7604379",
+    "size": 10145
+  },
+  {
+    "file": "tests/server/query-cache.test.ts",
+    "sha": "a68bffab300d7c42952495f74924013ec7edd2be",
+    "size": 2067
+  },
+  {
+    "file": "tests/server/recharge-creation-retention.test.ts",
+    "sha": "6a4eba921023cb36a7796ec5a83fa72684e05f39",
+    "size": 5382
+  },
+  {
+    "file": "tests/server/recharge-event-retention.test.ts",
+    "sha": "41c30424d608b4259f850cf969e251ab83dcbbfb",
+    "size": 9248
+  },
+  {
+    "file": "tests/server/recharge-webhook.test.ts",
+    "sha": "2938f284e9697d82ed539826ce5046d2ea5ef185",
+    "size": 16109
+  },
+  {
+    "file": "tests/server/reporting-date.test.ts",
+    "sha": "eed88bcf3e109571ecc5cea02dc87626b5cfdcf0",
+    "size": 1043
+  },
+  {
+    "file": "tests/server/runtime-access.test.ts",
+    "sha": "ae749285b0448f9632c96236565dee09fffb024c",
+    "size": 12162
+  },
+  {
+    "file": "tests/server/scoped-cache-warming.test.ts",
+    "sha": "a49cca87b1f14cd8b8ddc93f172970433f620166",
+    "size": 25516
+  },
+  {
+    "file": "tests/server/shared-database.test.ts",
+    "sha": "73a40021dbc67244892243b60a4f2f3e15766155",
+    "size": 673
+  },
+  {
+    "file": "tests/server/shopify-connection.test.ts",
+    "sha": "9805e276bc55697648b5a9056ee18856eb8d136b",
+    "size": 8412
+  },
+  {
+    "file": "tests/server/sites-runtime.test.ts",
+    "sha": "85cf1bd37fbbea4540629512389f5b9703f3c3f2",
+    "size": 2260
+  },
+  {
+    "file": "tests/server/snapshot-day-projections.test.ts",
+    "sha": "6f92de0bc82ee20061b95315ce9472fc25d065d6",
+    "size": 39783
+  },
+  {
+    "file": "tests/server/source-publication-pages.test.ts",
+    "sha": "c6f30f6be6c7cc7b9ab0be5a353924f9fcb0c111",
+    "size": 25721
+  },
+  {
+    "file": "tests/server/standalone-auth.test.ts",
+    "sha": "346d6826a352dc1fd99fd12cc807d4805eb32a86",
+    "size": 7049
+  },
+  {
+    "file": "tests/server/store.test.ts",
+    "sha": "e4a00d84791f16a2df30e125d4868ec342702f90",
+    "size": 15184
+  },
+  {
+    "file": "tests/server/trend-observations-deadline.test.ts",
+    "sha": "51a31be5492ea756c77c31bfc1f023afd01411b9",
+    "size": 6412
+  },
+  {
+    "file": "tests/server/trend-observations.test.ts",
+    "sha": "8976146c0c35d88b9a02aecf5cbf20a0c4f6aa88",
+    "size": 20936
+  },
+  {
+    "file": "tests/server/workspace.test.ts",
+    "sha": "680414b05c657269d23accccb395ed0a695c6643",
+    "size": 28282
+  },
+  {
+    "file": "tests/sources/autobrush-fetch.test.ts",
+    "sha": "b2781d0ac8f11cf62b727c77f90bb705e21fba03",
+    "size": 6738
+  },
+  {
+    "file": "tests/sources/autobrush-hourly-profile.test.ts",
+    "sha": "d6bdd5a92cbd290233b1218e8179c091bfe82897",
+    "size": 2049
+  },
+  {
+    "file": "tests/sources/autobrush-intelligems.test.ts",
+    "sha": "4eb75a044a7e6712b606b639022a297ce38df51d",
+    "size": 14892
+  },
+  {
+    "file": "tests/sources/autobrush-motion.test.ts",
+    "sha": "3c80fa473ba46bdc1e3b3aa44138fd635d1b0e70",
+    "size": 14866
+  },
+  {
+    "file": "tests/sources/autobrush-northbeam.test.ts",
+    "sha": "ef8de3d211db91df441e6be2b637df957fca38db",
+    "size": 16454
+  },
+  {
+    "file": "tests/sources/autobrush-shopify.test.ts",
+    "sha": "18183cb3e26d37c82950f7bacc6e94846e3e0fa3",
+    "size": 23305
+  },
+  {
+    "file": "tests/sources/beam-fetch.test.ts",
+    "sha": "6e7c4b7b2752f36a731cb4e09f16d518eb212990",
+    "size": 7366
+  },
+  {
+    "file": "tests/sources/beam-intelligems.test.ts",
+    "sha": "26b7a3d0b1681bdd84895642950f37aebd5d2f15",
+    "size": 5237
+  },
+  {
+    "file": "tests/sources/beam-motion.test.ts",
+    "sha": "f315301077a34dd78e3dccbb27fd04f0ea36a492",
+    "size": 16793
+  },
+  {
+    "file": "tests/sources/beam-shopify.test.ts",
+    "sha": "eba1da2528828dcab29fa4200acccffead0b40f4",
+    "size": 13158
+  },
+  {
+    "file": "tests/sources/closed-session-batches.test.ts",
+    "sha": "022d6b04da1eb49f787ca623c43bb83694cb2e91",
+    "size": 5411
+  },
+  {
+    "file": "tests/sources/ga4-auth.test.ts",
+    "sha": "b04c861e38d688dd9203bb34eca740ed527e642b",
+    "size": 15418
+  },
+  {
+    "file": "tests/sources/ga4-data.test.ts",
+    "sha": "159f33729b485b283e80b729100232e7953ae729",
+    "size": 23018
+  },
+  {
+    "file": "tests/sources/gateway.test.ts",
+    "sha": "9323a0b004dc5dba6202adefc2b95eb1e60f5482",
+    "size": 1823
+  },
+  {
+    "file": "tests/sources/hourly-paid-media.test.ts",
+    "sha": "d5c1360aef4c4cc10b9c9782fe82f45f9ba1e9ff",
+    "size": 18272
+  },
+  {
+    "file": "tests/sources/kind-fetch.test.ts",
+    "sha": "efecf39525246e8bc8fa59eb04c99fa1ed1a7207",
+    "size": 9073
+  },
+  {
+    "file": "tests/sources/kind-hourly-sessions.test.ts",
+    "sha": "bfefefb9d42bb692ccadd425ce7351474fda1841",
+    "size": 7286
+  },
+  {
+    "file": "tests/sources/kind-meta-performance.test.ts",
+    "sha": "ea49628850cbba39ffaa88d63a7ed2c353b29a13",
+    "size": 5960
+  },
+  {
+    "file": "tests/sources/kind-patches.test.ts",
+    "sha": "13dc296b5a73b185967f6d640fcd69642e319893",
+    "size": 4212
+  },
+  {
+    "file": "tests/sources/kind-summary.test.ts",
+    "sha": "d44c4d71a76d242dc6164ae8aa2c95894d91310b",
+    "size": 4612
+  },
+  {
+    "file": "tests/sources/kind-traffic.test.ts",
+    "sha": "71889710420c7f294b676dda0d4bbe60de9801fe",
+    "size": 9212
+  },
+  {
+    "file": "tests/sources/motion-auth.test.ts",
+    "sha": "bf0a00b7eb6eed3bd016b19045544e4f161a9d34",
+    "size": 15703
+  },
+  {
+    "file": "tests/sources/motion-mcp.test.ts",
+    "sha": "3f73bec48bc54c1363a932ca793cae232ece6d4c",
+    "size": 15057
+  },
+  {
+    "file": "tests/sources/provider-response-limit.test.ts",
+    "sha": "966241795dff8b08eff58a303af8c80e90b05c42",
+    "size": 853
+  },
+  {
+    "file": "tests/sources/qualification.test.ts",
+    "sha": "eec96ba5428bf8dde795f8e2d2de6698fbdde8dd",
+    "size": 1601
+  },
+  {
+    "file": "tests/sources/recharge-cancellations.test.ts",
+    "sha": "5bee3786f2404d26b463bcb9a2cb0560252d524d",
+    "size": 11560
+  },
+  {
+    "file": "tests/sources/recharge-cursor-retry.test.ts",
+    "sha": "94c6e6cfbd5a0b9e55cc30b0d049a6b04f3a2f04",
+    "size": 9869
+  },
+  {
+    "file": "tests/sources/recharge-provider-diagnostics.test.ts",
+    "sha": "ee70d3c22622e49321fb71d364b8763de3db6b92",
+    "size": 6882
+  },
+  {
+    "file": "tests/sources/recharge-retained-creations.test.ts",
+    "sha": "008dec1c03230347d5d33301b73b7fdec34f92b8",
+    "size": 9106
+  },
+  {
+    "file": "tests/sources/recharge-subscription-cohort.test.ts",
+    "sha": "f8a6e4f116a9512f8edc2923f22222cf6dd949a5",
+    "size": 9282
+  },
+  {
+    "file": "tests/sources/recharge-subscription-events.test.ts",
+    "sha": "28ec9fe980e9efb65e17a23b1c0f95cfbca7ab0d",
+    "size": 13759
+  },
+  {
+    "file": "tests/sources/registered-contract.test.ts",
+    "sha": "edfd74521146967714b15c0fd6fefb166d196f69",
+    "size": 1863
+  },
+  {
+    "file": "tests/sources/shopify-auth.test.ts",
+    "sha": "0a64cac021b22be3efaf02b6d5f0bbcde80c384d",
+    "size": 15205
+  },
+  {
+    "file": "tests/sources/shopify-graphql-throttle.test.ts",
+    "sha": "69c34123b7b416ad70cf744ed5cef4df7bf0c788",
+    "size": 7652
+  },
+  {
+    "file": "tests/sources/shopify-hourly-commerce.test.ts",
+    "sha": "76c1bc0375ebe03f7ecdc4e8a1cce249005e2527",
+    "size": 9174
+  },
+  {
+    "file": "tests/sources/shopify-hourly-traffic.test.ts",
+    "sha": "4ba2c1912d1375a510bd6a3e3f07c40bbc05f2ea",
+    "size": 8527
+  },
+  {
+    "file": "tests/sources/tw-diagnostics.test.ts",
+    "sha": "442c7e6f07e9576cf5b4e34939f810ab5d43cc8f",
+    "size": 10364
+  },
+  {
+    "file": "tests/sources/tw-hourly-markets.test.ts",
+    "sha": "d17ddfea7390ed3184614f37f3d290f98ed982b9",
+    "size": 6893
+  },
+  {
+    "file": "tsconfig.json",
+    "sha": "2475f416f64ed52ac0b3925f5dc31cb99f74dd8b",
+    "size": 887
+  },
+  {
+    "file": "tsconfig.vercel.json",
+    "sha": "a9ada6e379dc6205022d2b66cc4f88112b816876",
+    "size": 227
+  },
+  {
+    "file": "vendor/shadcn-tailwind-4.13.0.LICENSE.md",
+    "sha": "8845c7b4958bee400b5d89c797425f16dbe53b41",
+    "size": 1063
+  },
+  {
+    "file": "vendor/shadcn-tailwind-4.13.0.css",
+    "sha": "131855a652a1e62ae57b04b704a153a2c6eebe55",
+    "size": 16041
+  },
+  {
+    "file": "vercel.json",
+    "sha": "d8fa3d7b547d4c51d1933e3947d70bdc4c96a866",
+    "size": 1297
+  },
+  {
+    "file": "vite.config.ts",
+    "sha": "cd3fead1fac6e3e8f39683f3608658444e7922a0",
+    "size": 3499
+  },
+  {
+    "file": "vitest.config.ts",
+    "sha": "a600d31a652cf8ee9e2c638dd6591747330d018f",
+    "size": 143
+  }
+]
